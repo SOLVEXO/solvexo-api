@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
+import '../../common/schema-types/minor-money';
 
 export type RegisterSessionDocument = RegisterSession & Document;
 
@@ -11,12 +12,24 @@ export class CashAdjustment {
 
   @Prop({ type: Number, required: true })
   amount: number;
+  // G1b: integer minor-unit twin
+  @Prop({ type: 'MinorMoney' }) amountMinor?: number;
 
   @Prop({ required: true })
   reason: string;
 
   @Prop({ required: true })
   employeeId: string;
+
+  /** G3.4: why the money moved, when it is not a plain float change (reused by G3.5) */
+  @Prop({ type: String, default: null }) category?: string | null;
+  @Prop({ type: String, default: null }) refType?: string | null;
+  @Prop({ type: String, default: null }) refId?: string | null;
+  /** G3.5: a client-made id so a retried / replayed (offline) movement is applied once; the device's own time; who approved it above the limit; a note */
+  @Prop({ type: String, default: null }) requestId?: string | null;
+  @Prop({ type: Date, default: null }) occurredAt?: Date | null;
+  @Prop({ type: String, default: null }) approvedBy?: string | null;
+  @Prop({ type: String, default: null }) note?: string | null;
 
   @Prop({ type: Date, default: () => new Date() })
   createdAt: Date;
@@ -50,6 +63,8 @@ export class RegisterSession {
 
   @Prop({ type: Number, default: 0 })
   openingCash: number;
+  // G1b: integer minor-unit twin (counters are `$inc`-ed as integers — no float drift)
+  @Prop({ type: 'MinorMoney' }) openingCashMinor?: number;
 
   // Currency snapshot (Phase 5B): every cash figure on this session is in this currency, rounded to its exponent.
   @Prop({ type: String, default: null })
@@ -60,30 +75,47 @@ export class RegisterSession {
 
   @Prop({ type: Number, default: null })
   closingCash: number | null;
+  @Prop({ type: 'MinorMoney' }) closingCashMinor?: number;
 
   @Prop({ type: Number, default: 0 })
   expectedCash: number;
+  @Prop({ type: 'MinorMoney' }) expectedCashMinor?: number;
 
   @Prop({ type: Number, default: 0 })
   cashDifference: number;
+  @Prop({ type: 'MinorMoney' }) cashDifferenceMinor?: number;
 
   @Prop({ type: Number, default: 0 })
   cashSales: number;
+  @Prop({ type: 'MinorMoney' }) cashSalesMinor?: number;
 
   @Prop({ type: Number, default: 0 })
   cardSales: number;
+  @Prop({ type: 'MinorMoney' }) cardSalesMinor?: number;
 
   @Prop({ type: Number, default: 0 })
   otherSales: number;
+  @Prop({ type: 'MinorMoney' }) otherSalesMinor?: number;
+
+  // Raast QR: settles to the store's bank account — never in the drawer and not part of the card slip
+  @Prop({ type: Number, default: 0 })
+  digitalSales: number;
+  @Prop({ type: 'MinorMoney' }) digitalSalesMinor?: number;
 
   @Prop({ type: Number, default: 0 })
   totalSales: number;
+  @Prop({ type: 'MinorMoney' }) totalSalesMinor?: number;
 
   @Prop({ type: Number, default: 0 })
   totalTransactions: number;
 
   @Prop({ type: Number, default: 0 })
   totalRefunds: number;
+  @Prop({ type: 'MinorMoney' }) totalRefundsMinor?: number;
+
+  /** G4.6: the notes / coins counted into the float and at close ([{ valueMinor, count }], largest first) */
+  @Prop({ type: [{ _id: false, valueMinor: { type: 'MinorMoney' }, count: Number }], default: undefined }) openingDenominations?: Array<{ valueMinor: number; count: number }>;
+  @Prop({ type: [{ _id: false, valueMinor: { type: 'MinorMoney' }, count: Number }], default: undefined }) closingDenominations?: Array<{ valueMinor: number; count: number }>;
 
   @Prop({ type: [CashAdjustmentSchema], default: [] })
   cashAdjustments: CashAdjustment[];
@@ -99,9 +131,37 @@ export class RegisterSession {
 
   @Prop({ type: Date, default: null })
   forceCloseAt: Date | null;
+
+  // G1b backfill markers
+  @Prop({ type: Date })
+  minorBackfilledAt?: Date;
+
+  @Prop({ type: Boolean })
+  currencyInferred?: boolean;
+
+  // G1a card reconciliation at close. `status` is 'not_reconciled' whenever the cashier did not enter the terminal
+  // settlement-slip total (old app builds, or skipped) — the close itself works exactly as before.
+  @Prop({
+    type: {
+      _id: false,
+      status: { type: String, enum: ['not_reconciled', 'matched', 'variance_approved'], default: 'not_reconciled' },
+      slipTotal: { type: Number, default: null },
+      expectedCard: { type: Number, default: null },
+      variance: { type: Number, default: null },
+      slipTotalMinor: { type: 'MinorMoney' },
+      expectedCardMinor: { type: 'MinorMoney' },
+      varianceMinor: { type: 'MinorMoney' }, // signed
+      approvedBy: { type: String, default: null },
+      approvedAt: { type: Date, default: null },
+    },
+    default: null,
+  })
+  cardReconciliation: { status: string; slipTotal: number | null; expectedCard: number | null; variance: number | null; slipTotalMinor?: number; expectedCardMinor?: number; varianceMinor?: number; approvedBy: string | null; approvedAt: Date | null } | null;
 }
 
 export const RegisterSessionSchema = SchemaFactory.createForClass(RegisterSession);
+RegisterSessionSchema.set('toJSON', { getters: true, virtuals: false });
+RegisterSessionSchema.set('toObject', { getters: true, virtuals: false });
 
 RegisterSessionSchema.index({ storeId: 1, status: 1 });
 RegisterSessionSchema.index({ employeeId: 1 });

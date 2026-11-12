@@ -1,11 +1,17 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsArray, IsEnum, IsInt, IsOptional, IsNumber, IsString, Min, ValidateNested } from 'class-validator';
+import { IsArray, IsEnum, IsInt, IsOptional, IsNumber, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PaymentLineDto } from './payment.dto';
 
 export class CompleteSaleDto {
-  @ApiProperty({ enum: ['cash', 'card', 'other'], description: 'Single-payment form; ignored when `payments` is sent' })
-  @IsEnum(['cash', 'card', 'other'])
+  @ApiProperty({ required: false, description: 'G2.4: a POS coupon code to apply when the held sale is completed (validated live; cannot be combined with a discount)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  couponCode?: string;
+
+  @ApiProperty({ enum: ['cash', 'card', 'other', 'raast_qr', 'store_credit'], description: 'Single-payment form; ignored when `payments` is sent' })
+  @IsEnum(['cash', 'card', 'other', 'raast_qr', 'store_credit'])
   paymentMethod: string;
 
   @ApiProperty({ type: [PaymentLineDto], required: false })
@@ -21,6 +27,10 @@ export class CompleteSaleDto {
   @IsNumber()
   @Min(0)
   amountTendered?: number;
+  @ApiProperty({ required: false, description: `G1b: integer twin (minor units). Cross-check only.` })
+  @IsOptional()
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
+  amountTenderedMinor?: number;
 
   @ApiProperty({ required: false })
   @IsOptional()
@@ -45,6 +55,10 @@ export class CompleteSaleDto {
   @IsNumber()
   @Min(0)
   discountValue?: number;
+  @ApiProperty({ required: false, description: `G1b: integer twin of discountValue — only for an 'amount' discount. Cross-check only.` })
+  @IsOptional()
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
+  discountValueMinor?: number;
 
   @ApiProperty({ required: false, deprecated: true, description: 'IGNORED — tax is computed by the server' })
   @IsOptional()
@@ -59,6 +73,10 @@ export class CompleteSaleDto {
   @IsNumber()
   @Min(0)
   clientTotal?: number;
+  @ApiProperty({ required: false, description: `G1b: integer twin (minor units). Cross-check only.` })
+  @IsOptional()
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
+  clientTotalMinor?: number;
 
   @ApiProperty({ required: false, description: 'The settingsVersion the device priced this with' })
   @IsOptional()

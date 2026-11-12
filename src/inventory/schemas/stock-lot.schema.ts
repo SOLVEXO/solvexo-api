@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
+import '../../common/schema-types/minor-money';
 
 export type StockLotDocument = StockLot & Document;
 
@@ -40,9 +41,13 @@ export class StockLot {
   @Prop({ type: Number, required: true }) quantityReceived: number;
   @Prop({ type: Number, required: true }) quantityRemaining: number;
   @Prop({ type: Number, required: true }) costPrice: number; // this lot's own real unit cost, immutable once received
+  /** G3.0 integer twin of `costPrice` (minor units of the store's currency), written from the same value at receipt */
+  @Prop({ type: 'MinorMoney' }) costPriceMinor?: number;
 
   @Prop({ type: String, default: null }) supplierId: string | null;
   @Prop({ type: String, default: null }) purchaseOrderId: string | null;
+  /** G3.4: the goods receipt this lot came in on */
+  @Prop({ type: String, default: null }) receiptId: string | null;
 
   @Prop({ type: Date, default: Date.now }) receivedAt: Date;
   @Prop({ type: String, enum: STOCK_LOT_STATUSES, default: 'active' }) status: StockLotStatus;

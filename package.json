@@ -19,10 +19,12 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:full": "jest --maxWorkers=2",
+    "test:di": "MONGO_URI=${DI_SMOKE_MONGO_URI:-mongodb://127.0.0.1:27017/solvexo_di_smoke} NODE_OPTIONS=--max-old-space-size=6144 jest src/pos/pos.module-di.smoke.spec.ts --runInBand --forceExit",
     "test:handles": "jest --runInBand --detectOpenHandles",
     "dev:stack:up": "bash dev/up.sh",
     "dev:stack:down": "bash dev/down.sh",
     "dev:seed": "ts-node --transpile-only dev/seed.ts",
+    "kyb:rotate-key": "ts-node -r tsconfig-paths/register src/scripts/kyb-rotate-key.ts",
     "dev:expire-plan": "ts-node --transpile-only dev/seed.ts --expire-plan",
     "dev:restore-plan": "ts-node --transpile-only dev/seed.ts --restore-plan"
   },

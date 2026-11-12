@@ -1,22 +1,24 @@
 /* eslint-disable prettier/prettier */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
+import '../../common/schema-types/minor-money';
+
 
 export type SaleDocument = Sale & Document;
 
 @Schema({ _id: true })
 export class SaleItem {
-  @Prop({ required: true })
-  productId: string;
+  @Prop({ type: String, default: null })
+  productId: string | null;   // null for a CUSTOM item (a sale line with no catalog product)
 
-  @Prop({ required: true })
-  variantId: string;
+  @Prop({ type: String, default: null })
+  variantId: string | null;
 
   @Prop({ required: true })
   name: string;                 // snapshot — "Ceramic Mug (Blue)"
 
   @Prop({ required: true })
-  sku: string;
+  sku: string;                  // 'CUSTOM' for a custom item
 
   @Prop({ type: String, default: null })
   image: string | null;         // product image snapshot
@@ -36,29 +38,86 @@ export class SaleItem {
   qty: number;
 
   @Prop({ type: Number, required: true })
-  lineTotal: number;            // price × qty
+  lineTotal: number;
+
+  // G1b: integer minor-unit twins (see common/schema-types/minor-money.ts). lineTotalMinor = toMinor(price × qty) is AUTHORITATIVE;
+  // priceMinor × qty can differ from it only for a price with sub-minor decimals.
+  @Prop({ type: 'MinorMoney' })
+  priceMinor?: number;
+
+  @Prop({ type: 'MinorMoney' })
+  listPriceMinor?: number;
+
+  @Prop({ type: 'MinorMoney' })
+  lineTotalMinor?: number;
+
+  // G3.1 (D5): the unit COST at the moment of sale (weighted average, minor units) — snapshotted so profit reports never change retroactively; null = no cost was recorded
+  @Prop({ type: 'MinorMoney', default: null })
+  unitCostMinor?: number | null;
 
   @Prop({ type: Number, default: 0 })
   refundedQty: number;          // cumulative qty refunded from this line
+
+  // G3.2 (D4): the lots this line's units were taken from (FEFO), in the order taken — a return goes back to the SAME lots. Empty for variants that do not track lots.
+  @Prop({ type: [{ _id: false, lotId: String, lotNumber: String, qty: Number, expiryDate: { type: Date, default: null }, expired: { type: Boolean, default: false }, costPriceMinor: { type: 'MinorMoney', default: null } }], default: undefined })
+  lots?: Array<{ lotId: string; lotNumber: string; qty: number; expiryDate: Date | null; expired: boolean; costPriceMinor: number | null }>;
+
+  // G3.2: units of this line came from an expired lot (manager override online, or an offline sale whose goods had already left)
+  @Prop({ type: Boolean, default: false })
+  soldExpired?: boolean;
+
+  // G2.4 custom item: a line with no product — never touches stock; `taxCategory` 'exempt' = no tax on this line;
+  // `customApprovedBy` = the manager who approved it (or null when under the store's no-approval limit)
+  @Prop({ type: Boolean, default: false })
+  isCustom?: boolean;
+
+  @Prop({ type: String, enum: ['standard', 'exempt'], default: 'standard' })
+  taxCategory?: string;
+
+  @Prop({ type: String, default: null })
+  customApprovedBy?: string | null;
+
+  @Prop({ type: String, default: null })
+  note?: string | null;
+
+  // ── G2.5 per-line tax breakdown (minor units; Σ over the lines = the sale's discount / tax) and the PCT / HS code SNAPSHOT at sale time ──
+  @Prop({ type: 'MinorMoney' }) discountShareMinor?: number;
+  @Prop({ type: 'MinorMoney' }) netMinor?: number;
+  @Prop({ type: 'MinorMoney' }) taxMinor?: number;
+  @Prop({ type: String, default: null }) hsCode?: string | null;
+  // ── G4.5: the modifiers chosen on this line (their deltas are already in `price`) and the line's list/base price before them ──
+  @Prop({ type: [{ _id: false, groupId: String, groupName: String, optionId: String, name: String, priceDeltaMinor: { type: 'MinorMoney' } }], default: undefined }) modifiers?: Array<{ groupId: string; groupName: string; optionId: string; name: string; priceDeltaMinor: number }>;
+  @Prop({ type: 'MinorMoney' }) basePriceMinor?: number;
 }
 export const SaleItemSchema = SchemaFactory.createForClass(SaleItem);
 
 /** One tender taken for a sale. `amount` is what was APPLIED to the total (cash net of change). */
 @Schema({ _id: false })
 export class SalePayment {
-  @Prop({ enum: ['cash', 'card', 'other'], required: true })
+  @Prop({ enum: ['cash', 'card', 'other', 'raast_qr', 'store_credit'], required: true })
   method: string;
 
   @Prop({ type: Number, required: true })
   amount: number;
+  // G1b: integer minor-unit twins
+
+  @Prop({ type: 'MinorMoney' })
+  amountMinor?: number;
 
   // cash only — what the customer handed over; change = tendered − amount, stored once on the sale
   @Prop({ type: Number })
   tendered?: number;
 
+  @Prop({ type: 'MinorMoney' })
+  tenderedMinor?: number;
+
   // card auth code / bank transfer ref / etc.
   @Prop({ type: String, default: null })
   reference: string | null;
+
+  // digital tenders (raast_qr): the confirmed payment (payment_intents id) this line settles; `reference` holds the provider's reference
+  @Prop({ type: String, default: null })
+  intentId?: string | null;
 }
 export const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
 
@@ -67,12 +126,16 @@ export const SalePaymentSchema = SchemaFactory.createForClass(SalePayment);
 export class SaleRefund {
   @Prop({ type: Number, required: true })
   amount: number;
+  // G1b: integer minor-unit twin
+
+  @Prop({ type: 'MinorMoney' })
+  amountMinor?: number;
 
   @Prop({ enum: ['full', 'partial'], required: true })
   kind: string;
 
-  @Prop({ type: [{ _id: false, method: String, amount: Number }], default: [] })
-  tenders: Array<{ method: string; amount: number }>;
+  @Prop({ type: [{ _id: false, method: String, amount: Number, amountMinor: { type: 'MinorMoney' } }], default: [] })
+  tenders: Array<{ method: string; amount: number; amountMinor?: number }>;
 
   @Prop({ type: [{ _id: false, saleItemId: String, qty: Number }], default: [] })
   items: Array<{ saleItemId: string; qty: number }>;
@@ -88,11 +151,49 @@ export class SaleRefund {
 
   @Prop({ type: Date, default: () => new Date() })
   createdAt: Date;
+
+  // G1a: id of this refund's own PosRefund record (additive; absent on refunds that predate the backfill).
+  @Prop({ type: String, default: null })
+  refundId?: string | null;
 }
 export const SaleRefundSchema = SchemaFactory.createForClass(SaleRefund);
 
+/** The tax invoice header of a completed sale: immutable number + seller snapshot + (empty) fiscal placeholders. */
+@Schema({ _id: false })
+export class SaleInvoice {
+  @Prop({ required: true }) number: string;            // INV-000123 — per-store, gap-free, never reused
+  @Prop({ type: Number, required: true }) seq: number;
+  @Prop({ type: Date, required: true }) issuedAt: Date; // the sale's own time (an offline sale keeps its device time)
+  @Prop({ type: String, default: null }) offlineRef: string | null; // the provisional OFF-… number the till printed before the sale synced
+  @Prop({ type: Object, default: null }) seller: { legalName: string | null; address: string | null; ntn: string | null; strn: string | null } | null;
+  @Prop({ type: Object, default: () => ({ status: 'not_enabled', externalInvoiceNumber: null, qrPayload: null, attempts: 0, lastError: null }) })
+  fiscal: { status: string; externalInvoiceNumber: string | null; qrPayload: string | null; attempts: number; lastError: string | null };
+}
+export const SaleInvoiceSchema = SchemaFactory.createForClass(SaleInvoice);
+
 @Schema({ timestamps: true })
 export class Sale {
+  /** G2.5 tax invoice (absent on a held sale — the number is minted when the sale completes — and on sales that predate G2.5) */
+  @Prop({ type: SaleInvoiceSchema, default: null })
+  invoice: SaleInvoice | null;
+
+  /**
+   * The provisional `OFF-<device>-<n>` number an offline till printed on the customer's receipt, sent when the sale syncs. A LOOKUP reference only:
+   * unique per store (partial index), searchable in Orders / Returns, never used for sequencing, never the invoice number.
+   */
+  @Prop({ type: String, default: null })
+  provisionalNumber: string | null;
+
+  /** G4.9: the customer's loyalty points balance right after this sale (from the ledger, in the sale's transaction). Set on sales made ONLINE with a
+   *  customer while loyalty is on; absent on older sales, walk-ins and offline replays (the receipt then shows points earned / redeemed). */
+  @Prop({ type: Number })
+  loyaltyBalanceAfterPoints?: number;
+
+  /** G2.4: a HELD sale remembers the coupon CODE the cashier had (not a reservation — nothing is counted or discounted until it is completed;
+   *  the code is checked again, server-side, when the sale is resumed / completed). */
+  @Prop({ type: String, default: null })
+  heldCouponCode: string | null;
+
   @Prop({ required: true })
   saleNumber: string;           // human-readable receipt number e.g. "POS-00001" — unique per store, see compound index below
 
@@ -118,15 +219,28 @@ export class Sale {
 
   @Prop({ type: Number, default: 0 })
   subtotal: number;
+  // G1b: integer minor-unit twin
+
+  @Prop({ type: 'MinorMoney' })
+  subtotalMinor?: number;
 
   @Prop({ type: Number, default: 0 })
   discount: number;
 
+  @Prop({ type: 'MinorMoney' })
+  discountMinor?: number;
+
   @Prop({ type: Number, default: 0 })
   tax: number;
 
+  @Prop({ type: 'MinorMoney' })
+  taxMinor?: number;
+
   @Prop({ type: Number, required: true })
   total: number;
+
+  @Prop({ type: 'MinorMoney' })
+  totalMinor?: number;
 
   // ── Currency snapshot (Phase 5B / D1) ─────────────────────────────────────────────────────────
   // The store's currency at the moment of sale and its ISO-4217 minor-unit exponent (JPY 0, USD/PKR 2,
@@ -146,12 +260,29 @@ export class Sale {
   @Prop({ type: Number, default: null })
   discountValue: number | null;
 
+  @Prop({ type: 'MinorMoney' })
+  discountValueMinor?: number;
+
   @Prop({ type: Number, default: null })
   taxRate: number | null;
 
   // 'split' when more than one tender was used. For old single-payment sales this is the only payment info.
-  @Prop({ enum: ['cash', 'card', 'other', 'split'], default: 'cash' })
+  @Prop({ enum: ['cash', 'card', 'other', 'raast_qr', 'store_credit', 'split'], default: 'cash' })
   paymentMethod: string;
+
+  // G2.4 digital receipt: an unguessable capability token (192 bits). `revokedAt` set = the link no longer works.
+  @Prop({ type: Object, default: null })
+  receipt?: { token: string; createdAt: Date; revokedAt: Date | null; revokedBy?: string | null } | null;
+
+  // G2.4 coupon (storefront Coupon model, POS channel): the code, its id, and the discount it gave (minor units)
+  @Prop({ type: String, default: null })
+  couponCode?: string | null;
+
+  @Prop({ type: String, default: null })
+  couponId?: string | null;
+
+  @Prop({ type: 'MinorMoney' })
+  couponDiscountMinor?: number;
 
   // Tender lines (empty for held sales and for sales made before split tender — see effectivePayments()).
   @Prop({ type: [SalePaymentSchema], default: [] })
@@ -160,6 +291,9 @@ export class Sale {
   // Cash handed back to the customer (computed server-side from the cash tendered).
   @Prop({ type: Number, default: 0 })
   changeGiven: number;
+
+  @Prop({ type: 'MinorMoney' })
+  changeGivenMinor?: number;
 
   // Snapshot of who rang it up, so a receipt can print a cashier name without another lookup.
   @Prop({ type: String, default: null })
@@ -214,8 +348,21 @@ export class Sale {
   @Prop({ type: Number, default: 0 })
   paymentShortfall: number;
 
+  @Prop({ type: 'MinorMoney' })
+  paymentShortfallMinor?: number;
+
+  /** G3.3: loyalty at the till — earned / redeemed points and what returns have reversed / restored since (see pos-loyalty.util.ts) */
+  @Prop({ type: Object, default: null })
+  loyalty?: { ledgerId: string; earnedPoints: number; earnSpendMinor: number; redeemedPoints: number; redeemValueMinor: number; reversedPoints: number; restoredPoints: number; refundedNetMinor: number } | null;
+
   @Prop({ type: String, default: null })
   customerId: string | null;
+
+  /** G4.5: the price book the sale was priced with (picked at checkout, or the customer's) and its name at the time */
+  @Prop({ type: String, default: null }) priceBookId?: string | null;
+  @Prop({ type: String, default: null }) priceBookName?: string | null;
+  /** G4.8: how many times this sale's receipt was reprinted (the receipt prints "REPRINT #n"); the events are in posreprintevents */
+  @Prop({ type: Number, default: 0 }) reprintCount?: number;
 
   @Prop({ default: 'Walk-in' })
   customerName: string;
@@ -226,8 +373,46 @@ export class Sale {
   @Prop({ type: Date, default: null })
   heldAt: Date | null;          // timestamp when sale was put on hold
 
-  @Prop({ enum: ['completed', 'held', 'refunded', 'voided', 'partially_refunded'], default: 'completed' })
+  @Prop({ enum: ['completed', 'held', 'refunded', 'voided', 'partially_refunded', 'discarded'], default: 'completed' })
   status: string;
+
+  // G1a transaction context — always set server-side (session / authenticated device), never read from the request body.
+  @Prop({ type: String, default: null })
+  shiftId: string | null;
+
+  @Prop({ type: String, default: null })
+  deviceId: string | null;
+
+  // G1a soft delete of a held sale (status 'discarded'). Rows with deletedAt set are excluded from every list.
+  @Prop({ type: Date, default: null })
+  deletedAt: Date | null;
+
+  @Prop({ type: String, default: null })
+  deletedBy: string | null;     // employeeId (PIN session) or the owner's seller id
+
+  @Prop({ type: String, default: null })
+  deleteReason: string | null;
+
+  @Prop({ type: String, default: null })
+  deleteReasonCode?: string | null;
+
+  @Prop({ type: String, default: null })
+  voidReason?: string | null;
+
+  @Prop({ type: String, default: null })
+  voidReasonCode?: string | null;
+
+  // set only by the G1a backfill so it can be reversed
+  @Prop({ type: Boolean })
+  shiftIdBackfilled?: boolean;
+
+  // G1b backfill markers (so `down` removes only what the backfill added; live dual-written rows never carry them)
+  @Prop({ type: Date })
+  minorBackfilledAt?: Date;
+
+  /** The currency/exponent snapshot was missing (pre-5B) and was inferred from the store's baseCurrency by the backfill. */
+  @Prop({ type: Boolean })
+  currencyInferred?: boolean;
 
   // No `default: null` — a `sparse` index only excludes documents where
   // the field is truly absent, not ones where it's explicitly `null`.
@@ -247,9 +432,32 @@ export class Sale {
 
   @Prop({ type: Number, default: 0 })
   refundedAmount: number;       // cumulative amount refunded (for partial refunds)
+
+  @Prop({ type: 'MinorMoney' })
+  refundedAmountMinor?: number;
 }
 
 export const SaleSchema = SchemaFactory.createForClass(Sale);
+// MinorMoney fields are stored as BSON long and read back through a getter: serialise documents with getters so JSON carries plain numbers.
+SaleSchema.set('toJSON', { getters: true, virtuals: false });
+SaleSchema.set('toObject', { getters: true, virtuals: false });
+
+// G2.5: the invoice number is unique per store and never reused (partial: held sales and pre-G2.5 sales have none)
+SaleSchema.index({ storeId: 1, 'invoice.seq': 1 }, { unique: true, partialFilterExpression: { 'invoice.seq': { $type: 'number' } }, name: 'uniq_invoice_seq_per_store' });
+SaleSchema.index({ storeId: 1, provisionalNumber: 1 }, { unique: true, partialFilterExpression: { provisionalNumber: { $type: 'string' } }, name: 'uniq_provisional_number_per_store' });
+SaleSchema.index({ storeId: 1, 'invoice.number': 1 }, { unique: true, partialFilterExpression: { 'invoice.number': { $type: 'string' } }, name: 'uniq_invoice_number_per_store' });
+
+// G2.5: an invoice number, once written, is immutable. The only update that may set `invoice` is the one that first issues it
+// (its filter asks for `invoice.number: null` — i.e. the sale does not have one yet); every other update touching it is refused.
+const INVOICE_KEYS = /^invoice(\.|$)/;
+SaleSchema.pre(['updateOne', 'updateMany', 'findOneAndUpdate'] as any, function (this: any) {
+  const u = this.getUpdate?.() ?? {};
+  const keys = [...Object.keys(u.$set ?? {}), ...Object.keys(u.$unset ?? {}), ...Object.keys(u).filter((k) => !k.startsWith('$'))];
+  if (!keys.some((k) => INVOICE_KEYS.test(k))) return;
+  const f = this.getFilter?.() ?? {};
+  const issuing = Object.prototype.hasOwnProperty.call(f, 'invoice.number') && (f['invoice.number'] === null || (f['invoice.number'] && f['invoice.number'].$exists === false));
+  if (!issuing) throw new Error('The invoice of a sale is immutable: it can only be issued once, never changed');
+});
 
 SaleSchema.index({ storeId: 1, createdAt: -1 });
 SaleSchema.index({ storeId: 1, status: 1 });
@@ -264,3 +472,5 @@ SaleSchema.index({ 'items.variantId': 1 });
 // sales on a retried checkout. See PosService.createSale's duplicate-key
 // catch, which now relies on this constraint to detect that race.
 SaleSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true });
+// the public receipt page looks a sale up by its token (unique; only sales that have one are indexed)
+SaleSchema.index({ 'receipt.token': 1 }, { unique: true, partialFilterExpression: { 'receipt.token': { $type: 'string' } } });

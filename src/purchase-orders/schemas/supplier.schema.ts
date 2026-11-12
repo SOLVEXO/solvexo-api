@@ -26,8 +26,13 @@ export class Supplier {
   /** Free text such as "Net 30" or "Cash on delivery". */
   @Prop({ type: String, default: null }) paymentTerms: string | null;
   @Prop({ type: String, default: null }) notes: string | null;
+  /** G3.4: tax numbers of the supplier (both optional — a small vendor may have none) */
+  @Prop({ type: String, default: null }) ntn: string | null;
+  @Prop({ type: String, default: null }) strn: string | null;
 
   @Prop({ type: String, enum: ['active', 'archived'], default: 'active' }) status: 'active' | 'archived';
+  /** bumped at the start of a payment transaction so two payments for one supplier serialize (and cannot both spend the same balance) */
+  @Prop({ type: Number, default: 0 }) ledgerRev: number;
   @Prop({ default: false }) isDelete: boolean;
 }
 

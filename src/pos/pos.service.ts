@@ -1,5 +1,11 @@
 /* eslint-disable prettier/prettier */
+import { offlineLinkBaseOf } from './pos-receipt-link.util';
+import { localDay, localHour, localKey, localRange } from './pos-day.util';
+import { bookActive, ModifierGroup, modifierSuffix, priceLine } from './pos-pricing.util';
+import { resolveStoreTimeZone } from '../common/store-timezone.util';
 import {
+  forwardRef,
+  Inject,
   Injectable,
   Optional,
   HttpException,
@@ -9,12 +15,21 @@ import {
   ForbiddenException,
   ConflictException,
 } from '@nestjs/common';
-import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
+import { availableStock, AVAILABLE_STOCK_EXPR, AVAILABLE_STOCK_INCL_EXPIRED_EXPR, expiredUnits } from '@/common/stock-availability.util';
+import { allocateLotsFefo, restoreToLots, returnPartsFor, LotAllocation } from '@/common/lot-allocation.util';
 import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
-import { Types } from 'mongoose';
+import { ClientSession, Types } from 'mongoose';
+import { Long } from 'mongodb';
+import { checkMinorPairs, isoExponent, MinorMismatch } from '@/common/money-minor.util';
+import { PosMinorMetrics } from './pos-minor-metrics';
+import { normalizeReason } from './pos-reasons';
+import { PosCustomerCore } from './pos-customer-core.service';
+import { earnPoints, pointsToReverse, pointsToRestore, redeemValueMinor } from './pos-loyalty.util';
+import { resolveLimits } from './pos-permissions.config';
 import { searchStoreCustomers } from '@/common/store-customer-search.util';
+import { PaymentsCoreService } from '@/payments-core/payments-core.service';
 import {
-  allocateRefund, assertClientTotal, byTender, computeTotals, DiscountType, effectivePayments, exponentOf, fromMinor,
+  allocateRefund, assertClientTotal, byTender, computeTotals, digitalRefundPlan, DiscountType, effectivePayments, exponentOf, fromMinor, isDigitalTender,
   moneyError, partialRefundAmount, roundMoney, settlePayments, tenderNets, toMinor, Totals,
 } from './pos-money.util';
 import { CLOCK_SKEW_MS, offlineWindowMs, parseOffline } from './pos-offline.util';
@@ -46,6 +61,7 @@ import { ResetPinDto } from './dto/reset-pin.dto';
 import { UpdateSaleItemsDto } from './dto/update-sale-items.dto';
 import { UpdatePosSettingsDto } from './dto/update-pos-settings.dto';
 import { QuoteSaleDto } from './dto/quote-sale.dto';
+import { CREDIT_NOTE_PREFIX, INVOICE_PREFIX, daysBetween, formatDocNumber, lineBreakdown, returnApprovalReasons, returnLineAmounts } from './pos-documents.util';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { FinanceService } from '@/finance/finance.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
@@ -73,6 +89,10 @@ export class PosService {
     private readonly financeService: FinanceService,
     // optional so unit tests that build the service by hand keep working (no revocation list → nothing revoked)
     @Optional() private readonly revocations?: PosTokenRevocationService,
+    // G2.3: digital (Raast QR) payments. Optional for the same reason; a sale with a QR line is refused when it is absent.
+    @Optional() @Inject(forwardRef(() => PaymentsCoreService)) private readonly payments?: PaymentsCoreService,
+    // G3.3: customers / store credit / loyalty at the till. Optional for the same reason; without it a store-credit tender or points redemption is refused.
+    @Optional() private readonly customers?: PosCustomerCore,
   ) {}
 
   private get r() {
@@ -114,7 +134,14 @@ export class PosService {
 
   // ── HELPERS ───────────────────────────────────────────────────────────────
 
-  private async verifyStoreOwnership(storeId: string, sellerId: string) {
+  /** G4.0: the store's time zone (its own setting, else its country's only zone, else UTC) — every day boundary uses it. */
+  async storeTz(storeId: string | null | undefined): Promise<string> {
+    if (!storeId) return 'UTC';
+    const st: any = await this.r.storeModel.findById(storeId).select('timezone country').lean().catch(() => null);
+    return resolveStoreTimeZone(st);
+  }
+
+  async verifyStoreOwnership(storeId: string, sellerId: string) {
     // A POS device is bound to ONE store: whatever route/id it came in through, any other store is off limits.
     const scope = currentDeviceScope();
     if (scope && String(storeId) !== scope.storeId) {
@@ -137,7 +164,7 @@ export class PosService {
   // employee's _id/role via GET /pos/employees/:storeId and just pass one
   // through). This is the actual employee currently PIN-logged-in on the
   // device, proven by a signature only the server could have issued.
-  private async verifyEmployeeToken(token: string | undefined, storeId: string, at?: Date): Promise<{ employeeId: string; role: string; jti?: string } | null> {
+  async verifyEmployeeToken(token: string | undefined, storeId: string, at?: Date): Promise<{ employeeId: string; role: string; jti?: string } | null> {
     if (!token) return null;
     try {
       // For an offline sale replayed later, the token may have expired since — what matters is that it was a valid,
@@ -161,7 +188,7 @@ export class PosService {
   // by every privileged action (refund, void, cash in/out, discounts).
   // Mandatory, unlike the old actingEmployeeId check it replaces: there is
   // no "skip the check if the field is omitted" path anymore.
-  private async requireManagerEmployee(token: string | undefined, storeId: string, actionLabel: string, at?: Date): Promise<{ employeeId: string; role: string }> {
+  async requireManagerEmployee(token: string | undefined, storeId: string, actionLabel: string, at?: Date): Promise<{ employeeId: string; role: string }> {
     const actor = await this.verifyEmployeeToken(token, storeId, at);
     if (!actor) throw new ForbiddenException(`A valid employee PIN session is required to ${actionLabel}`);
     if (actor.role !== 'manager') throw new ForbiddenException(`Only managers can ${actionLabel}`);
@@ -326,7 +353,7 @@ export class PosService {
         );
         // A locked-out employee must not be able to keep working on a session opened before the lock.
         await this.revocations?.revokeEmployee(String(employee._id));
-        this.writeAuditLog({ storeId: dto.storeId, employeeId: String(employee._id), action: 'pin_locked', targetId: String(employee._id), targetType: 'employee' }).catch(() => {});
+        await this.writeAuditLog({ storeId: dto.storeId, employeeId: String(employee._id), action: 'pin_locked', targetId: String(employee._id), targetType: 'employee' });
       }
       throw new BadRequestException('Invalid credentials');
     }
@@ -355,7 +382,7 @@ export class PosService {
     );
     await this.revocations?.clearPinFailures(rlKey);
 
-    this.writeAuditLog({ storeId: dto.storeId, employeeId: String(employee._id), action: 'pin_login', targetId: String(employee._id), targetType: 'employee' }).catch(() => {});
+    await this.writeAuditLog({ storeId: dto.storeId, employeeId: String(employee._id), action: 'pin_login', targetId: String(employee._id), targetType: 'employee' });
 
     return {
       success: true,
@@ -373,7 +400,7 @@ export class PosService {
     const actor = await this.verifyEmployeeToken(employeeToken, storeId);
     if (actor) {
       await this.revocations?.revokeToken(actor.jti); // the 12h token stops working server-side, not just on this device
-      this.writeAuditLog({ storeId, employeeId: actor.employeeId, action: 'pin_logout', targetId: actor.employeeId, targetType: 'employee' }).catch(() => {});
+      await this.writeAuditLog({ storeId, employeeId: actor.employeeId, action: 'pin_logout', targetId: actor.employeeId, targetType: 'employee' });
     }
     return { success: true, message: 'Logged out' };
   }
@@ -387,9 +414,11 @@ export class PosService {
     const store: any = await this.r.storeModel.findById(storeId).select('registers').lean();
     await assertWithinPosPlanLimit(this.r, storeId, 'registers', (store?.registers ?? []).filter((x: any) => x.status !== 'inactive').length);
 
+    const regExp = isoExponent(store?.baseCurrency ?? (await this.r.storeModel.findById(storeId).select('baseCurrency').lean() as any)?.baseCurrency);
+    const floatCash = body.defaultFloatCash ?? 100;
     const updated = await this.r.storeModel.findByIdAndUpdate(
       storeId,
-      { $push: { registers: { name: body.name, defaultFloatCash: body.defaultFloatCash ?? 100, status: 'active', locationId: body.locationId ?? null } } },
+      { $push: { registers: { name: body.name, defaultFloatCash: floatCash, defaultFloatCashMinor: toMinor(floatCash, regExp), status: 'active', locationId: body.locationId ?? null } } },
       { new: true },
     );
 
@@ -494,6 +523,8 @@ export class PosService {
       variants: (variantMap[p._id.toString()] || []).map((v: any) => ({
         variantId: v._id,
         sku: v.sku,
+        barcode: v.barcode ?? null, // lets the till find a scanned item in its own catalogue (no round trip)
+        hsCode: v.hsCode ?? null,
         price: v.price,
         compareAtPrice: v.compareAtPrice,
         stock: v.stock,
@@ -546,6 +577,8 @@ export class PosService {
       variants: (variantMap[p._id.toString()] || []).map((v: any) => ({
         variantId: v._id,
         sku: v.sku,
+        barcode: v.barcode ?? null, // lets the till find a scanned item in its own catalogue (no round trip)
+        hsCode: v.hsCode ?? null,
         price: v.price,
         compareAtPrice: v.compareAtPrice,
         stock: v.stock,
@@ -586,9 +619,11 @@ export class PosService {
     // The check above gives a friendly message; the unique partial index on (registerId, status:'open')
     // is what actually guarantees one open session per register when two terminals open at once.
     const sessionMoney = await this.moneyContext(dto.storeId);
+    const openingDenoms = this.denominationsOf(dto.denominations, toMinor(dto.openingCash, sessionMoney.exp), 'openingCash');
     let session: any;
     try {
       session = await this.r.registerSessionModel.create({
+        ...(openingDenoms ? { openingDenominations: openingDenoms } : {}),
         storeId: dto.storeId,
         registerId: dto.registerId,
         currency: sessionMoney.currency,
@@ -598,6 +633,9 @@ export class PosService {
         shiftId: dto.shiftId ?? null,
         openedAt: new Date(),
         openingCash: roundMoney(dto.openingCash, sessionMoney.exp),
+        openingCashMinor: toMinor(dto.openingCash, sessionMoney.exp),
+        // counters start at 0 in both forms
+        cashSalesMinor: 0, cardSalesMinor: 0, otherSalesMinor: 0, digitalSalesMinor: 0, totalSalesMinor: 0, totalRefundsMinor: 0,
         status: 'open',
       });
     } catch (err: any) {
@@ -605,12 +643,36 @@ export class PosService {
       throw err;
     }
 
-    this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'session_opened', targetId: String(session._id), targetType: 'session', metadata: { registerId: dto.registerId, openingCash: dto.openingCash } }).catch(() => {});
+    await this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'session_opened', targetId: String(session._id), targetType: 'session', metadata: { registerId: dto.registerId, openingCash: dto.openingCash } });
 
     return { success: true, message: 'Register session opened', data: session };
   }
 
-  async closeSession(sellerId: string, dto: CloseSessionDto) {
+  /** G4.6: notes / coins → the stored breakdown, refusing a count whose total is not the amount typed (the money is the money). */
+  private denominationsOf(list: Array<{ valueMinor: number; count: number }> | undefined, totalMinor: number, field: string) {
+    if (!list || !list.length) return null;
+    const seen = new Set<number>();
+    const rows = list.filter((d) => d.count > 0).map((d) => { if (seen.has(d.valueMinor)) throw moneyError('DENOMINATION_TWICE', 'The same note / coin appears twice'); seen.add(d.valueMinor); return { valueMinor: d.valueMinor, count: d.count }; });
+    const sum = rows.reduce((n, d) => n + d.valueMinor * d.count, 0);
+    if (sum !== totalMinor) throw moneyError('DENOMINATION_MISMATCH', `The notes and coins add up to a different amount than ${field}`, { countedMinor: sum, amountMinor: totalMinor });
+    return rows.sort((a, b) => b.valueMinor - a.valueMinor);
+  }
+
+  /** G4.6: what the last CLOSED shift of a register left behind — shown when the next shift opens (counted, expected, variance, who, when). */
+  async lastClose(sellerId: string, storeId: string, registerId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const { currency, exp } = await this.moneyContext(storeId);
+    const s: any = await this.r.registerSessionModel.findOne({ storeId, registerId, status: 'closed' }).sort({ closedAt: -1 }).lean();
+    if (!s) return { success: true, data: { currency, currencyExponent: exp, lastClose: null } };
+    const emp: any = s.closedBy || s.employeeId ? await this.r.employeeModel.findById(s.closedBy ?? s.employeeId).select('name').lean().catch(() => null) : null;
+    return { success: true, data: { currency, currencyExponent: exp, lastClose: {
+      sessionId: String(s._id), closedAt: s.closedAt ?? null, closedByName: emp?.name ?? null,
+      countedMinor: s.closingCashMinor ?? (s.closingCash != null ? toMinor(s.closingCash, exp) : null), expectedMinor: s.expectedCashMinor ?? (s.expectedCash != null ? toMinor(s.expectedCash, exp) : null),
+      varianceMinor: s.cashDifferenceMinor ?? (s.cashDifference != null ? toMinor(s.cashDifference, exp) : null), denominations: s.closingDenominations ?? null, forced: s.forceClosed === true,
+    } } };
+  }
+
+  async closeSession(sellerId: string, dto: CloseSessionDto, employeeToken?: string) {
     const session = await this.r.registerSessionModel.findOne({ _id: dto.sessionId, status: 'open' });
     if (!session) throw new NotFoundException('Open session not found');
 
@@ -625,16 +687,54 @@ export class PosService {
     const expectedCash = roundMoney(session.openingCash + session.cashSales + cashIn - cashOut, closeExp);
     const closingCash = roundMoney(dto.closingCash, closeExp);
     const cashDifference = roundMoney(closingCash - expectedCash, closeExp);
+    const expectedCashMinor = toMinor(expectedCash, closeExp);
+    const closingCashMinor = toMinor(closingCash, closeExp);
+    const closingDenoms = this.denominationsOf((dto as any).denominations, closingCashMinor, 'closingCash'); // G4.6
 
-    // status-guarded so two close requests (retry / two terminals) can't both close and double-audit
-    const updated = await this.r.registerSessionModel.findOneAndUpdate(
-      { _id: dto.sessionId, status: 'open' },
-      { $set: { closingCash, expectedCash, cashDifference, closedAt: new Date(), status: 'closed' } },
-      { new: true },
-    );
+    // Card reconciliation (D2): card payments are only RECORDED by the cashier, so at close the cashier enters the card total
+    // printed on the terminal's settlement slip. Server compares it with the card total the till recorded (net of refunds).
+    // No slip total (old app build / skipped) → closes exactly as before, marked "not reconciled". A DIFFERENCE needs a manager
+    // PIN session and is audit-logged; nothing is closed without it.
+    const expectedCard = roundMoney((session as any).cardSales || 0, closeExp);
+    const expectedCardMinor = toMinor(expectedCard, closeExp);
+    let cardRecon: any = { status: 'not_reconciled', slipTotal: null, expectedCard, expectedCardMinor, variance: null, approvedBy: null, approvedAt: null };
+    let varianceApprover: { employeeId: string; role: string } | null = null;
+    if (dto.cardTotalFromSlip !== undefined && dto.cardTotalFromSlip !== null) {
+      const slipTotal = roundMoney(dto.cardTotalFromSlip, closeExp);
+      const variance = roundMoney(slipTotal - expectedCard, closeExp);
+      if (variance === 0) {
+        cardRecon = { status: 'matched', slipTotal, expectedCard, slipTotalMinor: toMinor(slipTotal, closeExp), expectedCardMinor, variance: 0, varianceMinor: 0, approvedBy: null, approvedAt: null };
+      } else {
+        varianceApprover = await this.verifyEmployeeToken(employeeToken, (session as any).storeId);
+        if (!varianceApprover || varianceApprover.role !== 'manager') {
+          throw new ForbiddenException({
+            statusCode: 403, code: 'CARD_VARIANCE_APPROVAL_REQUIRED',
+            message: 'The card total on the slip differs from the card total recorded at the till — a manager must approve closing the shift with this difference',
+            slipTotal, expectedCard, variance,
+          });
+        }
+        cardRecon = { status: 'variance_approved', slipTotal, expectedCard, slipTotalMinor: toMinor(slipTotal, closeExp), expectedCardMinor, variance, varianceMinor: toMinor(slipTotal, closeExp) - expectedCardMinor, approvedBy: varianceApprover.employeeId, approvedAt: new Date() };
+      }
+    }
+
+    // status-guarded so two close requests (retry / two terminals) can't both close and double-audit; the close, the card
+    // reconciliation and its audit events commit together
+    const sessCtx = { sessionId: dto.sessionId, registerId: (session as any).registerId ?? null, shiftId: (session as any).shiftId ?? null };
+    const updated = await this.atomic(async (tx) => {
+      const u = await this.r.registerSessionModel.findOneAndUpdate(
+        { _id: dto.sessionId, status: 'open' },
+        { $set: { closingCash, closingCashMinor, expectedCash, expectedCashMinor, cashDifference, cashDifferenceMinor: closingCashMinor - expectedCashMinor, closedAt: new Date(), status: 'closed', cardReconciliation: cardRecon, ...(closingDenoms ? { closingDenominations: closingDenoms } : {}) } },
+        { new: true, ...(tx ? { session: tx } : {}) },
+      );
+      if (!u) return null;
+      await this.writeAuditLog({ storeId: (session as any).storeId, employeeId: (session as any).employeeId, action: 'session_closed', targetId: dto.sessionId, targetType: 'session', ...sessCtx, metadata: { closingCash, expectedCash, cashDifference, cardReconciliation: { status: cardRecon.status, slipTotal: cardRecon.slipTotal, expectedCard: cardRecon.expectedCard, variance: cardRecon.variance } } }, tx);
+      if (varianceApprover) {
+        await this.writeAuditLog({ storeId: (session as any).storeId, employeeId: varianceApprover.employeeId, action: 'card_variance_approved', targetId: dto.sessionId, targetType: 'session', ...sessCtx, metadata: { slipTotal: cardRecon.slipTotal, expectedCard: cardRecon.expectedCard, variance: cardRecon.variance, cashierId: (session as any).employeeId } }, tx);
+      }
+      return u;
+    });
     if (!updated) throw businessConflict('SESSION_ALREADY_CLOSED', 'This session was already closed');
-
-    this.writeAuditLog({ storeId: (session as any).storeId, employeeId: (session as any).employeeId, action: 'session_closed', targetId: dto.sessionId, targetType: 'session', metadata: { closingCash, expectedCash, cashDifference } }).catch(() => {});
+    await this.checkMinor('session', updated, closeExp);
 
     return { success: true, message: 'Register session closed', data: updated };
   }
@@ -662,11 +762,7 @@ export class PosService {
     if (query.registerId) filter.registerId = query.registerId;
     if (query.employeeId) filter.employeeId = query.employeeId;
     if (query.status) filter.status = query.status;
-    if (query.from || query.to) {
-      filter.createdAt = {};
-      if (query.from) filter.createdAt.$gte = new Date(query.from);
-      if (query.to) { const t = new Date(query.to); t.setHours(23, 59, 59, 999); filter.createdAt.$lte = t; }
-    }
+    if (query.from || query.to) filter.createdAt = localRange(query.from, query.to, await this.storeTz(query.storeId ?? filter.storeId));
 
     const total = await this.r.registerSessionModel.countDocuments(filter);
     const sessions = await this.r.registerSessionModel
@@ -707,8 +803,9 @@ export class PosService {
       const nets = tenderNets(sale as any, exp);
       const used = effectivePayments(sale as any);
       if (new Set(used.map((l) => l.method)).size > 1) splitSales++;
-      for (const method of ['cash', 'card', 'other'] as const) {
+      for (const method of ['cash', 'card', 'other', 'raast_qr', 'store_credit'] as const) {
         if (used.some((l) => l.method === method)) {
+          byPayment[method] ??= { count: 0, total: 0 }; // raast_qr appears only for stores that sell with it
           byPayment[method].count++;
           byPayment[method].total = roundMoney(byPayment[method].total + nets[method], exp);
         }
@@ -732,9 +829,13 @@ export class PosService {
           completedSales: sales.length,
           heldSales: held,
           splitSales,
+          customItems: this.customItemsSummary(sales, exp),
           refundsCount: refunded.length + sales.filter((r: any) => (r.refundedAmount || 0) > 0).length,
           refundsTotal,
-          byPaymentMethod: byPayment,
+          // G1b minor twins (from the shift's own integer counters when present, else derived from the decimals)
+          totalSalesMinor: (session as any).totalSalesMinor ?? toMinor((session as any).totalSales || 0, exp),
+          refundsTotalMinor: toMinor(refundsTotal, exp),
+          byPaymentMethod: Object.fromEntries(Object.entries(byPayment).map(([k, v]) => [k, { ...v, totalMinor: toMinor(v.total, exp) }])), // G1b minor twin per tender
           cashFlow: {
             openingCash: (session as any).openingCash,
             cashSales: (session as any).cashSales,
@@ -743,6 +844,13 @@ export class PosService {
             expectedCash: (session as any).expectedCash,
             closingCash: (session as any).closingCash ?? null,
             cashDifference: (session as any).cashDifference,
+            openingCashMinor: (session as any).openingCashMinor ?? toMinor((session as any).openingCash || 0, exp),
+            cashSalesMinor: (session as any).cashSalesMinor ?? toMinor((session as any).cashSales || 0, exp),
+            cashInMinor: toMinor(cashIn, exp),
+            cashOutMinor: toMinor(cashOut, exp),
+            expectedCashMinor: (session as any).expectedCashMinor ?? toMinor((session as any).expectedCash || 0, exp),
+            closingCashMinor: (session as any).closingCash === null || (session as any).closingCash === undefined ? null : ((session as any).closingCashMinor ?? toMinor((session as any).closingCash, exp)),
+            cashDifferenceMinor: (session as any).cashDifferenceMinor ?? toMinor((session as any).cashDifference || 0, exp),
           },
         },
       },
@@ -760,14 +868,12 @@ export class PosService {
     const actor = await this.requireManagerEmployee(employeeToken, (session as any).storeId, 'record cash movements');
 
     const { exp: adjExp } = await this.docMoney(session);
-    const adjustment = { type: dto.type, amount: roundMoney(dto.amount, adjExp), reason: dto.reason, employeeId: actor.employeeId, createdAt: new Date() };
+    const adjustment = { type: dto.type, amount: roundMoney(dto.amount, adjExp), amountMinor: toMinor(dto.amount, adjExp), reason: dto.reason, employeeId: actor.employeeId, createdAt: new Date() };
 
-    await this.r.registerSessionModel.findByIdAndUpdate(
-      sessionId,
-      { $push: { cashAdjustments: adjustment } },
-    );
-
-    this.writeAuditLog({ storeId: (session as any).storeId, employeeId: actor.employeeId, action: dto.type, targetId: sessionId, targetType: 'session', metadata: { amount: dto.amount, reason: dto.reason } }).catch(() => {});
+    await this.atomic(async (tx) => {
+      await this.r.registerSessionModel.findByIdAndUpdate(sessionId, { $push: { cashAdjustments: adjustment } }, tx ? { session: tx } : undefined);
+      await this.writeAuditLog({ storeId: (session as any).storeId, employeeId: actor.employeeId, action: dto.type, targetId: sessionId, targetType: 'session', sessionId, registerId: (session as any).registerId ?? null, shiftId: (session as any).shiftId ?? null, metadata: { amount: dto.amount, reason: dto.reason } }, tx);
+    });
 
     return {
       success: true,
@@ -777,6 +883,43 @@ export class PosService {
   }
 
   // ── SALES ─────────────────────────────────────────────────────────────────
+
+  // ── G4.5: price books + modifiers ─────────────────────────────────────────────────────────────────────────
+  /** Which price book prices this sale (an explicit one must exist and be in force; else the customer's, if in force) and the modifier groups of the cart's products. */
+  private async pricingContext(storeId: string, dto: { priceBookId?: string | null; customerId?: string | null; items: any[] }, at: Date, strict: boolean) {
+    const books: any = (this.r as any).posPriceBookModel; const groupsModel: any = (this.r as any).posModifierGroupModel;
+    let book: any = null;
+    if (dto.priceBookId) {
+      book = books && Types.ObjectId.isValid(dto.priceBookId) ? await books.findOne({ _id: dto.priceBookId, storeId }).lean() : null;
+      if (!bookActive(book, at)) { if (strict) throw moneyError('PRICE_BOOK_NOT_ACTIVE', 'That price book is not available now'); book = null; }
+    } else if (dto.customerId && books && Types.ObjectId.isValid(dto.customerId)) {
+      const c: any = await (this.r as any).posCustomerModel?.findOne({ _id: dto.customerId, storeId }).select('priceBookId').lean();
+      if (c?.priceBookId && Types.ObjectId.isValid(c.priceBookId)) { const b = await books.findOne({ _id: c.priceBookId, storeId }).lean(); if (bookActive(b, at)) book = b; }
+    }
+    const productIds = [...new Set(dto.items.filter((i: any) => !i.isCustom && i.productId).map((i: any) => String(i.productId)))];
+    const groups: any[] = groupsModel && productIds.length ? await groupsModel.find({ storeId, active: true, productIds: { $in: productIds } }).sort({ sortOrder: 1, _id: 1 }).lean() : [];
+    const groupsOf = (productId: string): ModifierGroup[] => groups.filter((g) => (g.productIds ?? []).includes(productId)).map((g) => ({ id: String(g._id), name: g.name, minSelect: g.minSelect ?? 0, maxSelect: g.maxSelect ?? 1, active: g.active !== false, options: (g.options ?? []).map((o: any) => ({ id: String(o._id), name: o.name, priceDeltaMinor: Number(o.priceDeltaMinor ?? 0), active: o.active !== false })) }));
+    const bookPrice = new Map<string, number>((book?.entries ?? []).map((e: any) => [String(e.variantId), Number(e.priceMinor)]));
+    return { book, groupsOf, bookPrice };
+  }
+  /** The server's unit price of one line (book + modifiers), or a 400 with the modifier rule that was broken. */
+  private priceOneLine(ctx: Awaited<ReturnType<PosService['pricingContext']>>, item: any, variant: any, exp: number, strict: boolean) {
+    const res = priceLine({ listPriceMinor: toMinor(variant.price, exp), bookPriceMinor: ctx.bookPrice.get(String(item.variantId)) ?? null, groups: ctx.groupsOf(String(item.productId)), choices: item.modifiers ?? null });
+    if (!res.ok) { if (strict) throw moneyError(res.error.code, res.error.message); return null; }
+    return res;
+  }
+  /** The major-unit price a line records: a book price is already whole minor units; otherwise the variant's EXACT list price (possibly sub-minor, so
+   *  lineTotalMinor = toMinor(price × qty) stays authoritative) plus the modifier deltas. */
+  private pricedMajor(priced: { fromBook: boolean; unitPriceMinor: number; modifiers: { priceDeltaMinor: number }[] } | null, listPrice: number, exp: number): number {
+    if (!priced) return listPrice;
+    if (priced.fromBook) return fromMinor(priced.unitPriceMinor, exp);
+    const deltas = priced.modifiers.reduce((n, m) => n + m.priceDeltaMinor, 0);
+    return deltas ? listPrice + fromMinor(deltas, exp) : listPrice;
+  }
+  private async storeExponent(storeId: string): Promise<number> {
+    const st: any = await this.r.storeModel.findById(storeId).select('baseCurrency').lean();
+    return isoExponent(st?.baseCurrency);
+  }
 
   /** Was `charged` a genuine price of the variant while an offline sale made at `at` was being rung up? */
   private async isGenuineOfflinePrice(variantId: string, current: number, charged: number, at: Date): Promise<boolean> {
@@ -789,7 +932,7 @@ export class PosService {
     return rows.some((r) => same(Number(r.price), charged));
   }
 
-  async createSale(sellerId: string, dto: CreateSaleDto, employeeToken: string | undefined) {
+  async createSale(sellerId: string, dto: CreateSaleDto, employeeToken: string | undefined, opts: { expiredApproval?: { employeeId: string; role: string } } = {}) {
     await this.verifyStoreOwnership(dto.storeId, sellerId);
 
     if (dto.idempotencyKey) {
@@ -824,7 +967,8 @@ export class PosService {
     // A discount requires a verified manager — the mobile UI already keeps
     // cashiers from entering one; this is the server-side backstop for
     // direct API calls. See requireManagerEmployee's doc comment.
-    const discountReq = this.discountSpec(dto);
+    let discountReq = this.discountSpec(dto);
+    if (dto.couponCode && discountReq.value > 0) throw moneyError('COUPON_WITH_DISCOUNT', 'A coupon and a manual discount cannot be combined on one sale');
     let approver: { employeeId: string; role: string } | null = null;
     if (discountReq.value > 0) {
       approver = await this.requireManagerEmployee(employeeToken, dto.storeId, 'apply a discount', off.isOffline ? off.at : undefined);
@@ -840,43 +984,59 @@ export class PosService {
     // resolve items — fetch variant snapshots + check stock
     const saleItems: any[] = [];
     const isHeld = dto.status === 'held';
+    // G4.5: price book + modifiers (an offline replay is never refused for them: the till's price is recorded and judged below)
+    const pexp = await this.storeExponent(dto.storeId);
+    const pctx = await this.pricingContext(dto.storeId, dto as any, off.isOffline ? off.at : new Date(), !off.isOffline);
 
     for (const item of dto.items) {
+      if (item.isCustom) { saleItems.push(this.customLine(item, await this.defaultTaxCategory(dto.storeId))); continue; }
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
 
       // Checked against `stock - committedStock` (real availability), not
       // raw `stock` — some of it may already be reserved by a paid-but-
       // unshipped online order (see ProductVariant.committedStock).
-      const availableForPos = availableStock(variant as any);
+      // G3.2: a manager-approved "sell the expired units" counts them as available for THIS line (the controller verified the approval; offline sales are never blocked)
+      const availableForPos = availableStock(variant as any) + (item.sellExpired && !off.isOffline ? expiredUnits(variant as any) : 0);
       if (!isHeld && !off.isOffline && !variant.unlimitedStock && availableForPos < item.qty) {
         throw new BadRequestException(`Insufficient stock for "${variant.sku}" — available: ${availableForPos}`);
       }
+      if (item.sellExpired && !off.isOffline && !opts.expiredApproval) throw new ForbiddenException({ statusCode: 403, code: 'EXPIRED_LOT_APPROVAL_REQUIRED', message: 'Selling expired stock needs a manager' });
 
       const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name gallery coverImages');
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
 
       // Offline replay: the till collected `unitPrice`. Record THAT (money in the drawer must equal the sale) and judge it:
       // genuine = the variant's current price, or one it had since the sale was made (variant price history).
-      let charged = variant.price;
+      const priced = this.priceOneLine(pctx, item, variant, pexp, !off.isOffline);
+      let charged = this.pricedMajor(priced, variant.price, pexp);
       let listPrice: number | null = null;
       let priceVerified = true;
       if (off.isOffline && item.unitPrice !== undefined && item.unitPrice !== null) {
+        const expected = charged;
         charged = item.unitPrice;
-        listPrice = variant.price;
-        priceVerified = await this.isGenuineOfflinePrice(item.variantId, variant.price, item.unitPrice, off.at);
+        listPrice = expected;
+        const deltas = priced ? priced.modifiers.reduce((n, m) => n + m.priceDeltaMinor, 0) : 0;
+        priceVerified = toMinor(item.unitPrice, pexp) === toMinor(expected, pexp) || await this.isGenuineOfflinePrice(item.variantId, variant.price, fromMinor(toMinor(item.unitPrice, pexp) - deltas, pexp), off.at);
       }
 
       saleItems.push({
         productId: item.productId,
         variantId: item.variantId,
-        name: `${product.name}${formatOptionsSuffix(variant.options)}`,
+        name: `${product.name}${formatOptionsSuffix(variant.options)}${modifierSuffix(priced?.modifiers ?? [])}`,
         sku: variant.sku,
         image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
         price: charged,
+        ...(priced && (priced.modifiers.length || priced.fromBook) ? { modifiers: priced.modifiers.length ? priced.modifiers : undefined, basePriceMinor: priced.baseMinor } : {}),
         listPrice,
         priceVerified,
         qty: item.qty,
+        hsCode: (variant as any).hsCode ?? null, // G2.5: PCT/HS code snapshot at sale time
+        // G3.1 (D5): the cost at the moment of sale — the minor twin when the variant has one, else its decimal converted below (once the currency exponent is known)
+        unitCostMinor: (variant as any).costPriceMinor ?? null,
+        _costDecimal: (variant as any).costPrice ?? null,
+        _trackLots: !!(variant as any).trackLots,
+        _sellExpired: !!item.sellExpired && !off.isOffline && !!opts.expiredApproval,
         lineTotal: 0, // set below from the server-computed, exponent-rounded line totals
       });
     }
@@ -886,7 +1046,43 @@ export class PosService {
     // beyond one minor unit is rejected (TOTAL_MISMATCH) rather than charging a number nobody saw.
     // The tax rate comes from the settingsVersion the device priced with (when still within the offline window).
     const money = await this.moneyContext(dto.storeId, { version: dto.settingsVersion });
-    const totals = computeTotals(saleItems, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    for (const it of saleItems as any[]) {
+      if (it.unitCostMinor == null && it._costDecimal != null) it.unitCostMinor = toMinor(Number(it._costDecimal), money.exp);
+      delete it._costDecimal;
+    }
+    // custom items: manager approval above the store's limit (judged as of the sale's time for an offline replay)
+    const customApproval = await this.approveCustomItems(dto.storeId, saleItems, money.exp, employeeToken, off.isOffline ? off.at : undefined);
+    // coupon: validated here against THIS sale's subtotal; its usage is counted inside the sale transaction
+    let couponUsed: any = null;
+    if (dto.couponCode && !isHeld) {
+      if (off.isOffline) throw moneyError('COUPON_ONLINE_ONLY', 'A coupon needs a live check and cannot be used on an offline sale');
+      const pre = computeTotals(this.taxLines(saleItems), { exp: money.exp, taxRate: money.taxRate });
+      const r = await this.resolveCoupon(dto.storeId, dto.couponCode, pre.minor.subtotal, money);
+      discountReq = { type: r.type, value: r.value };
+      couponUsed = r.coupon;
+    }
+    // a held sale keeps the CODE only (no discount, no usage count); it is validated again when the sale is resumed / completed
+    const heldCouponCode = dto.couponCode && isHeld ? String(dto.couponCode).trim().toUpperCase().slice(0, 40) : null;
+    // G3.3: who is the customer for store credit / loyalty? (a till customer, or a storefront buyer of this store)
+    const custInfo = !isHeld && dto.customerId && this.customers ? await this.customers.resolve(dto.storeId, dto.customerId) : null;
+    const loyaltyCfg = custInfo && this.customers ? await this.customers.loyaltyConfig(dto.storeId) : null;
+    let loyaltyRedeem = { points: 0, valueMinor: 0 };
+    if (dto.redeemPoints) {
+      if (off.isOffline) throw moneyError('LOYALTY_ONLINE_ONLY', 'Points can only be redeemed on a live sale (the balance is checked on the server)');
+      if (isHeld) throw moneyError('LOYALTY_ON_HELD_SALE', 'Redeem points when the sale is paid');
+      if (!custInfo) throw moneyError('CUSTOMER_REQUIRED', 'Attach the customer to redeem points');
+      if (!loyaltyCfg?.enabled || !loyaltyCfg.redeemMinorPerPoint) throw moneyError('LOYALTY_NOT_ENABLED', 'Points cannot be redeemed at the till for this store');
+      if (couponUsed || discountReq.value > 0) throw moneyError('LOYALTY_WITH_DISCOUNT', 'Points cannot be combined with a coupon or a manual discount on one sale');
+      const pre = computeTotals(this.taxLines(saleItems), { exp: money.exp, taxRate: money.taxRate });
+      const valueMinor = redeemValueMinor(dto.redeemPoints, loyaltyCfg.redeemMinorPerPoint);
+      if (valueMinor > pre.minor.subtotal) throw moneyError('LOYALTY_EXCEEDS_SALE', 'The points are worth more than the sale');
+      const mem: any = await this.r.loyaltyMemberModel.findOne({ storeId: dto.storeId, userId: custInfo.ledgerId }).select('pointsBalance').lean();
+      if (!mem || mem.pointsBalance < dto.redeemPoints) throw moneyError('LOYALTY_INSUFFICIENT_POINTS', 'The customer does not have that many points');
+      discountReq = { type: 'amount', value: fromMinor(valueMinor, money.exp) };
+      loyaltyRedeem = { points: dto.redeemPoints, valueMinor };
+    }
+    const totals = computeTotals(this.taxLines(saleItems), { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    const clientMismatches = this.reconcileClientMoney(dto, money.exp, totals.minor.total); // G1b: recorded, NEVER a rejection (see recordClientMismatches)
     const flags: Array<{ type: string; detail: Record<string, any> }> = [];
     const unverified = saleItems.filter((it) => it.priceVerified === false);
     if (unverified.length) {
@@ -903,22 +1099,50 @@ export class PosService {
       assertClientTotal(dto.clientTotal, totals);
     }
     saleItems.forEach((it, i) => { it.lineTotal = totals.lineTotals[i]; });
+    const expiredOverrides = saleItems.filter((it) => it._sellExpired).map((it) => ({ variantId: String(it.variantId), sku: it.sku, qty: it.qty }));
+    // (the lots are attached after the stock is taken, below; the temporary markers never reach the stored sale)
     const { subtotal, discount, tax, total } = totals;
 
     // Tender lines — validated against the server's total (a held sale has none yet; it is paid when completed).
-    const settled = isHeld
+    if (!isHeld && !(dto.payments?.length) && isDigitalTender(String(dto.paymentMethod))) throw moneyError('QR_REQUIRES_PAYMENT_LINES', 'A Raast QR sale must send its payment as a payment line carrying the confirmed payment (payments[].intentId)');
+    if (isHeld && (dto.payments ?? []).some((p) => isDigitalTender(p.method))) throw moneyError('DIGITAL_PAYMENT_ON_HELD_SALE', 'A held sale has no payments yet; pay it when it is completed');
+    let settled = isHeld
       ? null
       : settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference }, { allowShort: off.isOffline });
+    // G2.3: every digital (QR) line must point at a CONFIRMED, unused payment of this shift for exactly its amount — before stock is touched
+    let digital: Array<{ intentId: string; providerRef: string }> = [];
+    if (settled) {
+      const v = await this.verifyDigitalLines(dto.storeId, dto.sessionId, settled.lines, money, off.isOffline);
+      settled = { ...settled, lines: v.lines };
+      digital = v.digital;
+    }
     if (settled && settled.shortBy > 0) flags.push({ type: 'payment_shortfall', detail: { shortBy: settled.shortBy, serverTotal: total } });
+    // G3.3 (D3): a store-credit tender — online only, needs the customer, needs the new ledger (the check that the balance covers it is the guarded spend inside the sale transaction)
+    const creditLine: any = settled?.lines.find((l: any) => l.method === 'store_credit') ?? null;
+    if (creditLine) {
+      if (off.isOffline) throw moneyError('STORE_CREDIT_ONLINE_ONLY', 'Store credit needs a live check and cannot be used on an offline sale');
+      if (!custInfo) throw moneyError('CUSTOMER_REQUIRED', 'Attach the customer to pay with store credit');
+      if (!this.customers) throw businessConflict('STORE_CREDIT_NOT_ENABLED', 'Store credit is not switched on');
+      this.customers.requireLedger();
+    }
+    // loyalty: points earned on what the customer paid for the goods (after discount, before tax); recorded on the sale so returns can reverse them proportionally
+    const loyaltyNetMinor = totals.minor.total - totals.minor.tax;
+    const earnedPoints = custInfo && loyaltyCfg?.enabled ? earnPoints(loyaltyNetMinor, loyaltyCfg.earnSpendMinor) : 0;
+    const loyaltyBlock = custInfo && (earnedPoints > 0 || loyaltyRedeem.points > 0)
+      ? { ledgerId: custInfo.ledgerId, earnedPoints, earnSpendMinor: loyaltyNetMinor, redeemedPoints: loyaltyRedeem.points, redeemValueMinor: loyaltyRedeem.valueMinor, reversedPoints: 0, restoredPoints: 0, refundedNetMinor: 0 }
+      : null;
 
     // Take the stock first (all-or-nothing, floor-guarded). A completed sale only exists once its
     // stock has genuinely been taken; if recording the sale then fails, the stock is handed back.
     const sessionLocationId: string | null = (session as any).locationId ?? null;
     let reserved: Array<{ variantId: string; qty: number }> = [];
+    let lotPlan: { all: Array<{ variantId: string; lotId: string; qty: number }>; flags: Array<{ type: string; detail: Record<string, any> }> } = { all: [], flags: [] };
     const oversold: Array<{ variantId: string; sku?: string; requested: number; available: number }> = [];
     if (!isHeld) {
       try {
-        reserved = await this.reserveStock(dto.items.map((i, idx) => ({ variantId: i.variantId, qty: i.qty, sku: saleItems[idx].sku })), sessionLocationId, { allowNegative: off.isOffline, oversold });
+        reserved = await this.reserveStock(dto.items.map((i, idx) => ({ variantId: i.variantId, qty: i.qty, sku: saleItems[idx].sku })).filter((x) => !!x.variantId), sessionLocationId, { allowNegative: off.isOffline, oversold, includeExpired: new Set(saleItems.filter((it) => it._sellExpired).map((it) => String(it.variantId))) });
+        lotPlan = await this.allocateSaleLots(saleItems, { offline: off.isOffline });
+        lotPlan.flags.forEach((f) => flags.push(f));
       } catch (err) {
         // A concurrent duplicate of THIS checkout may have just taken the last units and written the sale;
         // that is the same sale, not a shortage — hand back the winner instead of "insufficient stock".
@@ -937,41 +1161,63 @@ export class PosService {
     // concurrent retry of the same logical checkout that loses the race
     // hits that instead of creating a second sale; re-fetch and return the
     // winner (after giving back the stock this loser took).
+    // The provisional number the offline till printed (offline replays only): kept as a lookup reference, unique per store. If another sale of
+    // this store already holds it (a different device with the same short id), the sale is still recorded — money has changed hands — without it,
+    // flagged for a manager.
+    let provisional: string | null = null;
+    if (off.isOffline && dto.provisionalNumber && !isHeld) {
+      const wanted = String(dto.provisionalNumber).trim().toUpperCase();
+      if (await this.r.saleModel.exists({ storeId: dto.storeId, provisionalNumber: wanted })) flags.push({ type: 'provisional_number_clash', detail: { number: wanted } });
+      else provisional = wanted;
+    }
     let sale: any;
     try {
+      await this.ensureSettings(dto.storeId);
       for (let attempt = 0; attempt < 5; attempt++) {
         const saleNumber = await this.generateSaleNumber(dto.storeId);
         try {
-          sale = await this.r.saleModel.create({
+          sale = await this.atomic(async (tx) => {
+          // G2.5: a COMPLETED sale gets its tax-invoice number inside this transaction (a held sale gets one when it is completed)
+          const invoice = isHeld ? null : await this.issueInvoice(dto.storeId, off.isOffline ? off.at : new Date(), provisional, tx);
+          const [created] = await this.r.saleModel.create([{
             saleNumber,
+            priceBookId: pctx.book ? String(pctx.book._id) : null, priceBookName: pctx.book?.name ?? null,
+            ...(invoice ? { invoice } : {}),
+            ...(provisional ? { provisionalNumber: provisional } : {}),
+            ...(heldCouponCode ? { heldCouponCode } : {}),
             storeId: dto.storeId,
             sessionId: dto.sessionId,
             registerId: dto.registerId,
             locationId: sessionLocationId,
             employeeId: dto.employeeId,
-            items: saleItems,
+            items: this.itemsMinor(saleItems, totals, money.exp),
             subtotal,
             discount,
             tax,
             total,
+            ...this.saleMoneyMinor(totals, discountReq, money.exp, settled ? { change: settled.change, shortBy: settled.shortBy } : null),
             currency: money.currency,
             currencyExponent: money.exp,
             discountType: discountReq.value > 0 ? discountReq.type : null,
             discountValue: discountReq.value > 0 ? discountReq.value : null,
             taxRate: money.taxRate,
             paymentMethod: settled ? settled.method : dto.paymentMethod,
-            payments: settled ? settled.lines : [],
+            payments: settled ? this.paymentLinesMinor(settled.lines, money.exp) : [],
             changeGiven: settled ? settled.change : 0,
             paymentShortfall: settled ? settled.shortBy : 0,
+            ...(couponUsed ? { couponCode: couponUsed.code, couponId: String(couponUsed._id), couponDiscountMinor: totals.minor.discount } : {}),
             employeeName: (employee as any).name ?? null,
             settingsVersion: money.settingsVersion,
             approvedBy: approver?.employeeId ?? null,
             approvedAt: approver ? (off.isOffline ? off.at : new Date()) : null,
+            shiftId: (session as any).shiftId ?? null,
+            deviceId: this.callerDeviceId(),
             receivedAt: new Date(),
             ...(off.isOffline ? { isOffline: true, clientCreatedAt: off.at, createdAt: off.at } : {}),
             flags: [...flags, ...oversold.map((o) => ({ type: 'oversold_on_sync', detail: o }))],
             needsReview: flags.length > 0 || oversold.length > 0,
             customerId: dto.customerId ?? null,
+            ...(loyaltyBlock ? { loyalty: loyaltyBlock } : {}),
             customerName: dto.customerName ?? 'Walk-in',
             notes: dto.notes ?? null,
             heldAt: isHeld ? new Date() : null,
@@ -980,15 +1226,62 @@ export class PosService {
             // excludes documents where the field doesn't exist at all, not
             // ones where it's explicitly set to `null`.
             ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
+          }], tx ? { session: tx } : undefined);
+
+          const auditCtx = { sessionId: dto.sessionId, registerId: dto.registerId, shiftId: (session as any).shiftId ?? null };
+          if (!isHeld) {
+            await this.recordMovements(tx, { type: 'sale', refType: 'sale', refId: String((created as any)._id), storeId: dto.storeId, locationId: sessionLocationId, ctx: { employeeId: dto.employeeId, registerId: dto.registerId, sessionId: dto.sessionId },
+              lines: ((created as any).items as any[]).flatMap((it: any, idx: number) => this.movementLines(it, idx, it.qty, it.lots ?? [])) });
+            for (const it of ((created as any).items as any[]).filter((x: any) => x.soldExpired)) {
+              await this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'expired_lot_sold', targetId: String((created as any)._id), targetType: 'sale', sessionId: dto.sessionId, registerId: dto.registerId, shiftId: (session as any).shiftId ?? null, metadata: { variantId: String(it.variantId), sku: it.sku, qty: it.qty, lots: (it.lots ?? []).filter((l: any) => l.expired).map((l: any) => ({ lotId: l.lotId, lotNumber: l.lotNumber, qty: l.qty })), approvedBy: opts.expiredApproval?.employeeId ?? null, offline: off.isOffline } }, tx);
+            }
+            // G3.3: store credit spent, points redeemed and earned — in THIS transaction (all or nothing with the sale)
+            if (creditLine) {
+              const sp = await this.customers!.ledger.spend({ storeId: dto.storeId, customerId: custInfo!.ledgerId, amountMinor: toMinor(creditLine.amount, money.exp), type: 'spend', idemKey: `sale:${String((created as any)._id)}`, note: `Sale ${(created as any).saleNumber}`, actor: { actorId: dto.employeeId, actorRole: 'cashier' }, refs: { saleId: String((created as any)._id), deviceId: this.callerDeviceId(), registerId: dto.registerId, sessionId: dto.sessionId } }, tx);
+              if (!sp.ok) throw businessConflict('STORE_CREDIT_INSUFFICIENT', 'The customer\'s store credit does not cover this payment');
+            }
+            let pointsAfter: number | undefined;
+            if (loyaltyRedeem.points) pointsAfter = await this.customers!.redeemPointsInTx(tx, { storeId: dto.storeId, ledgerId: custInfo!.ledgerId, points: loyaltyRedeem.points, saleId: String((created as any)._id), description: `Redeemed at the till — sale ${(created as any).saleNumber}` });
+            if (earnedPoints > 0) pointsAfter = (await this.customers!.earnInTx(tx, { storeId: dto.storeId, ledgerId: custInfo!.ledgerId, points: earnedPoints, saleId: String((created as any)._id), description: `Sale ${(created as any).saleNumber}`, tiers: loyaltyCfg!.tiers })) ?? pointsAfter;
+            // G4.9: an ONLINE sale with a customer (loyalty on) keeps the points balance after it, from the ledger, in this transaction (offline replays: absent)
+            if (custInfo && loyaltyCfg?.enabled && !off.isOffline) await this.stampPointsAfter(tx, created, dto.storeId, custInfo.ledgerId, pointsAfter);
+            await this.recordPayments(created, settled!.lines, { ...auditCtx, employeeId: dto.employeeId }, tx);
+            await this.consumeDigital(dto.storeId, digital, created, tx); // one sale per payment: the unique `consumed` event commits with the sale or not at all
+            if (couponUsed) await this.consumeCoupon(String(couponUsed._id), tx); // race-safe usage count, in the same transaction
+          }
+          await this.writeAuditLog({
+            storeId: dto.storeId,
+            employeeId: dto.employeeId,
+            action: isHeld ? 'sale_held' : 'sale_created',
+            targetId: String(created._id),
+            targetType: 'sale',
+            ...auditCtx,
+            metadata: { total, discount, itemCount: dto.items.length, ...(couponUsed ? { couponCode: couponUsed.code, couponDiscountMinor: totals.minor.discount } : {}), ...(customApproval.count ? { customItems: customApproval.count, customItemsTotalMinor: customApproval.totalMinor, customItemsApprovedBy: customApproval.approver } : {}), ...(off.isOffline ? { offline: true, clientCreatedAt: off.at, settingsVersion: money.settingsVersion, sessionClosed: (session as any).status === 'closed' } : {}) },
+          }, tx);
+          for (const ci of (created as any).items.filter((x: any) => x.isCustom)) {
+            await this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'custom_item_sold', targetId: String(created._id), targetType: 'sale', ...auditCtx, metadata: { name: ci.name, qty: ci.qty, priceMinor: toMinor(ci.price, money.exp), taxCategory: ci.taxCategory, approvedBy: ci.customApprovedBy ?? null, saleNumber: (created as any).saleNumber } }, tx);
+          }
+          if (off.isOffline) {
+            // Every flagged offline sale leaves a trail a manager can find: audit log (POS) + inventory activity (store).
+            for (const f of (created as any).flags ?? []) {
+              await this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: f.type === 'oversold_on_sync' ? 'sale_oversold_offline' : `sale_flag_${f.type}`, targetId: String(created._id), targetType: 'sale', ...auditCtx, metadata: f.detail }, tx);
+            }
+            if (approverGone) {
+              await this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'offline_approver_deactivated', targetId: String(created._id), targetType: 'sale', ...auditCtx, metadata: { approvedBy: approver!.employeeId, clientCreatedAt: off.at } }, tx);
+            }
+          }
+          return created;
           });
           break;
         } catch (err: any) {
           if (err?.code === 11000 && err?.keyPattern?.saleNumber && attempt < 4) continue;
+          if (err?.code === 11000 && err?.keyPattern?.provisionalNumber && provisional && attempt < 4) { flags.push({ type: 'provisional_number_clash', detail: { number: provisional } }); provisional = null; continue; }
           throw err;
         }
       }
     } catch (err: any) {
       await this.releaseStock(reserved, sessionLocationId);
+      await this.restoreSaleLots(lotPlan.all);
       if (err?.code === 11000 && err?.keyPattern?.idempotencyKey && dto.idempotencyKey) {
         const existing = await this.r.saleModel.findOne({ idempotencyKey: dto.idempotencyKey, storeId: dto.storeId }).lean();
         if (existing) return { success: true, message: 'Duplicate request — returning existing sale', data: existing };
@@ -1007,23 +1300,7 @@ export class PosService {
       await this.recordPosSaleInLedger(sale);
     }
 
-    this.writeAuditLog({
-      storeId: dto.storeId,
-      employeeId: dto.employeeId,
-      action: isHeld ? 'sale_held' : 'sale_created',
-      targetId: String(sale._id),
-      targetType: 'sale',
-      metadata: { total, discount, itemCount: dto.items.length, ...(off.isOffline ? { offline: true, clientCreatedAt: off.at, settingsVersion: money.settingsVersion, sessionClosed: (session as any).status === 'closed' } : {}) },
-    }).catch(() => {});
-
     if (off.isOffline) {
-      // Every flagged offline sale leaves a trail a manager can find: audit log (POS) + inventory activity (store).
-      for (const f of sale.flags ?? []) {
-        this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: f.type === 'oversold_on_sync' ? 'sale_oversold_offline' : `sale_flag_${f.type}`, targetId: String(sale._id), targetType: 'sale', metadata: f.detail }).catch(() => {});
-      }
-      if (approverGone) {
-        this.writeAuditLog({ storeId: dto.storeId, employeeId: dto.employeeId, action: 'offline_approver_deactivated', targetId: String(sale._id), targetType: 'sale', metadata: { approvedBy: approver!.employeeId, clientCreatedAt: off.at } }).catch(() => {});
-      }
       for (const o of oversold) {
         void this.activityLogService.log({
           storeId: dto.storeId, category: 'inventory', action: 'inventory_oversell',
@@ -1033,6 +1310,8 @@ export class PosService {
       }
     }
 
+    await this.recordClientMismatches(sale, clientMismatches, money.exp);
+    await this.checkMinor('sale', sale, money.exp);
     return { success: true, message: isHeld ? 'Sale put on hold' : 'Sale completed', data: sale };
   }
 
@@ -1044,7 +1323,7 @@ export class PosService {
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
 
     // Completion re-prices from the held lines with the CURRENT tax rate and the (possibly changed) discount.
-    const discountReq = this.discountSpec(dto, sale);
+    let discountReq = this.discountSpec(dto, sale);
     if (discountReq.value > 0) {
       await this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'apply a discount');
     }
@@ -1052,6 +1331,7 @@ export class PosService {
     // friendly pre-check against real availability (see ProductVariant.committedStock); the
     // authoritative, race-proof check is the atomic reserveStock below
     for (const item of (sale as any).items) {
+      if (item.isCustom) continue; // a custom item has no stock
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant no longer available: ${item.sku}`);
       const availableForPos = availableStock(variant as any);
@@ -1061,32 +1341,78 @@ export class PosService {
     }
 
     const money = await this.moneyContext(String((sale as any).storeId), { version: dto.settingsVersion });
-    const totals = computeTotals((sale as any).items, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    // G2.4: a coupon is applied now (checked live against THIS cart), whatever code the held sale remembered
+    let couponUsed: any = null;
+    if (dto.couponCode) {
+      if (discountReq.value > 0) throw moneyError('COUPON_WITH_DISCOUNT', 'A coupon and a manual discount cannot be combined on one sale');
+      const pre = computeTotals(this.taxLines((sale as any).items), { exp: money.exp, taxRate: money.taxRate });
+      const rc = await this.resolveCoupon(String((sale as any).storeId), dto.couponCode, pre.minor.subtotal, money);
+      discountReq = { type: rc.type, value: rc.value };
+      couponUsed = rc.coupon;
+    }
+    const totals = computeTotals(this.taxLines((sale as any).items), { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    const clientMismatches = this.reconcileClientMoney(dto, money.exp, totals.minor.total);
     assertClientTotal(dto.clientTotal, totals);
-    const settled = settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference });
+    if (!(dto.payments?.length) && isDigitalTender(String(dto.paymentMethod))) throw moneyError('QR_REQUIRES_PAYMENT_LINES', 'A Raast QR sale must send its payment as a payment line carrying the confirmed payment (payments[].intentId)');
+    let settled = settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference });
+    const verifiedDigital = await this.verifyDigitalLines(String((sale as any).storeId), String((sale as any).sessionId), settled.lines, money, false);
+    settled = { ...settled, lines: verifiedDigital.lines };
+    const digital = verifiedDigital.digital;
     const { discount, tax, total } = totals;
     const locationId: string | null = (sale as any).locationId ?? null;
+    // G3.3: the held sale's customer — store credit as a tender and points earned, when it is paid
+    const custInfo = this.customers && (sale as any).customerId ? await this.customers.resolve(String((sale as any).storeId), String((sale as any).customerId)) : null;
+    const loyaltyCfg = custInfo && this.customers ? await this.customers.loyaltyConfig(String((sale as any).storeId)) : null;
+    const creditLine: any = settled.lines.find((l: any) => l.method === 'store_credit') ?? null;
+    if (creditLine) {
+      if (!custInfo || !this.customers) throw moneyError('CUSTOMER_REQUIRED', 'Attach the customer to pay with store credit');
+      this.customers.requireLedger();
+    }
+    const loyaltyNetMinor = totals.minor.total - totals.minor.tax;
+    const earnedPoints = custInfo && loyaltyCfg?.enabled ? earnPoints(loyaltyNetMinor, loyaltyCfg.earnSpendMinor) : 0;
+    const loyaltyBlock = custInfo && earnedPoints > 0 ? { ledgerId: custInfo.ledgerId, earnedPoints, earnSpendMinor: loyaltyNetMinor, redeemedPoints: 0, redeemValueMinor: 0, reversedPoints: 0, restoredPoints: 0, refundedNetMinor: 0 } : null;
 
     // Stock first, then claim the held sale with a status-guarded update: if two terminals (or a
     // retry) both get here, exactly one wins the `held → completed` transition; the loser gives
     // its stock back and is told the sale is already gone. No double decrement, no double count.
     const reserved = await this.reserveStock(
-      (sale as any).items.map((i: any) => ({ variantId: String(i.variantId), qty: i.qty, sku: i.sku })),
+      (sale as any).items.filter((i: any) => !i.isCustom).map((i: any) => ({ variantId: String(i.variantId), qty: i.qty, sku: i.sku })),
       locationId,
     );
 
-    const updated = await this.r.saleModel.findOneAndUpdate(
-      { _id: saleId, status: 'held' },
+    // G3.2: lot-tracked lines take their units from the lots (FEFO) — expired lots are never used here (a manager's override is a sale-time decision)
+    const trackedIds = new Set((await this.r.productVariantModel.find({ _id: { $in: (sale as any).items.filter((i: any) => !i.isCustom).map((i: any) => String(i.variantId)) }, trackLots: true }).select('_id').lean()).map((v: any) => String(v._id)));
+    const lotItems = (sale as any).items.map((i: any) => ({ variantId: String(i.variantId), qty: i.qty, isCustom: !!i.isCustom, sku: i.sku, _trackLots: trackedIds.has(String(i.variantId)) }));
+    let lotPlan: { all: Array<{ variantId: string; lotId: string; qty: number }>; flags: any[] } = { all: [], flags: [] };
+    try { lotPlan = await this.allocateSaleLots(lotItems, { offline: false }); } catch (e) { await this.releaseStock(reserved, locationId); throw e; }
+
+    const completeCtx = { sessionId: String((sale as any).sessionId), registerId: (sale as any).registerId ?? null, shiftId: ((await this.r.registerSessionModel.findById((sale as any).sessionId)) as any)?.shiftId ?? null };
+    let updated: any;
+    try {
+    await this.ensureSettings(String((sale as any).storeId));
+    updated = await this.atomic(async (tx) => {
+      const invoice = await this.issueInvoice(String((sale as any).storeId), new Date(), null, tx);
+      const bdItems = this.itemsMinor((sale as any).items.map((i: any) => ({ price: i.price, taxCategory: i.taxCategory })), totals, money.exp);
+      const itemSet: Record<string, any> = {};
+      lotItems.forEach((li: any, i: number) => { if (li.lots) { itemSet[`items.${i}.lots`] = li.lots; itemSet[`items.${i}.soldExpired`] = !!li.soldExpired; } });
+      bdItems.forEach((b: any, i: number) => { itemSet[`items.${i}.lineTotalMinor`] = b.lineTotalMinor; itemSet[`items.${i}.discountShareMinor`] = b.discountShareMinor; itemSet[`items.${i}.netMinor`] = b.netMinor; itemSet[`items.${i}.taxMinor`] = b.taxMinor; });
+      const claimed = await this.r.saleModel.findOneAndUpdate(
+      { _id: saleId, status: 'held', deletedAt: null, 'invoice.number': null },
       {
         $set: {
+          ...itemSet,
+          invoice,
+          ...(couponUsed ? { couponCode: couponUsed.code, couponId: String(couponUsed._id), couponDiscountMinor: totals.minor.discount } : {}),
+          heldCouponCode: null,
           status: 'completed',
           paymentMethod: settled.method,
-          payments: settled.lines,
+          payments: this.paymentLinesMinor(settled.lines, money.exp),
           changeGiven: settled.change,
           subtotal: totals.subtotal,
           discount,
           tax,
           total,
+          ...this.saleMoneyMinor(totals, discountReq, money.exp, { change: settled.change, shortBy: 0 }),
           currency: money.currency,
           currencyExponent: money.exp,
           discountType: discountReq.value > 0 ? discountReq.type : null,
@@ -1094,13 +1420,39 @@ export class PosService {
           taxRate: money.taxRate,
           settingsVersion: money.settingsVersion,
           heldAt: null,
+          ...(loyaltyBlock ? { loyalty: loyaltyBlock } : {}),
           notes: dto.notes ?? (sale as any).notes,
+          shiftId: completeCtx.shiftId,
+          deviceId: this.callerDeviceId(),
         },
       },
-      { new: true },
+      { new: true, ...(tx ? { session: tx } : {}) },
     );
+      if (!claimed) return null;
+      // G3.1/G3.2: the held sale's units leave stock NOW — the ledger rows (per lot) are written with the completion
+      await this.recordMovements(tx, { type: 'sale', refType: 'sale', refId: saleId, storeId: String((sale as any).storeId), locationId, ctx: { employeeId: (sale as any).employeeId, registerId: completeCtx.registerId, sessionId: completeCtx.sessionId },
+        lines: ((sale as any).items as any[]).flatMap((it: any, idx: number) => this.movementLines({ variantId: it.variantId, productId: it.productId, name: it.name, sku: it.sku, unitCostMinor: it.unitCostMinor ?? null, isCustom: !!it.isCustom }, idx, it.qty, lotItems[idx]?.lots ?? [])) });
+      if (creditLine) {
+        const sp = await this.customers!.ledger.spend({ storeId: String((sale as any).storeId), customerId: custInfo!.ledgerId, amountMinor: toMinor(creditLine.amount, money.exp), type: 'spend', idemKey: `sale:${saleId}`, note: `Sale ${(sale as any).saleNumber}`, actor: { actorId: (sale as any).employeeId, actorRole: 'cashier' }, refs: { saleId, deviceId: this.callerDeviceId(), registerId: completeCtx.registerId, sessionId: completeCtx.sessionId } }, tx);
+        if (!sp.ok) throw businessConflict('STORE_CREDIT_INSUFFICIENT', 'The customer\'s store credit does not cover this payment');
+      }
+      const pointsAfter = earnedPoints > 0 ? await this.customers!.earnInTx(tx, { storeId: String((sale as any).storeId), ledgerId: custInfo!.ledgerId, points: earnedPoints, saleId, description: `Sale ${(sale as any).saleNumber}`, tiers: loyaltyCfg!.tiers }) : undefined;
+      // G4.9: a held sale paid now (online) keeps the points balance after it too
+      if (custInfo && loyaltyCfg?.enabled) await this.stampPointsAfter(tx, claimed, String((sale as any).storeId), custInfo.ledgerId, pointsAfter);
+      await this.recordPayments(claimed, settled.lines, { ...completeCtx, employeeId: (sale as any).employeeId }, tx);
+      await this.consumeDigital(String((sale as any).storeId), digital, claimed, tx);
+      if (couponUsed) await this.consumeCoupon(String(couponUsed._id), tx); // race-safe usage count, in the same transaction
+      await this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: (sale as any).employeeId, action: 'sale_completed', targetId: saleId, targetType: 'sale', ...completeCtx, metadata: { total, discount, fromHeld: true } }, tx);
+      return claimed;
+    });
+    } catch (e) {
+      await this.releaseStock(reserved, locationId); // the stock taken above goes back if the sale (or its digital payment) could not be committed
+      await this.restoreSaleLots(lotPlan.all);
+      throw e;
+    }
     if (!updated) {
       await this.releaseStock(reserved, locationId);
+      await this.restoreSaleLots(lotPlan.all);
       throw businessConflict('HELD_SALE_ALREADY_RESOLVED', 'This held sale was already completed or discarded');
     }
 
@@ -1111,8 +1463,8 @@ export class PosService {
       console.error(`[completeSale] session totals update failed for sale ${saleId} — reconcile manually:`, e?.message);
     }
     await this.recordPosSaleInLedger(updated);
-
-    this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: (sale as any).employeeId, action: 'sale_completed', targetId: saleId, targetType: 'sale', metadata: { total, discount } }).catch(() => {});
+    await this.recordClientMismatches(updated, clientMismatches, money.exp);
+    await this.checkMinor('sale', updated, money.exp);
 
     return { success: true, message: 'Sale completed', data: updated };
   }
@@ -1120,7 +1472,7 @@ export class PosService {
   async getHeldSales(sellerId: string, storeId: string, sessionId?: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
 
-    const filter: any = { storeId, status: 'held' };
+    const filter: any = { storeId, status: 'held', deletedAt: null };
     if (sessionId) filter.sessionId = sessionId;
 
     const sales = await this.r.saleModel.find(filter).sort({ heldAt: -1 }).lean();
@@ -1139,6 +1491,33 @@ export class PosService {
     return { success: true, data: { ...(sale as any), currency: m.currency, currencyExponent: m.exp } };
   }
 
+  /**
+   * Finds sales by what a CUSTOMER or a receipt shows: the offline `OFF-…` number printed on the first receipt, the tax invoice number, the sale
+   * (receipt) number, or a credit note number — exact match, upper-cased; a bare number (`123`) is also tried as `INV-000123` / `POS-00123`.
+   * (A return at another till starts here.)
+   */
+  private async salesMatchingReference(storeId: string, raw: string): Promise<string[]> {
+    const ref = String(raw ?? '').trim().toUpperCase();
+    if (ref.length > 40 || !/^[A-Z0-9-]+$/.test(ref) || (ref.length < 2 && !/^\d$/.test(ref))) return [];
+    const candidates = [ref];
+    if (/^\d{1,6}$/.test(ref)) candidates.push(`INV-${ref.padStart(6, '0')}`, `POS-${ref.padStart(5, '0')}`);
+    const or: any[] = [{ provisionalNumber: { $in: candidates } }, { 'invoice.number': { $in: candidates } }, { saleNumber: { $in: candidates } }];
+    const ids = new Set<string>((await this.r.saleModel.find({ storeId, deletedAt: null, $or: or }).select('_id').limit(10).lean()).map((s: any) => String(s._id)));
+    if (/^CN-\d+$/.test(ref)) {
+      const cn: any = await this.r.posCreditNoteModel.findOne({ storeId, number: ref }).select('saleId').lean();
+      if (cn?.saleId) ids.add(String(cn.saleId));
+    }
+    return [...ids];
+  }
+
+  async lookupSales(sellerId: string, storeId: string, ref: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const ids = await this.salesMatchingReference(storeId, ref);
+    const found = ids.length ? await this.r.saleModel.find({ _id: { $in: ids } }).sort({ createdAt: -1 }).limit(5).lean() : [];
+    const m = await this.moneyContext(storeId);
+    return { success: true, data: found.map((x: any) => ({ ...x, currency: x.currency ?? m.currency, currencyExponent: x.currencyExponent ?? m.exp })) };
+  }
+
   async getSales(sellerId: string, query: any) {
     if (!query.storeId) throw new BadRequestException('storeId is required');
 
@@ -1148,16 +1527,19 @@ export class PosService {
     const limit = 20;
     const skip = (page - 1) * limit;
 
-    const filter: any = { storeId: query.storeId };
+    const filter: any = { storeId: query.storeId, deletedAt: null };
     if (query.sessionId) filter.sessionId = query.sessionId;
-    if (query.employeeId) filter.employeeId = query.employeeId;
+    if (query.employeeId) filter.employeeId = String(query.employeeId); // G5.1: the Orders screen's cashier filter
+    if (query.registerId) filter.registerId = String(query.registerId); // G5.1: … and register filter
     if (query.paymentMethod) filter.paymentMethod = query.paymentMethod;
     if (query.status) filter.status = query.status;
-    if (query.from || query.to) {
-      filter.createdAt = {};
-      if (query.from) filter.createdAt.$gte = new Date(query.from);
-      if (query.to) { const t = new Date(query.to); t.setHours(23, 59, 59, 999); filter.createdAt.$lte = t; }
+    if (query.search) {
+      const ids = await this.salesMatchingReference(query.storeId, String(query.search));
+      filter._id = { $in: ids };
     }
+    // G4.1: `date=YYYY-MM-DD` = one STORE day (the reports' day bars drill down here); from / to still work
+    if (query.date) filter.createdAt = localRange(String(query.date), String(query.date), await this.storeTz(query.storeId ?? filter.storeId));
+    else if (query.from || query.to) filter.createdAt = localRange(query.from, query.to, await this.storeTz(query.storeId ?? filter.storeId));
 
     const total = await this.r.saleModel.countDocuments(filter);
     const found = await this.r.saleModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
@@ -1175,18 +1557,34 @@ export class PosService {
     };
   }
 
-  async refundSale(sellerId: string, saleId: string, dto: RefundSaleDto | undefined, employeeToken: string | undefined) {
+  async refundSale(sellerId: string, saleId: string, dto: RefundSaleDto | undefined, employeeToken: string | undefined, idempotencyKey?: string) {
     const sale = await this.r.saleModel.findById(saleId);
     if (!sale) throw new NotFoundException('Sale not found');
+
+    // A retry of a refund that already went through (same Idempotency-Key) returns THAT refund — never a second one.
+    // Checked first (before the "already refunded" status guards below) and only after the caller proves they may see it.
+    if (idempotencyKey) {
+      const prior: any = await this.r.posRefundModel.findOne({ saleId, idempotencyKey }).lean();
+      if (prior) {
+        await this.verifyStoreOwnership((sale as any).storeId, sellerId);
+        await this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'issue refunds');
+        return {
+          success: true, message: 'Refund already processed — returning the original result',
+          data: { refundedAmount: prior.amount, newStatus: (sale as any).status, tenders: prior.tenders, currency: prior.currency, currencyExponent: prior.currencyExponent, refundId: String(prior._id), reference: prior.reference, replayed: true },
+        };
+      }
+    }
     if ((sale as any).status === 'voided') throw new BadRequestException('Sale is voided — cannot refund');
     if ((sale as any).status === 'refunded') throw new BadRequestException('Sale is already fully refunded');
     if ((sale as any).status === 'held') throw new BadRequestException('Cannot refund a held sale — discard it instead');
 
     await this.verifyStoreOwnership((sale as any).storeId, sellerId);
 
-    const actor = await this.requireManagerEmployee(employeeToken, (sale as any).storeId, 'issue refunds');
+    // WHO is returning is decided below, once the amount is known (a cashier may return within the store's limits; anything else needs a manager)
+    const who = await this.verifyEmployeeToken(employeeToken, (sale as any).storeId);
+    if (!who) throw new ForbiddenException('A valid employee PIN session is required to issue refunds');
 
-    const isPartial = dto?.items && dto.items.length > 0;
+    const isPartial = !!(dto?.items && dto.items.length > 0);
     const locationId: string | null = (sale as any).locationId ?? null;
     const { currency, exp } = await this.docMoney(sale);
     const lines = effectivePayments(sale as any);
@@ -1199,53 +1597,111 @@ export class PosService {
     const stateFilter = { _id: saleId, status: (sale as any).status, refundedAmount: alreadyRefunded };
     const staleMessage = 'This sale was changed by another refund or terminal — reload it and check before refunding again';
 
-    // Money for this refund and how it splits across the sale's tenders. See pos-money.util.ts#refundOrder for
-    // the documented order (card/other first, cash last; cash change is not refundable).
-    let refundAmount: number;
-    let itemUpdates: Array<{ variantId: string; qtyToRestore: number; saleItemId: string }> = [];
-    let newStatus: 'refunded' | 'partially_refunded' = 'refunded';
-
+    // G2.5: every line is credited with ITS OWN part of what the customer paid (net of its share of the discount, plus its tax),
+    // by cumulative proration — see pos-documents.util.ts. The credits of all returns of a line add up to exactly what the line cost.
+    const saleItems: any[] = (sale as any).items;
+    const bd = this.saleBreakdown(sale as any, exp);
+    const wanted: Array<{ idx: number; qty: number; restock: boolean; restockReason: string | null }> = [];
     if (!isPartial) {
-      refundAmount = roundMoney((sale as any).total - alreadyRefunded, exp);
-      (sale as any).items.forEach((item: any) => {
+      saleItems.forEach((item: any, idx: number) => {
         const left = item.qty - (item.refundedQty || 0);
-        if (left > 0) itemUpdates.push({ variantId: String(item.variantId), qtyToRestore: left, saleItemId: String(item._id) });
+        if (left > 0) wanted.push({ idx, qty: left, restock: !item.isCustom, restockReason: null });
       });
     } else {
-      const refundLines: Array<{ price: number; qty: number }> = [];
+      const seen = new Set<string>();
       for (const refundItem of dto!.items!) {
-        const saleItem = (sale as any).items.find((i: any) => i._id.toString() === refundItem.saleItemId);
-        if (!saleItem) throw new BadRequestException(`Sale item not found: ${refundItem.saleItemId}`);
-
+        if (seen.has(refundItem.saleItemId)) throw new BadRequestException(`Sale item listed twice: ${refundItem.saleItemId}`);
+        seen.add(refundItem.saleItemId);
+        const idx = saleItems.findIndex((i: any) => i._id.toString() === refundItem.saleItemId);
+        if (idx < 0) throw new BadRequestException(`Sale item not found: ${refundItem.saleItemId}`);
+        const saleItem = saleItems[idx];
         const available = saleItem.qty - (saleItem.refundedQty || 0);
         if (refundItem.qty > available) {
           throw new BadRequestException(`Cannot refund ${refundItem.qty} of "${saleItem.name}" — only ${available} unreturned`);
         }
-        refundLines.push({ price: saleItem.price, qty: refundItem.qty });
-        itemUpdates.push({ variantId: String(saleItem.variantId), qtyToRestore: refundItem.qty, saleItemId: refundItem.saleItemId });
+        const restock = saleItem.isCustom ? false : refundItem.restock !== false;
+        const restockReason = (refundItem.restockReason ?? '').trim() || null;
+        if (!restock && !saleItem.isCustom && !restockReason) throw moneyError('RESTOCK_REASON_REQUIRED', `Say why "${saleItem.name}" is not going back on the shelf`);
+        wanted.push({ idx, qty: refundItem.qty, restock, restockReason: restock ? null : restockReason });
       }
-      const completesSale = (sale as any).items.every((item: any) => {
-        const u = itemUpdates.find((x) => x.saleItemId === item._id.toString());
-        return (item.refundedQty || 0) + (u?.qtyToRestore || 0) >= item.qty;
-      });
-      // pro-rated: each line's share of what the customer actually PAID (net of discount, incl. tax)
-      refundAmount = partialRefundAmount(sale as any, refundLines, exp, completesSale);
-      newStatus = completesSale ? 'refunded' : 'partially_refunded';
+    }
+    const credit = wanted.map((w) => ({ ...w, a: returnLineAmounts(bd[w.idx], saleItems[w.idx].qty, saleItems[w.idx].refundedQty || 0, w.qty) }));
+    let creditMinor = credit.reduce((sum, c) => sum + c.a.totalMinor, 0);
+    const itemUpdates: Array<{ variantId: string; qtyToRestore: number; saleItemId: string; restock: boolean }> = wanted.map((w) => ({
+      variantId: saleItems[w.idx].variantId ? String(saleItems[w.idx].variantId) : '', qtyToRestore: w.qty, saleItemId: String(saleItems[w.idx]._id), restock: w.restock,
+    }));
+    const completesSale = saleItems.every((item: any, idx: number) => (item.refundedQty || 0) + (wanted.find((w) => w.idx === idx)?.qty || 0) >= item.qty);
+    const newStatus: 'refunded' | 'partially_refunded' = completesSale ? 'refunded' : 'partially_refunded';
+
+    // The amount. A sale issued under G2.5 (it has an invoice) is fully on the new proration. An older sale had its earlier
+    // refunds priced the old way, so its amount keeps the old rule (the last refund returns the exact remainder) and the credit note's
+    // lines are nudged by the rounding difference so the note always equals what was paid out.
+    let refundAmount: number;
+    if ((sale as any).invoice) {
+      refundAmount = fromMinor(creditMinor, exp);
+    } else if (!isPartial) {
+      refundAmount = roundMoney((sale as any).total - alreadyRefunded, exp);
+    } else {
+      refundAmount = partialRefundAmount(sale as any, wanted.map((w) => ({ price: saleItems[w.idx].price, qty: w.qty })), exp, completesSale);
+    }
+    if (credit.length && toMinor(refundAmount, exp) !== creditMinor) {
+      const delta = toMinor(refundAmount, exp) - creditMinor;
+      const last = credit[credit.length - 1].a;
+      last.netMinor += delta; last.totalMinor += delta;
+      creditMinor += delta;
     }
 
-    const tenders = allocateRefund(lines, alreadyRefunded, refundAmount, exp);
+    // Who may do it: a manager always; a cashier only when the store allows it and the return is within every limit.
+    const settingsDoc: any = await this.r.posSettingsModel.findOne({ storeId: (sale as any).storeId }).select('cashierReturnsEnabled returnApprovalAboveMinor returnApprovalAfterDays approvalLimits').lean();
+    const needs = returnApprovalReasons({
+      amountMinor: toMinor(refundAmount, exp), aboveMinor: settingsDoc?.returnApprovalAboveMinor ?? null,
+      daysSinceSale: daysBetween(new Date((sale as any).createdAt ?? Date.now()), new Date()), afterDays: settingsDoc?.returnApprovalAfterDays ?? null,
+      receiptPresented: dto?.receiptPresented !== false, cashierReturnsEnabled: settingsDoc?.cashierReturnsEnabled === true,
+    });
+    // G3.3 (D3): a refund AS store credit above the store's limit needs a manager (the same approval rule as a big return)
+    const refundToCredit = dto?.refundTo === 'store_credit';
+    const refundCust = this.customers && (sale as any).customerId ? await this.customers.resolve(String((sale as any).storeId), String((sale as any).customerId)) : null;
+    const limitsNow = resolveLimits(settingsDoc?.approvalLimits ?? null, exp);
+    const preTenders = allocateRefund(lines, alreadyRefunded, refundAmount, exp);
+    const convertMinor = refundToCredit ? preTenders.filter((t: any) => t.method === 'cash' || t.method === 'card' || t.method === 'other').reduce((s2: number, t: any) => s2 + toMinor(t.amount, exp), 0) : 0;
+    if (refundToCredit && convertMinor > limitsNow.storeCreditRefundMinor) needs.push('store_credit_refund_above_limit');
+    const isManager = who.role === 'manager';
+    if (!isManager && needs.length) {
+      throw new ForbiddenException({ statusCode: 403, code: 'RETURN_NEEDS_MANAGER', reasons: needs, message: needs.includes('store_requires_manager') ? 'Only managers can issue refunds' : 'A manager must approve this return' });
+    }
+    const actor = { employeeId: who.employeeId, role: who.role };
+    const approvedBy = isManager && needs.length ? who.employeeId : null;
+
+    let tenders: Array<{ method: any; amount: number }> = preTenders;
+    if (refundToCredit && convertMinor > 0) {
+      const keep = preTenders.filter((t: any) => !(t.method === 'cash' || t.method === 'card' || t.method === 'other'));
+      const existingCredit = keep.filter((t: any) => t.method === 'store_credit').reduce((s2: number, t: any) => s2 + toMinor(t.amount, exp), 0);
+      tenders = [...keep.filter((t: any) => t.method !== 'store_credit'), { method: 'store_credit', amount: fromMinor(existingCredit + convertMinor, exp) }];
+    }
+    const creditBackMinor = tenders.filter((t: any) => t.method === 'store_credit').reduce((s2: number, t: any) => s2 + toMinor(t.amount, exp), 0);
+    if (creditBackMinor > 0) {
+      if (!this.customers) throw businessConflict('STORE_CREDIT_NOT_ENABLED', 'Store credit is not switched on');
+      this.customers.requireLedger();
+      if (!refundCust) throw moneyError('CUSTOMER_REQUIRED_FOR_CREDIT', 'Store credit needs a customer on the sale — attach the customer first');
+    }
+    const reason = normalizeReason('refund', dto?.reasonCode, dto?.reason);
+    const refundId = new Types.ObjectId();
+    const refundSeq = ((sale as any).refunds ?? []).length;
+    await this.ensureSettings(String((sale as any).storeId));
     const refundRecord = {
-      amount: refundAmount, kind: isPartial ? 'partial' : 'full',
-      tenders, items: itemUpdates.map((u) => ({ saleItemId: u.saleItemId, qty: u.qtyToRestore })),
+      refundId: String(refundId),
+      amount: refundAmount, amountMinor: toMinor(refundAmount, exp), kind: isPartial ? 'partial' : 'full',
+      tenders: this.tendersMinor(tenders, exp), items: itemUpdates.map((u) => ({ saleItemId: u.saleItemId, qty: u.qtyToRestore })),
       employeeId: actor.employeeId, currency, currencyExponent: exp, createdAt: new Date(),
     };
 
     const update: any = {
-      $set: { status: newStatus, refundedAmount: roundMoney(alreadyRefunded + refundAmount, exp) },
+      $set: { status: newStatus, refundedAmount: roundMoney(alreadyRefunded + refundAmount, exp), refundedAmountMinor: toMinor(alreadyRefunded, exp) + toMinor(refundAmount, exp) },
       $push: { refunds: refundRecord },
     };
+    // every line's returned quantity is counted — for a full refund too (the units still on the sale), so refundedQty is always the truth
     let arrayFilters: any[] | undefined;
-    if (isPartial) {
+    if (itemUpdates.length) {
       const inc: Record<string, number> = {};
       arrayFilters = [];
       itemUpdates.forEach((u, idx) => {
@@ -1254,46 +1710,144 @@ export class PosService {
       });
       update.$inc = inc;
     }
-    const claimed = await this.r.saleModel.findOneAndUpdate(stateFilter, update, arrayFilters ? { arrayFilters } : undefined);
+    // The refund happens at the till the customer is standing at — its register's CURRENT shift — which can be another register (or shift)
+    // than the sale's own (a return with a receipt printed offline, or at a second till). `registerId` in the request names that till.
+    const returnRegisterId: string | null = dto?.registerId ?? (sale as any).registerId ?? null;
+    const nowSession: any = returnRegisterId
+      ? await this.r.registerSessionModel.findOne({ registerId: returnRegisterId, storeId: (sale as any).storeId, status: 'open' })
+      : null;
+    // a cash refund comes out of a drawer: it needs an open shift on the register that pays it
+    if (returnRegisterId && tenders.some((t: any) => t.method === 'cash' && t.amount > 0) && !nowSession) {
+      throw businessConflict('OPEN_SHIFT_REQUIRED', 'Open a shift on this register before paying a cash refund');
+    }
+    // G3.0: the refund belongs to the shift whose drawer / terminal paid it. Only when the returning register has NO open shift (card / other
+    // tenders only — cash was refused above) does it fall back to the sale's own shift, and only if that one is still open; a CLOSED shift is never touched.
+    const refundShift = await this.refundShiftFor(sale, nowSession);
+    const refundCtx = { sessionId: refundShift ? String(refundShift._id) : null, registerId: returnRegisterId, shiftId: refundShift?.shiftId ?? null };
+    // G3.3 (D2): points earned on this sale reverse proportionally to what is returned; redeemed points come back in proportion to the money returned (cumulative, exact)
+    const loy: any = (sale as any).loyalty;
+    let loyaltyRev = 0, loyaltyRest = 0;
+    if (loy && refundCust) {
+      const netNow = credit.reduce((s2, c2) => s2 + c2.a.netMinor, 0);
+      loyaltyRev = pointsToReverse(loy.earnedPoints ?? 0, loy.earnSpendMinor ?? 0, (loy.refundedNetMinor ?? 0) + netNow, loy.reversedPoints ?? 0);
+      loyaltyRest = pointsToRestore(loy.redeemedPoints ?? 0, toMinor((sale as any).total, exp), toMinor(alreadyRefunded, exp) + toMinor(refundAmount, exp), loy.restoredPoints ?? 0);
+      update.$inc = { ...(update.$inc ?? {}), 'loyalty.refundedNetMinor': netNow, 'loyalty.reversedPoints': loyaltyRev, 'loyalty.restoredPoints': loyaltyRest };
+    }
+    const refundAuditAction = newStatus === 'refunded' ? 'sale_refunded_full' : 'sale_refunded_partial';
+    let createdCreditNote: any = null;
+    const claimed = await this.atomic(async (tx) => {
+      // The sale claim, the refund record and the audit event commit together or not at all.
+      const c = await this.r.saleModel.findOneAndUpdate(stateFilter, update, { new: true, ...(arrayFilters ? { arrayFilters } : {}), ...(tx ? { session: tx } : {}) });
+      if (!c) return null;
+      await this.r.posRefundModel.create([{
+        _id: refundId, saleId, saleNumber: (sale as any).saleNumber ?? null, seq: refundSeq, reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`,
+        kind: isPartial ? 'partial' : 'full', amount: refundAmount, amountMinor: toMinor(refundAmount, exp), currency, currencyExponent: exp, tenders: this.tendersMinor(tenders, exp),
+        items: refundRecord.items, reason: reason.note, reasonCode: reason.code,
+        status: tenders.every((t: any) => t.method === 'cash') ? 'confirmed' : 'recorded_unverified', confirmationSource: null,
+        storeId: (sale as any).storeId, ...refundCtx, deviceId: this.callerDeviceId(), employeeId: actor.employeeId,
+        saleSessionId: (sale as any).sessionId ?? null, saleEmployeeId: (sale as any).employeeId ?? null,
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      }], tx ? { session: tx } : undefined);
+      const creditNote = await this.createCreditNote(tx, {
+        sale: sale as any, kind: 'return', scope: completesSale ? 'full' : 'partial', refundId: String(refundId), reason, exp, currency,
+        lines: credit.map((c2) => ({ idx: c2.idx, qty: c2.qty, a: c2.a, restock: c2.restock, restockReason: c2.restockReason })),
+        tenders: this.tendersMinor(tenders, exp), actorId: actor.employeeId, approvedBy, approvalReasons: needs, ctx: refundCtx,
+      });
+      createdCreditNote = creditNote;
+      // G3.3: store credit goes back (a refund AS credit, or a sale that was PAID with credit), and the points move — in this transaction
+      if (creditBackMinor > 0) {
+        await this.customers!.ledger.addLot({ storeId: String((sale as any).storeId), customerId: refundCust!.ledgerId, amountMinor: creditBackMinor, type: convertMinor > 0 ? 'refund_credit' : 'spend_reversal', idemKey: `pos-refund:${String(refundId)}`, note: `Return of sale ${(sale as any).saleNumber}`, actor: { actorId: actor.employeeId, actorRole: who.role }, refs: { saleId, refundId: String(refundId), creditNoteNumber: creditNote.number, approvedBy, deviceId: this.callerDeviceId(), registerId: returnRegisterId, sessionId: refundShift ? String(refundShift._id) : null } }, tx);
+      }
+      if (loyaltyRev > 0 || loyaltyRest > 0) {
+        const cfg = await this.customers!.loyaltyConfig(String((sale as any).storeId));
+        if (loyaltyRev > 0) await this.customers!.earnInTx(tx, { storeId: String((sale as any).storeId), ledgerId: refundCust!.ledgerId, points: -loyaltyRev, saleId, description: `Return — sale ${(sale as any).saleNumber}`, tiers: cfg.tiers, type: 'adjustment' });
+        if (loyaltyRest > 0) await this.customers!.earnInTx(tx, { storeId: String((sale as any).storeId), ledgerId: refundCust!.ledgerId, points: loyaltyRest, saleId, description: `Points restored — return of sale ${(sale as any).saleNumber}`, tiers: cfg.tiers, type: 'adjustment' });
+      }
+      // G3.1: the units that really went back on the shelf are a stock movement, at the cost the sale snapshotted
+      await this.recordMovements(tx, { type: 'return', refType: 'refund', refId: String(refundId), storeId: String((sale as any).storeId), locationId, ctx: { employeeId: actor.employeeId, registerId: returnRegisterId, sessionId: refundShift ? String(refundShift._id) : null },
+        lines: itemUpdates.filter((u) => !!u.variantId && u.restock).flatMap((u) => { const it = saleItems.find((x: any) => String(x._id) === u.saleItemId); return this.movementLines({ ...(it?.toObject?.() ?? it ?? {}), variantId: u.variantId, isCustom: false }, u.saleItemId, u.qtyToRestore, returnPartsFor(it?.lots ?? [], it?.refundedQty || 0, u.qtyToRestore)); }) });
+      await this.writeAuditLog({
+        storeId: (sale as any).storeId, employeeId: actor.employeeId, action: refundAuditAction, targetId: saleId, targetType: 'sale', ...refundCtx,
+        metadata: { refundAmount, tenders, currency, items: dto?.items, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`, reason: reason.note, reasonCode: reason.code, creditNote: creditNote.number, approvedBy, approvalReasons: needs },
+      }, tx);
+      return c;
+    });
     if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', staleMessage);
 
-    await this.restoreSoldStock(itemUpdates.map((u) => ({ variantId: u.variantId, qty: u.qtyToRestore })), locationId);
+    await this.restoreSoldStock(itemUpdates.filter((u) => !!u.variantId && u.restock).map((u) => ({ variantId: u.variantId, qty: u.qtyToRestore })), locationId);
+    // G3.2: the units go back to the LOTS they were sold from (cumulative, in the order sold)
+    for (const u of itemUpdates.filter((x) => !!x.variantId && x.restock)) {
+      const it: any = saleItems.find((x: any) => String(x._id) === u.saleItemId);
+      const parts = returnPartsFor(it?.lots ?? [], it?.refundedQty || 0, u.qtyToRestore);
+      if (parts.length) await restoreToLots(this.r as any, u.variantId, parts).catch(() => undefined);
+    }
 
     // Session: the refund comes OUT of sales and out of the right tender — so a cash refund lowers the
     // cash the drawer should now hold (expected cash = opening + cashSales + cashIn − cashOut). The
     // transaction count drops only when the sale becomes fully refunded, and exactly once.
+    // G3.0: the counters (refunds, net sales, the paying tender → expected cash / expected card) move on the REFUNDING shift. When that is another
+    // shift than the sale's own, the sale's shift is left exactly as it closed or stands (and the transaction count stays where the sale was made).
     const split = byTender(tenders);
     const sessionInc: any = {
       totalRefunds: refundAmount,
       totalSales: -refundAmount,
       ...this.tenderInc(split, -1),
     };
-    if (newStatus === 'refunded') sessionInc.totalTransactions = -1;
-    await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, { $inc: sessionInc });
+    const sameShift = !!refundShift && String(refundShift._id) === String((sale as any).sessionId);
+    if (newStatus === 'refunded' && sameShift) sessionInc.totalTransactions = -1;
+    const refundedSession = refundShift ? await this.incSessionCounters(String(refundShift._id), sessionInc, exp) : null;
+    await this.checkMinor('sale', claimed, exp);
+    if (refundedSession) await this.checkMinor('session', refundedSession, exp);
 
     await this.recordPosRefundInLedger(sale, refundAmount, newStatus === 'refunded' && !isPartial ? 'refund' : 'partial refund');
-    this.writeAuditLog({
-      storeId: (sale as any).storeId, employeeId: actor.employeeId,
-      action: newStatus === 'refunded' && !isPartial ? 'sale_refunded_full' : (newStatus === 'refunded' ? 'sale_refunded_full' : 'sale_refunded_partial'),
-      targetId: saleId, targetType: 'sale',
-      metadata: { refundAmount, tenders, currency, items: dto?.items },
-    }).catch(() => {});
 
-    if (!isPartial) return { success: true, message: 'Sale fully refunded and stock restored', data: { refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp } };
-    return { success: true, message: `Partial refund of ${refundAmount.toFixed(exp)} processed`, data: { refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp } };
+    // G2.3: the Raast part of the refund goes back through the provider, as provider-refund EVENTS (never a typed-in record). The sale-side
+    // refund above is already committed; if a provider call fails the payment shows up under "Needs attention → refund failed" for a manager.
+    const digitalPlan = this.payments ? digitalRefundPlan(lines as any, alreadyRefunded, refundAmount, exp) : [];
+    const digitalRefunds = digitalPlan.length ? await this.payments!.refundForSale(String((sale as any).storeId), digitalPlan, { employeeId: actor.employeeId, refundId: String(refundId), reason: dto?.reason?.trim() ?? '' }) : undefined;
+
+    if (!isPartial) return { success: true, message: 'Sale fully refunded and stock restored', data: { ...(digitalRefunds ? { digitalRefunds } : {}), refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`, creditNote: createdCreditNote ? { id: String(createdCreditNote._id), number: createdCreditNote.number, totalMinor: createdCreditNote.totalMinor } : null } };
+    return { success: true, message: `Partial refund of ${refundAmount.toFixed(exp)} processed`, data: { ...(digitalRefunds ? { digitalRefunds } : {}), refundedAmount: refundAmount, newStatus, tenders, currency, currencyExponent: exp, refundId: String(refundId), reference: `${(sale as any).saleNumber ?? saleId}-R${refundSeq + 1}`, creditNote: createdCreditNote ? { id: String(createdCreditNote._id), number: createdCreditNote.number, totalMinor: createdCreditNote.totalMinor } : null } };
   }
 
-  async discardHeldSale(sellerId: string, saleId: string) {
-    const sale = await this.r.saleModel.findById(saleId);
+  /**
+   * Soft delete (G1a): the held sale is kept, marked `discarded` with who / when / why, and an audit event is written in the
+   * same transaction. It disappears from every list (deletedAt is set) but is never physically deleted. `reason` is what the
+   * cashier typed; old app builds send none → "not provided". Idempotent: discarding an already-discarded sale succeeds.
+   */
+  async discardHeldSale(sellerId: string, saleId: string, opts: { reason?: string; reasonCode?: string; employeeToken?: string } = {}) {
+    const sale: any = await this.r.saleModel.findById(saleId);
     if (!sale) throw new NotFoundException('Sale not found');
-    if ((sale as any).status !== 'held') throw new BadRequestException('Only held sales can be discarded');
+    await this.verifyStoreOwnership(sale.storeId, sellerId);
 
-    await this.verifyStoreOwnership((sale as any).storeId, sellerId);
+    if (sale.status === 'discarded') return { success: true, message: 'Held sale already discarded', data: { saleId, alreadyDiscarded: true } };
+    if (sale.status !== 'held') throw new BadRequestException('Only held sales can be discarded');
 
-    // status-guarded so a discard racing a completion can't delete a sale that just became real
-    const deleted = await this.r.saleModel.findOneAndDelete({ _id: saleId, status: 'held' });
-    if (!deleted) throw businessConflict('HELD_SALE_ALREADY_RESOLVED', 'This held sale was already completed or discarded');
+    const rsn = normalizeReason('discard', opts.reasonCode, opts.reason);
+    const reason = rsn.note || (rsn.code !== 'not_provided' ? rsn.code.replace(/_/g, ' ') : 'not provided');
+    const actor = await this.verifyEmployeeToken(opts.employeeToken, sale.storeId); // optional: who at the till pressed it
+    const deletedBy = actor?.employeeId ?? sellerId;
 
+    // status-guarded so a discard racing a completion can't discard a sale that just became real
+    const discarded = await this.atomic(async (tx) => {
+      const d = await this.r.saleModel.findOneAndUpdate(
+        { _id: saleId, status: 'held', deletedAt: null },
+        { $set: { status: 'discarded', deletedAt: new Date(), deletedBy, deleteReason: reason, deleteReasonCode: rsn.code, heldAt: null } },
+        { new: true, ...(tx ? { session: tx } : {}) },
+      );
+      if (!d) return null;
+      await this.writeAuditLog({
+        storeId: sale.storeId, employeeId: actor?.employeeId ?? sale.employeeId ?? null, action: 'held_sale_discarded', targetId: saleId, targetType: 'sale',
+        sessionId: sale.sessionId ?? null, registerId: sale.registerId ?? null, shiftId: sale.shiftId ?? null,
+        metadata: { reason, reasonCode: rsn.code, saleNumber: sale.saleNumber, total: sale.total, itemCount: (sale.items ?? []).length, deletedBy, byOwnerSession: !actor },
+      }, tx);
+      return d;
+    });
+    if (!discarded) {
+      const now: any = await this.r.saleModel.findById(saleId);
+      if (now?.status === 'discarded') return { success: true, message: 'Held sale already discarded', data: { saleId, alreadyDiscarded: true } };
+      throw businessConflict('HELD_SALE_ALREADY_RESOLVED', 'This held sale was already completed or discarded');
+    }
     return { success: true, message: 'Held sale discarded' };
   }
 
@@ -1310,25 +1864,41 @@ export class PosService {
     if (!dto.items?.length) throw new BadRequestException('Add at least one item to price');
 
     const lines: any[] = [];
+    const qexp = await this.storeExponent(dto.storeId);
+    const qctx = await this.pricingContext(dto.storeId, dto as any, new Date(), true);
     for (const item of dto.items) {
+      if (item.isCustom) { lines.push(this.customLine(item, await this.defaultTaxCategory(dto.storeId))); continue; }
       const variant: any = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false }).lean();
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
       const product: any = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name').lean();
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
-      lines.push({ productId: item.productId, variantId: item.variantId, name: `${product.name}${formatOptionsSuffix(variant.options)}`, sku: variant.sku, price: variant.price, qty: item.qty });
+      const qp = this.priceOneLine(qctx, item, variant, qexp, true)!;
+      lines.push({ productId: item.productId, variantId: item.variantId, name: `${product.name}${formatOptionsSuffix(variant.options)}${modifierSuffix(qp.modifiers)}`, sku: variant.sku, price: this.pricedMajor(qp, variant.price, qexp), qty: item.qty, ...(qp.modifiers.length ? { modifiers: qp.modifiers } : {}), ...(qp.fromBook ? { basePriceMinor: qp.baseMinor } : {}) });
     }
-    const discountReq = this.discountSpec(dto);
+    let discountReq = this.discountSpec(dto);
     const money = await this.moneyContext(dto.storeId, { version: dto.settingsVersion });
-    const totals = computeTotals(lines, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    let couponInfo: any = null;
+    if (dto.couponCode) {
+      if (discountReq.value > 0) throw moneyError('COUPON_WITH_DISCOUNT', 'A coupon and a manual discount cannot be combined on one sale');
+      const pre = computeTotals(this.taxLines(lines), { exp: money.exp, taxRate: money.taxRate });
+      const r = await this.resolveCoupon(dto.storeId, dto.couponCode, pre.minor.subtotal, money);
+      discountReq = { type: r.type, value: r.value };
+      couponInfo = { code: r.coupon.code, discountType: r.coupon.discountType, discountValue: r.coupon.discountValue };
+    }
+    const totals = computeTotals(this.taxLines(lines), { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     return {
       success: true,
       data: {
-        lines: lines.map((l, i) => ({ ...l, lineTotal: totals.lineTotals[i] })),
+        lines: lines.map((l, i) => ({ ...l, lineTotal: totals.lineTotals[i], lineTotalMinor: totals.lineTotalsMinor[i] })),
         subtotal: totals.subtotal, discount: totals.discount, tax: totals.tax, total: totals.total,
+        // G1b: the same figures in integer minor units (what the maths was done in)
+        subtotalMinor: totals.minor.subtotal, discountMinor: totals.minor.discount, taxMinor: totals.minor.tax, totalMinor: totals.minor.total,
         taxRate: money.taxRate, currency: money.currency, currencyExponent: money.exp,
         settingsVersion: money.settingsVersion,
         // the version asked for could not be honoured (unknown, or older than the offline window) → priced with current
         settingsVersionReplaced: !money.usedRequestedVersion,
+        // G2.4: the coupon that was applied (code + how it discounts) — null when none
+        coupon: couponInfo,
       },
     };
   }
@@ -1338,7 +1908,7 @@ export class PosService {
   /** Sales a manager should look at: oversold on sync, price changed while offline, payment shortfall. Newest first. */
   async getSalesNeedingReview(sellerId: string, storeId: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
-    const sales = await this.r.saleModel.find({ storeId, needsReview: true }).sort({ createdAt: -1 }).limit(200).lean();
+    const sales = await this.r.saleModel.find({ storeId, needsReview: true, deletedAt: null }).sort({ createdAt: -1 }).limit(200).lean();
     return { success: true, count: sales.length, data: sales };
   }
 
@@ -1355,7 +1925,7 @@ export class PosService {
       { new: true },
     );
     if (!done) throw businessConflict('SALE_ALREADY_REVIEWED', 'This sale was already resolved');
-    this.writeAuditLog({ storeId: sale.storeId, employeeId: actor.employeeId, action: 'sale_review_resolved', targetId: saleId, targetType: 'sale', metadata: { note: note.trim(), flags: sale.flags } }).catch(() => {});
+    await this.writeAuditLog({ storeId: sale.storeId, employeeId: actor.employeeId, action: 'sale_review_resolved', targetId: saleId, targetType: 'sale', metadata: { note: note.trim(), flags: sale.flags } });
     return { success: true, message: 'Sale marked as reviewed', data: done };
   }
 
@@ -1405,13 +1975,10 @@ export class PosService {
     await this.verifyStoreOwnership(storeId, sellerId);
     const { currency, exp } = await this.moneyContext(storeId);
 
-    const date = query.date ? new Date(query.date) : new Date();
-    const startOfDay = new Date(date);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(date);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const scope: any = { storeId, createdAt: { $gte: startOfDay, $lte: endOfDay } };
+    const tz = await this.storeTz(storeId);
+    const day = localDay(query.date, tz);
+    const date = day.start;
+    const scope: any = { storeId, createdAt: { $gte: day.start, $lt: day.end } };
     if (query.registerId) scope.registerId = query.registerId;
     if (query.locationId) scope.locationId = query.locationId;
 
@@ -1423,12 +1990,14 @@ export class PosService {
     const hourlyMap: Record<number, number> = {};
     const productSales: Record<string, { name: string; qty: number; revenue: number }> = {};
     for (const sale of sales) {
-      const hour = new Date((sale as any).createdAt).getHours();
+      const hour = localHour((sale as any).createdAt, tz);
       hourlyMap[hour] = roundMoney((hourlyMap[hour] || 0) + (sale as any).total, exp);
       for (const item of (sale as any).items) {
-        if (!productSales[item.productId]) productSales[item.productId] = { name: item.name, qty: 0, revenue: 0 };
-        productSales[item.productId].qty += item.qty;
-        productSales[item.productId].revenue = roundMoney(productSales[item.productId].revenue + item.lineTotal, exp);
+        // custom items (no product) are grouped under one row, "Custom item"
+        const key = item.isCustom ? 'custom' : item.productId;
+        if (!productSales[key]) productSales[key] = { name: item.isCustom ? 'Custom item' : item.name, qty: 0, revenue: 0 };
+        productSales[key].qty += item.qty;
+        productSales[key].revenue = roundMoney(productSales[key].revenue + item.lineTotal, exp);
       }
     }
 
@@ -1447,13 +2016,79 @@ export class PosService {
     return {
       success: true,
       data: {
-        date: date.toISOString().split('T')[0],
+        date: day.key, timeZone: tz,
         currency,
         currencyExponent: exp,
+        customItems: this.customItemsSummary(sales, exp),
         summary: flat,
         byPaymentMethod: byPayment,
         topProducts,
         hourlyBreakdown,
+      },
+    };
+  }
+
+  // ── G2.6 HOME DASHBOARD ────────────────────────────────────────────────────────────────────────────────────────
+  /**
+   * The Home "business pulse". ROLE-BASED: a cashier sees ONLY their own open shift; a manager / the owner see the whole store for today.
+   * The sales figures come from the SAME `summarizeSales` the daily report uses over the SAME window, so they match that report to the
+   * minor unit (tested). Reads use the (storeId, createdAt) / (sessionId) indexes and a projection (no images / notes / flags).
+   */
+  async getDashboard(sellerId: string, storeId: string, employeeToken: string | undefined) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const who = await this.verifyEmployeeToken(employeeToken, storeId);
+    const role: 'cashier' | 'manager' | 'owner' = who?.role === 'cashier' ? 'cashier' : who?.role === 'manager' ? 'manager' : 'owner';
+    const { currency, exp } = await this.moneyContext(storeId);
+    const dashTz = await this.storeTz(storeId);
+    const today = localDay(undefined, dashTz);
+    const start = today.start;
+    const end = new Date(today.end.getTime() - 1);
+
+    let scope: any = { storeId, createdAt: { $gte: start, $lte: end } };
+    let shifts: any[];
+    if (role === 'cashier') {
+      shifts = await this.r.registerSessionModel.find({ storeId, employeeId: who!.employeeId, status: 'open' }).sort({ openedAt: -1 }).limit(1).lean();
+      scope = { storeId, sessionId: shifts.length ? String(shifts[0]._id) : '__no_open_shift__' };
+    } else {
+      shifts = await this.r.registerSessionModel.find({ storeId, status: 'open' }).sort({ openedAt: -1 }).limit(20).lean();
+    }
+
+    const proj = '-items.image -notes -flags -idempotencyKey -receipt';
+    const [sales, reversed]: any[][] = await Promise.all([
+      this.r.saleModel.find({ ...scope, status: { $in: ['completed', 'partially_refunded'] } }).select(proj).lean(),
+      this.r.saleModel.find({ ...scope, status: { $in: ['refunded', 'voided'] } }).select(proj).lean(),
+    ]);
+    const summary = this.summarizeSales(sales, reversed, exp);
+    const productSales: Record<string, { name: string; qty: number; revenue: number }> = {};
+    for (const sale of sales) {
+      for (const item of sale.items ?? []) {
+        const key = item.isCustom ? 'custom' : item.productId;
+        if (!productSales[key]) productSales[key] = { name: item.isCustom ? 'Custom item' : item.name, qty: 0, revenue: 0 };
+        productSales[key].qty += item.qty;
+        productSales[key].revenue = roundMoney(productSales[key].revenue + item.lineTotal, exp);
+      }
+    }
+    const topProducts = Object.entries(productSales).map(([productId, d]) => ({ productId, ...d })).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+
+    const names = new Map<string, string>();
+    const empIds = [...new Set(shifts.map((s2) => String(s2.employeeId)))];
+    if (empIds.length) for (const e of await this.r.employeeModel.find({ _id: { $in: empIds } }).select('name').lean()) names.set(String((e as any)._id), (e as any).name);
+
+    const { byPayment, ...flat } = summary as any;
+    const manager = role !== 'cashier';
+    const [needsReview, digital] = manager
+      ? await Promise.all([
+          this.r.saleModel.countDocuments({ storeId, needsReview: true, deletedAt: null }),
+          this.payments ? this.payments.listAttention(storeId).then((x: any) => (x?.items ?? []).length).catch(() => 0) : Promise.resolve(0),
+        ])
+      : [0, 0];
+    return {
+      success: true,
+      data: {
+        role, scope: role === 'cashier' ? 'shift' : 'store', date: today.key, timeZone: dashTz, currency, currencyExponent: exp,
+        summary: flat, byPaymentMethod: byPayment, topProducts, customItems: this.customItemsSummary(sales, exp),
+        shifts: shifts.map((s2) => ({ sessionId: String(s2._id), registerId: s2.registerId ?? null, employeeId: String(s2.employeeId), employeeName: names.get(String(s2.employeeId)) ?? null, openedAt: s2.openedAt, openingCash: s2.openingCash ?? 0, totalSales: s2.totalSales ?? 0, totalTransactions: s2.totalTransactions ?? 0 })),
+        needsAttention: manager ? { salesNeedingReview: needsReview, digitalPayments: digital, total: needsReview + digital } : null,
       },
     };
   }
@@ -1475,12 +2110,12 @@ export class PosService {
     for (const sale of sales) {
       const nets = tenderNets(sale, exp);
       const used = effectivePayments(sale);
-      for (const m of ['cash', 'card', 'other'] as const) {
-        if (used.some((l) => l.method === m)) { byPayment[m].count++; byPayment[m].total = roundMoney(byPayment[m].total + nets[m], exp); }
+      for (const m of ['cash', 'card', 'other', 'raast_qr', 'store_credit'] as const) {
+        if (used.some((l) => l.method === m)) { byPayment[m] ??= { count: 0, total: 0 }; byPayment[m].count++; byPayment[m].total = roundMoney(byPayment[m].total + nets[m], exp); }
       }
     }
     const refundedValue = sum(reversed.map((x) => (x.status === 'voided' ? x.total : (x.refundedAmount || x.total))));
-    return {
+    const out = {
       totalTransactions: sales.length,
       totalRevenue,
       totalDiscount,
@@ -1491,6 +2126,19 @@ export class PosService {
       refundsCount: reversed.length + sales.filter((x) => (x.refundedAmount || 0) > 0).length,
       refundsTotal: roundMoney(refundedValue + partialRefunds, exp),
       byPayment,
+    };
+    return this.withSummaryMinor(out, exp);
+  }
+
+  /** G1b: minor twins of a report summary (derived from the same rounded decimals, so they agree by construction). */
+  private withSummaryMinor(s: any, exp: number): any {
+    const m = (v: number) => toMinor(v, exp);
+    const byPayment: Record<string, any> = {};
+    for (const [k, v] of Object.entries(s.byPayment ?? {}) as Array<[string, any]>) byPayment[k] = { ...v, totalMinor: m(v.total) };
+    return {
+      ...s, byPayment,
+      totalRevenueMinor: m(s.totalRevenue), totalDiscountMinor: m(s.totalDiscount), totalTaxMinor: m(s.totalTax), netRevenueMinor: m(s.netRevenue),
+      avgTransactionValueMinor: m(s.avgTransactionValue), refundsTotalMinor: m(s.refundsTotal),
     };
   }
 
@@ -1554,6 +2202,97 @@ export class PosService {
     return { currency: ctx.currency, exp: ctx.exp };
   }
 
+  // ── G2.4: custom items and coupons ────────────────────────────────────────────────────────────────────
+
+  async storeIdOfSale(saleId: string): Promise<string> {
+    const s: any = await this.r.saleModel.findById(saleId).select('storeId').lean();
+    if (!s) throw new NotFoundException('Sale not found');
+    return String(s.storeId);
+  }
+
+  /** A custom item as a sale line: no product, no variant, never stocked. The price is whatever the till says (a manager approves it above the store's limit). */
+  /** G2.6: the store's default tax category for a custom item that does not say (owner-set in the store tax profile). */
+  private async defaultTaxCategory(storeId: string): Promise<string> {
+    const s: any = await this.r.posSettingsModel.findOne({ storeId }).select('defaultTaxCategory').lean();
+    return s?.defaultTaxCategory === 'exempt' ? 'exempt' : 'standard';
+  }
+
+  private customLine(item: any, defaultTaxCategory: string = 'standard'): any {
+    const price = Number(item.unitPrice);
+    if (!(price > 0) || !Number.isFinite(price)) throw moneyError('CUSTOM_ITEM_PRICE_REQUIRED', 'A custom item needs a price above zero');
+    const name = String(item.customName ?? '').trim();
+    if (!name) throw moneyError('CUSTOM_ITEM_NAME_REQUIRED', 'A custom item needs a name');
+    return {
+      productId: null, variantId: null, name: name.slice(0, 120), sku: 'CUSTOM', image: null, price, listPrice: null, priceVerified: true,
+      qty: item.qty, lineTotal: 0, refundedQty: 0, isCustom: true, taxCategory: item.taxCategory === 'exempt' ? 'exempt' : item.taxCategory === 'standard' ? 'standard' : (defaultTaxCategory === 'exempt' ? 'exempt' : 'standard'),
+      customApprovedBy: null, note: item.customNote ? String(item.customNote).slice(0, 200) : null,
+    };
+  }
+
+  /** "Custom item" in reports: how many were sold and for how much. */
+  private customItemsSummary(sales: any[], exp: number): { count: number; total: number; totalMinor: number } {
+    let count = 0; let totalMinor = 0;
+    for (const sale of sales) for (const it of sale.items ?? []) if (it.isCustom) { count += it.qty; totalMinor += it.lineTotalMinor ?? toMinor(it.lineTotal, exp); }
+    return { count, total: fromMinor(totalMinor, exp), totalMinor };
+  }
+
+  /** Lines for computeTotals: an exempt custom item carries no tax. */
+  private taxLines(items: any[]): Array<{ price: number; qty: number; taxable: boolean }> {
+    return items.map((i) => ({ price: i.price, qty: i.qty, taxable: i.taxCategory !== 'exempt' }));
+  }
+
+  /**
+   * A custom item (no catalog product) needs a manager unless its line total is within the store's `customItemApprovalAboveMinor`
+   * (null = every custom item needs one). The manager's PIN session is verified server-side (for an offline replay: as of the sale's time).
+   * Stamps `customApprovedBy` on the lines and returns the approver (audited by the caller).
+   */
+  private async approveCustomItems(storeId: string, items: any[], exp: number, employeeToken: string | undefined, at?: Date): Promise<{ approver: string | null; count: number; totalMinor: number }> {
+    const custom = items.filter((i) => i.isCustom);
+    if (!custom.length) return { approver: null, count: 0, totalMinor: 0 };
+    const settings: any = await this.r.posSettingsModel.findOne({ storeId }).select('customItemApprovalAboveMinor').lean();
+    const limit: number | null = settings?.customItemApprovalAboveMinor ?? null;
+    const totalMinor = custom.reduce((s2, i) => s2 + toMinor(i.price * i.qty, exp), 0);
+    const needsManager = limit === null || custom.some((i) => toMinor(i.price * i.qty, exp) > limit);
+    let approver: string | null = null;
+    if (needsManager) {
+      const m = await this.verifyEmployeeToken(employeeToken, storeId, at);
+      if (!m || m.role !== 'manager') throw new ForbiddenException({ statusCode: 403, code: 'CUSTOM_ITEM_NEEDS_MANAGER', message: 'A manager must approve this custom item', limitMinor: limit });
+      approver = m.employeeId;
+    }
+    custom.forEach((i) => { i.customApprovedBy = approver; });
+    return { approver, count: custom.length, totalMinor };
+  }
+
+  /**
+   * POS coupon check (reuses the storefront's `Coupon` model; only a `posEnabled` seller coupon of THIS store counts). Rules: active, not
+   * deleted, started, not expired, usage limit not reached, minimum spend met, same currency for fixed-amount / minimum-spend coupons.
+   * Returns the discount in the form `computeTotals` takes. Usage is NOT counted here — see `consumeCoupon` (inside the sale transaction).
+   */
+  private async resolveCoupon(storeId: string, rawCode: string, subtotalMinor: number, money: { currency: string; exp: number }, now = new Date()) {
+    const code = String(rawCode ?? '').trim().toUpperCase();
+    if (!code) throw moneyError('COUPON_INVALID', 'Enter a coupon code');
+    const c: any = await this.r.couponModel.findOne({ code, scope: 'seller', storeId, isDelete: { $ne: true } }).lean();
+    if (!c || c.isActive === false || c.posEnabled !== true) throw moneyError('COUPON_INVALID', 'This coupon code is not valid at the till');
+    if (c.startsAt && new Date(c.startsAt) > now) throw moneyError('COUPON_NOT_STARTED', 'This coupon is not active yet', { startsAt: c.startsAt });
+    if (c.expiresAt && new Date(c.expiresAt) < now) throw moneyError('COUPON_EXPIRED', 'This coupon has expired');
+    if (c.usageLimit != null && (c.usageCount ?? 0) >= c.usageLimit) throw moneyError('COUPON_LIMIT_REACHED', 'This coupon has been used the maximum number of times');
+    const cur = String(c.currency ?? money.currency).toUpperCase();
+    if ((c.discountType === 'fixed' || c.minOrderAmount != null) && cur !== String(money.currency).toUpperCase()) throw moneyError('COUPON_CURRENCY_MISMATCH', 'This coupon is in a different currency than this store');
+    if (c.minOrderAmount != null && subtotalMinor < toMinor(c.minOrderAmount, money.exp)) throw moneyError('COUPON_MIN_SPEND', 'The sale is below this coupon\'s minimum spend', { minSpend: c.minOrderAmount });
+    if (c.discountType === 'percentage') return { coupon: c, type: 'percent' as DiscountType, value: Number(c.discountValue) };
+    const off = Math.min(toMinor(c.discountValue, money.exp), subtotalMinor); // a fixed coupon larger than the sale takes the whole subtotal, never more
+    return { coupon: c, type: 'amount' as DiscountType, value: fromMinor(off, money.exp) };
+  }
+
+  /** Counts one use of the coupon, race-safe, inside the sale's transaction: the update only matches while the limit has room. */
+  private async consumeCoupon(couponId: string, tx?: ClientSession): Promise<void> {
+    const r: any = await this.r.couponModel.updateOne(
+      { _id: couponId, $or: [{ usageLimit: null }, { $expr: { $lt: ['$usageCount', '$usageLimit'] } }] },
+      { $inc: { usageCount: 1 } }, tx ? { session: tx } : undefined,
+    );
+    if ((r?.modifiedCount ?? r?.nModified ?? 0) === 0) throw moneyError('COUPON_LIMIT_REACHED', 'This coupon has just been used the maximum number of times');
+  }
+
   /** What discount the request asks for: the new type+value form, else the legacy flat `discount`, else (completing/editing a held sale) what's already on it. */
   private discountSpec(dto: { discount?: number; discountType?: DiscountType; discountValue?: number }, existing?: any): { type: DiscountType; value: number } {
     if (dto.discountType) return { type: dto.discountType, value: dto.discountValue ?? 0 };
@@ -1563,11 +2302,13 @@ export class PosService {
   }
 
   /** `$inc` for the register session from a sale's tender nets (cash net of change; refunds already deducted). */
-  private tenderInc(nets: Record<'cash' | 'card' | 'other', number>, sign: 1 | -1): Record<string, number> {
+  private tenderInc(nets: Record<'cash' | 'card' | 'other' | 'raast_qr' | 'store_credit', number>, sign: 1 | -1): Record<string, number> {
     const inc: Record<string, number> = {};
     if (nets.cash) inc.cashSales = sign * nets.cash;
     if (nets.card) inc.cardSales = sign * nets.card;
-    if (nets.other) inc.otherSales = sign * nets.other;
+    // store credit is not drawer money: it is counted with 'other' in the shift totals (the payment line itself keeps its own method)
+    if (nets.other || nets.store_credit) inc.otherSales = sign * ((nets.other || 0) + (nets.store_credit || 0));
+    if (nets.raast_qr) inc.digitalSales = sign * nets.raast_qr;
     return inc;
   }
 
@@ -1595,7 +2336,7 @@ export class PosService {
   private async reserveStock(
     items: Array<{ variantId: string; qty: number; sku?: string }>,
     locationId: string | null,
-    opts: { allowNegative?: boolean; oversold?: Array<{ variantId: string; sku?: string; requested: number; available: number }> } = {},
+    opts: { allowNegative?: boolean; oversold?: Array<{ variantId: string; sku?: string; requested: number; available: number }>; includeExpired?: Set<string> } = {},
   ): Promise<Array<{ variantId: string; qty: number }>> {
     items = await this.expandBundleLines(items);
     const taken: Array<{ variantId: string; qty: number }> = [];
@@ -1604,7 +2345,7 @@ export class PosService {
         {
           _id: item.variantId,
           unlimitedStock: { $ne: true },
-          $expr: { $gte: [AVAILABLE_STOCK_EXPR, item.qty] },
+          $expr: { $gte: [opts.includeExpired?.has(String(item.variantId)) ? AVAILABLE_STOCK_INCL_EXPIRED_EXPR : AVAILABLE_STOCK_EXPR, item.qty] },
         },
         { $inc: { stock: -item.qty } },
       );
@@ -1667,23 +2408,105 @@ export class PosService {
     }
   }
 
+  /**
+   * G3.0: the shift a refund / void is booked on — the one whose drawer (or terminal) physically paid it. [returning] is the open shift of the
+   * register the customer is standing at (null when that register has none). Fallback for tenders that need no drawer: the sale's own shift, but
+   * ONLY while it is still open — a closed shift is never changed after the fact. Null = no shift (the refund row still carries every id).
+   */
+  private async refundShiftFor(sale: any, returning: any | null): Promise<any | null> {
+    if (returning) return returning;
+    if (!sale?.sessionId) return null;
+    return this.r.registerSessionModel.findOne({ _id: sale.sessionId, status: 'open' });
+  }
+
+  /** One ledger row per lot a line was taken from (+ one for units no lot covered). A line without lots yields exactly one row, as before (same dedupe key). */
+  private movementLines(it: any, idx: number | string, qty: number, lots: Array<{ lotId: string; qty: number }>) {
+    const base = { variantId: it.variantId, productId: it.productId, name: it.name, sku: it.sku, unitCostMinor: it.unitCostMinor ?? null, isCustom: !!it.isCustom };
+    const covered = lots.reduce((s, l) => s + l.qty, 0);
+    return [
+      ...lots.map((l) => ({ ...base, lineKey: `${idx}:${l.lotId}`, qty: l.qty, lotId: l.lotId })),
+      ...(qty - covered > 0 ? [{ ...base, lineKey: String(idx), qty: qty - covered, lotId: null as string | null }] : []),
+    ];
+  }
+
+  /**
+   * G3.2 (D4): takes the units of every LOT-TRACKED line from its lots, FEFO (expiring soonest first; expired lots only for a manager-approved line or an OFFLINE sale whose goods
+   * already left — which is flagged for review, never blocked). Writes `lots` / `soldExpired` onto the sale lines. Units no lot covers are simply not attributed to a lot
+   * (stock that predates lot tracking, or an oversold offline sale — flagged `lots_short` offline).
+   */
+  private async allocateSaleLots(items: any[], o: { offline: boolean }) {
+    const all: Array<{ variantId: string; lotId: string; qty: number }> = [];
+    const flags: Array<{ type: string; detail: Record<string, any> }> = [];
+    for (const it of items) {
+      if (it.isCustom || !it._trackLots || !it.variantId) continue;
+      const includeExpired = o.offline || !!it._sellExpired;
+      const { allocations, shortBy } = await allocateLotsFefo(this.r as any, String(it.variantId), it.qty, { includeExpired });
+      allocations.forEach((a) => all.push({ variantId: String(it.variantId), lotId: a.lotId, qty: a.qty }));
+      it.lots = allocations.map((a) => ({ lotId: a.lotId, lotNumber: a.lotNumber, qty: a.qty, expiryDate: a.expiryDate, expired: a.expired, costPriceMinor: a.costPriceMinor }));
+      it.soldExpired = allocations.some((a) => a.expired);
+      if (o.offline && it.soldExpired) flags.push({ type: 'expired_lot_sold_offline', detail: { variantId: String(it.variantId), sku: it.sku, lots: allocations.filter((a) => a.expired).map((a) => ({ lotId: a.lotId, lotNumber: a.lotNumber, qty: a.qty })) } });
+      if (o.offline && shortBy > 0) flags.push({ type: 'lots_short', detail: { variantId: String(it.variantId), sku: it.sku, units: shortBy } });
+    }
+    return { all, flags };
+  }
+
+  /** Compensation: a sale that could not be recorded gives its lot units back. */
+  private async restoreSaleLots(all: Array<{ variantId: string; lotId: string; qty: number }>): Promise<void> {
+    const byVariant = new Map<string, Array<{ lotId: string; qty: number }>>();
+    for (const a of all) (byVariant.get(a.variantId) ?? byVariant.set(a.variantId, []).get(a.variantId)!).push({ lotId: a.lotId, qty: a.qty });
+    for (const [variantId, parts] of byVariant) { try { await restoreToLots(this.r as any, variantId, parts); } catch (e: any) { /* eslint-disable-next-line no-console */ console.error(`[pos] lot restore failed for variant ${variantId} — manual lot correction needed:`, e?.message); } }
+  }
+
+  /**
+   * G3.1: the stock-ledger rows of a sale / return / void, INSIDE the caller's transaction (so they exist exactly when the document does). Custom items and unlimited-stock
+   * variants never moved stock and write nothing. Idempotent per (type, document, line). A deployment without the ledger model (older unit-test doubles) writes nothing.
+   */
+  private async recordMovements(tx: ClientSession | undefined, a: {
+    type: 'sale' | 'return' | 'void'; refType: string; refId: string; storeId: string; locationId: string | null;
+    ctx: { employeeId?: string | null; registerId?: string | null; sessionId?: string | null };
+    lines: Array<{ lineKey: string; variantId?: string | null; productId?: string | null; name?: string | null; sku?: string | null; qty: number; unitCostMinor: number | null; isCustom: boolean; lotId?: string | null }>;
+  }): Promise<void> {
+    const model = this.r.stockMovementModel;
+    if (!model) return;
+    const lines = a.lines.filter((l) => !l.isCustom && l.variantId && l.qty > 0);
+    if (!lines.length) return;
+    const unlimited = new Set((await this.r.productVariantModel.find({ _id: { $in: lines.map((l) => String(l.variantId)) }, unlimitedStock: true }).select('_id').lean()).map((v: any) => String(v._id)));
+    const sign = a.type === 'sale' ? -1 : 1;
+    const docs = lines.filter((l) => !unlimited.has(String(l.variantId))).map((l) => ({
+      storeId: a.storeId, variantId: String(l.variantId), productId: l.productId ?? null, sku: l.sku ?? null, productName: l.name ?? null, locationId: a.locationId,
+      type: a.type, qtyDelta: sign * l.qty, unitCostMinor: l.unitCostMinor, lotId: l.lotId ?? null, refType: a.refType, refId: a.refId,
+      employeeId: a.ctx.employeeId ?? null, registerId: a.ctx.registerId ?? null, sessionId: a.ctx.sessionId ?? null, deviceId: this.callerDeviceId(),
+      dedupeKey: `${a.type}:${a.refId}:${l.lineKey}`,
+    }));
+    if (docs.length) await model.insertMany(docs, { ...(tx ? { session: tx } : {}), ordered: true });
+  }
+
   /** Counts a completed sale into its register session: total, one transaction, and each tender's NET amount (cash net of change). */
   private async _incrementSessionTotals(sessionId: string, sale: { total: number; payments?: any[]; paymentMethod?: string }, exp: number) {
     const nets = tenderNets({ ...sale, refundedAmount: 0, status: 'completed' }, exp);
     const inc: any = { totalSales: sale.total, totalTransactions: 1, ...this.tenderInc(nets, 1) };
-    const updated: any = await this.r.registerSessionModel.findByIdAndUpdate(sessionId, { $inc: inc }, { new: true });
+    const updated: any = await this.incSessionCounters(sessionId, inc, exp);
 
     // A sale synced into a session that has ALREADY been closed: its cash is real, so the session's stored close
     // figures must move with it — expected cash includes the sale, and the variance is re-derived from the count the
     // cashier entered at close (the drawer did hold that cash; the count simply pre-dated the sync).
     if (updated && updated.status === 'closed' && nets.cash) {
       const expectedCash = roundMoney((updated.expectedCash || 0) + nets.cash, exp);
-      const $set: Record<string, any> = { expectedCash };
-      if (updated.closingCash !== null && updated.closingCash !== undefined) $set.cashDifference = roundMoney(updated.closingCash - expectedCash, exp);
+      const $set: Record<string, any> = { expectedCash, expectedCashMinor: toMinor(expectedCash, exp) };
+      if (updated.closingCash !== null && updated.closingCash !== undefined) {
+        $set.cashDifference = roundMoney(updated.closingCash - expectedCash, exp);
+        $set.cashDifferenceMinor = toMinor(updated.closingCash, exp) - toMinor(expectedCash, exp);
+      }
       await this.r.registerSessionModel.updateOne({ _id: sessionId }, { $set });
     }
+    await this.checkMinor('session', updated, exp);
   }
 
+  /**
+   * Durable audit write. ALWAYS awaited (never fire-and-forget); inside a business transaction it takes the transaction's
+   * session, so the audit event commits or rolls back TOGETHER with the sale / refund / void / close it describes.
+   * `deviceId` defaults to the authenticated POS device of this request (never from the request body).
+   */
   private async writeAuditLog(data: {
     storeId: string;
     employeeId?: string | null;
@@ -1691,15 +2514,346 @@ export class PosService {
     targetId?: string | null;
     targetType?: string | null;
     metadata?: object | null;
-  }): Promise<void> {
-    await this.r.posAuditLogModel.create({
-      storeId: data.storeId,
-      employeeId: data.employeeId ?? null,
-      action: data.action,
-      targetId: data.targetId ?? null,
-      targetType: data.targetType ?? null,
-      metadata: data.metadata ?? null,
+    sessionId?: string | null;
+    registerId?: string | null;
+    shiftId?: string | null;
+    deviceId?: string | null;
+  }, tx?: ClientSession): Promise<void> {
+    await this.r.posAuditLogModel.create(
+      [{
+        storeId: data.storeId,
+        employeeId: data.employeeId ?? null,
+        action: data.action,
+        targetId: data.targetId ?? null,
+        targetType: data.targetType ?? null,
+        metadata: data.metadata ?? null,
+        sessionId: data.sessionId ?? null,
+        registerId: data.registerId ?? null,
+        shiftId: data.shiftId ?? null,
+        deviceId: data.deviceId ?? currentDeviceScope()?.deviceId ?? null,
+      }],
+      tx ? { session: tx } : undefined,
+    );
+  }
+
+  private txUnsupported = false;
+
+  /**
+   * Runs `fn` inside a MongoDB transaction when the deployment supports one (Atlas, any replica set — every environment this
+   * API is deployed to; the dev stack is a replica set too). On a standalone mongod (some unit/integration harnesses) it runs
+   * `fn` without a transaction: writes are still awaited, just not atomic. `fn` may be retried by the driver on a transient
+   * transaction error, so it must only do database work through `tx`.
+   */
+  private async atomic<T>(fn: (tx?: ClientSession) => Promise<T>): Promise<T> {
+    const conn: any = (this.r as any).saleModel?.db;
+    if (!conn || typeof conn.transaction !== 'function' || this.txUnsupported) return fn(undefined);
+    try {
+      return await conn.transaction((session: ClientSession) => fn(session));
+    } catch (e: any) {
+      if (e?.code === 20 && /replica set|Transaction numbers/i.test(String(e?.message))) {
+        this.txUnsupported = true;
+        // eslint-disable-next-line no-console
+        console.warn('[PosService] this MongoDB does not support transactions — POS audit/payment records are awaited but not atomic with the sale');
+        return fn(undefined);
+      }
+      throw e;
+    }
+  }
+
+  /** The device (from the authenticated token), never from the request body. */
+  private callerDeviceId(): string | null {
+    return currentDeviceScope()?.deviceId ?? null;
+  }
+
+  // ── G1b: integer minor-unit twins (dual-write) ──────────────────────────────────────────────────────────────────
+  // Every money figure is stored twice: the decimal (what old builds and every report read today) and a `...Minor` integer.
+  // Both come from the SAME calculation — computeTotals already works in minor units and derives the decimals with fromMinor — so
+  // they cannot disagree; the checker (checkMinor) proves it after every write. Reads still use the decimals until step f.
+
+  /** Items with their minor twins. `lineTotalMinor` is the engine's own `toMinor(price × qty)`; `priceMinor × qty` may differ only for a sub-minor price. */
+  /**
+   * Per-line gross / discount / net / tax of a sale, aligned with `sale.items`. Uses what was stored at sale time (G2.5) and, for an
+   * older sale, derives the same split from the sale's own figures (deterministic, so the same answer every time).
+   */
+  private saleBreakdown(sale: any, exp: number) {
+    const items: any[] = sale.items ?? [];
+    const stored = items.length > 0 && items.every((i) => i.netMinor !== undefined && i.netMinor !== null && i.taxMinor !== undefined && i.taxMinor !== null);
+    if (stored) {
+      return items.map((i) => {
+        const gross = Number(i.lineTotalMinor ?? toMinor(i.lineTotal ?? Number(i.price) * Number(i.qty), exp));
+        const disc = Number(i.discountShareMinor ?? gross - Number(i.netMinor));
+        return { grossMinor: gross, discountMinor: disc, netMinor: Number(i.netMinor), taxMinor: Number(i.taxMinor), totalMinor: Number(i.netMinor) + Number(i.taxMinor) };
+      });
+    }
+    return lineBreakdown(
+      items.map((i) => ({ grossMinor: Number(i.lineTotalMinor ?? toMinor(i.lineTotal ?? Number(i.price) * Number(i.qty), exp)), taxable: i.taxCategory !== 'exempt' })),
+      Number(sale.discountMinor ?? toMinor(sale.discount ?? 0, exp)), Number(sale.taxMinor ?? toMinor(sale.tax ?? 0, exp)),
+    );
+  }
+
+  /** Writes the CREDIT NOTE of a return / void inside the caller's transaction (own gap-free number, linked to the invoice and lines). */
+  private async createCreditNote(tx: ClientSession | undefined, a: {
+    sale: any; kind: 'return' | 'void'; scope: 'partial' | 'full'; refundId: string | null; reason: { note: string | null; code: string | null }; exp: number; currency: string;
+    lines: Array<{ idx: number; qty: number; a: { grossMinor: number; discountMinor: number; netMinor: number; taxMinor: number; totalMinor: number }; restock: boolean; restockReason: string | null }>;
+    tenders: Array<{ method: string; amountMinor?: number; amount?: number }>; actorId: string; approvedBy: string | null; approvalReasons: string[];
+    ctx: { sessionId: string | null; registerId: string | null; shiftId?: string | null };
+  }) {
+    const n = await this.nextDocNumber(String(a.sale.storeId), 'creditNote', tx);
+    const lines = a.lines.map((l) => {
+      const it = a.sale.items[l.idx];
+      return {
+        saleItemId: String(it._id), productId: it.productId ?? null, variantId: it.variantId ?? null, name: it.name, sku: it.sku, hsCode: it.hsCode ?? null,
+        taxCategory: it.taxCategory ?? 'standard', qty: l.qty, unitPriceMinor: Number(it.priceMinor ?? toMinor(it.price, a.exp)),
+        grossMinor: l.a.grossMinor, discountMinor: l.a.discountMinor, netMinor: l.a.netMinor, taxMinor: l.a.taxMinor, totalMinor: l.a.totalMinor,
+        restock: l.restock, restockReason: l.restockReason,
+      };
     });
+    const sum = (k: 'grossMinor' | 'discountMinor' | 'netMinor' | 'taxMinor' | 'totalMinor') => lines.reduce((s2, l) => s2 + l[k], 0);
+    const [doc] = await this.r.posCreditNoteModel.create([{
+      storeId: a.sale.storeId, number: n.number, seq: n.seq, saleId: String(a.sale._id), saleNumber: a.sale.saleNumber ?? null,
+      invoiceNumber: a.sale.invoice?.number ?? null, invoiceIssuedAt: a.sale.invoice?.issuedAt ?? null,
+      kind: a.kind, scope: a.scope, refundId: a.refundId, reasonCode: a.reason.code, reason: a.reason.note,
+      lines, grossMinor: sum('grossMinor'), discountMinor: sum('discountMinor'), netMinor: sum('netMinor'), taxMinor: sum('taxMinor'), totalMinor: sum('totalMinor'),
+      currency: a.currency, currencyExponent: a.exp,
+      tenders: a.tenders.map((t) => ({ method: t.method, amountMinor: t.amountMinor ?? toMinor(t.amount ?? 0, a.exp) })),
+      seller: a.sale.invoice?.seller ?? (await this.sellerSnapshot(String(a.sale.storeId), tx)), customerName: a.sale.customerName ?? null,
+      employeeId: a.actorId, approvedBy: a.approvedBy, approvalReasons: a.approvalReasons,
+      // the REFUNDING till / shift (whose drawer paid) …
+      registerId: a.ctx.registerId ?? null, sessionId: a.ctx.sessionId ?? null,
+      // … and the ORIGINAL sale's till / shift — both are kept (G3.0)
+      saleRegisterId: a.sale.registerId ?? null, saleSessionId: a.sale.sessionId ?? null,
+    }], tx ? { session: tx } : undefined);
+    return doc as any;
+  }
+
+  private itemsMinor(items: any[], totals: { lineTotalsMinor: number[]; minor?: { discount: number; tax: number } }, exp: number): any[] {
+    // G2.5: every line carries its own share of the discount and tax (Σ lines = the sale), so a return can reverse exactly its part
+    const bd = totals.minor ? lineBreakdown(items.map((it, i) => ({ grossMinor: totals.lineTotalsMinor[i], taxable: it.taxCategory !== 'exempt' })), totals.minor.discount, totals.minor.tax) : null;
+    return items.map((raw, i) => { const { _trackLots: _t, _sellExpired: _s, ...it } = raw as any; return {
+      ...it,
+      priceMinor: toMinor(it.price, exp),
+      ...(it.listPrice !== null && it.listPrice !== undefined ? { listPriceMinor: toMinor(it.listPrice, exp) } : {}),
+      lineTotalMinor: totals.lineTotalsMinor[i],
+      ...(bd ? { discountShareMinor: bd[i].discountMinor, netMinor: bd[i].netMinor, taxMinor: bd[i].taxMinor } : {}),
+    }; });
+  }
+
+  // ── G2.5: tax invoice numbers + seller snapshot ─────────────────────────────────────────────────────────────────
+  /** Makes sure the store's settings document exists BEFORE a transaction opens (a first-ever upsert inside two concurrent transactions would collide). */
+  private async ensureSettings(storeId: string): Promise<void> {
+    await this.r.posSettingsModel.updateOne({ storeId }, { $setOnInsert: { storeId } }, { upsert: true });
+  }
+
+  /**
+   * The next number of a per-store document sequence. Called INSIDE the transaction that creates the document: if that transaction aborts
+   * the increment aborts with it, so the sequence has no holes; two tills contend on the same counter document and one retries.
+   */
+  private async nextDocNumber(storeId: string, kind: 'invoice' | 'creditNote', tx?: ClientSession): Promise<{ seq: number; number: string }> {
+    const field = kind === 'invoice' ? 'invoiceCounter' : 'creditNoteCounter';
+    const s: any = await this.r.posSettingsModel.findOneAndUpdate({ storeId }, { $inc: { [field]: 1 } }, { new: true, upsert: true, ...(tx ? { session: tx } : {}) });
+    const seq = Number(s[field]);
+    return { seq, number: formatDocNumber(kind === 'invoice' ? INVOICE_PREFIX : CREDIT_NOTE_PREFIX, seq) };
+  }
+
+  /** The seller as registered (store tax profile), snapshotted onto every invoice and credit note. */
+  private async sellerSnapshot(storeId: string, tx?: ClientSession) {
+    const s: any = await this.r.posSettingsModel.findOne({ storeId }, null, tx ? { session: tx } : undefined).select('taxNtn taxStrn taxLegalName taxRegisteredAddress businessName businessAddress').lean();
+    return { legalName: s?.taxLegalName ?? s?.businessName ?? null, address: s?.taxRegisteredAddress ?? s?.businessAddress ?? null, ntn: s?.taxNtn ?? null, strn: s?.taxStrn ?? null };
+  }
+
+  private async issueInvoice(storeId: string, issuedAt: Date, offlineRef: string | null | undefined, tx?: ClientSession) {
+    const n = await this.nextDocNumber(storeId, 'invoice', tx);
+    return { number: n.number, seq: n.seq, issuedAt, offlineRef: offlineRef ?? null, seller: await this.sellerSnapshot(storeId, tx), fiscal: { status: 'not_enabled', externalInvoiceNumber: null, qrPayload: null, attempts: 0, lastError: null } };
+  }
+
+  /** Sale-level minor figures. `discountValueMinor` exists only for an AMOUNT discount (a percentage is not money). */
+  private saleMoneyMinor(totals: { minor: { subtotal: number; discount: number; tax: number; total: number } }, discount: { type: string; value: number }, exp: number, settled?: { change: number; shortBy: number } | null): Record<string, number> {
+    return {
+      subtotalMinor: totals.minor.subtotal,
+      discountMinor: totals.minor.discount,
+      taxMinor: totals.minor.tax,
+      totalMinor: totals.minor.total,
+      refundedAmountMinor: 0, // a sale starts un-refunded (the decimal's schema default is 0); the refund path moves both
+      ...(discount.value > 0 && discount.type === 'amount' ? { discountValueMinor: toMinor(discount.value, exp) } : {}),
+      ...(settled !== undefined ? { changeGivenMinor: settled ? toMinor(settled.change, exp) : 0, paymentShortfallMinor: settled ? toMinor(settled.shortBy, exp) : 0 } : {}),
+    };
+  }
+
+  private paymentLinesMinor(lines: Array<{ method: string; amount: number; tendered?: number; reference?: string | null }>, exp: number): any[] {
+    return lines.map((l) => ({ ...l, amountMinor: toMinor(l.amount, exp), ...(l.tendered !== undefined && l.tendered !== null ? { tenderedMinor: toMinor(l.tendered, exp) } : {}) }));
+  }
+
+  private tendersMinor(tenders: Array<{ method: string; amount: number }>, exp: number): any[] {
+    return tenders.map((t) => ({ ...t, amountMinor: toMinor(t.amount, exp) }));
+  }
+
+  /**
+   * Adds deltas to a shift's running counters: the decimal AND its integer twin, in ONE atomic update. An update pipeline, so a
+   * shift that was already OPEN when G1b was deployed (counters have no minor yet) starts its minor counter from the existing
+   * decimal in the same update — never from 0. `inc` holds decimal deltas keyed by counter name (`totalTransactions` is a plain count).
+   */
+  private async incSessionCounters(sessionId: string, inc: Record<string, number>, exp: number, tx?: ClientSession): Promise<any> {
+    const f = 10 ** exp;
+    const set: Record<string, any> = {};
+    for (const [k, d] of Object.entries(inc)) {
+      set[k] = { $add: [{ $ifNull: ['$' + k, 0] }, d] };
+      if (k === 'totalTransactions') continue;
+      const fromMajor = { $toLong: { $round: [{ $multiply: [{ $ifNull: ['$' + k, 0] }, f] }, 0] } };
+      set[k + 'Minor'] = { $add: [{ $ifNull: ['$' + k + 'Minor', fromMajor] }, Long.fromNumber(toMinor(d, exp))] };
+    }
+    return this.r.registerSessionModel.findByIdAndUpdate(sessionId, [{ $set: set }] as any, { new: true, updatePipeline: true, ...(tx ? { session: tx } : {}) } as any);
+  }
+
+  /**
+   * G1b: the server RECOMPUTES every amount from its own data; a client's decimal and its optional integer twin are only a
+   * cross-check — and a disagreement NEVER rejects the sale (an offline sale whose cash was already taken must always sync, and a
+   * client rounding bug must never stop checkout at the counter). Returns what disagreed, with the client's and the server's values;
+   * the caller stores the sale as the server computed it and calls `recordClientMismatches` once it is saved.
+   * `serverTotalMinor` is the server's own total, shown next to the client's `clientTotalMinor` / `clientTotal`.
+   */
+  private reconcileClientMoney(dto: any, exp: number, serverTotalMinor: number): Array<Record<string, any>> {
+    const out: Array<Record<string, any>> = [];
+    const pair = (major: any, minor: any, field: string, serverMinor: number | null) => {
+      if (minor === undefined || minor === null) return;
+      if (typeof minor !== 'number' || !Number.isSafeInteger(minor)) {
+        out.push({ field, clientDecimal: major ?? null, clientMinor: String(minor), serverMinor, reason: 'minor_not_a_safe_integer' });
+        return;
+      }
+      if (major === undefined || major === null) return;
+      if (toMinor(major, exp) !== minor) out.push({ field, clientDecimal: major, clientMinor: minor, serverMinor: serverMinor ?? toMinor(major, exp), reason: 'decimal_and_minor_disagree' });
+    };
+    pair(dto.clientTotal, dto.clientTotalMinor, 'clientTotal', serverTotalMinor);
+    pair(dto.amountTendered, dto.amountTenderedMinor, 'amountTendered', null);
+    if ((dto.discountType ?? 'amount') === 'amount') pair(dto.discountValue, dto.discountValueMinor, 'discountValue', null);
+    (dto.payments ?? []).forEach((p: any, i: number) => pair(p.amount, p.amountMinor, `payments[${i}].amount`, null));
+    (dto.items ?? []).forEach((it: any, i: number) => pair(it.unitPrice, it.unitPriceMinor, `items[${i}].unitPrice`, null));
+    return out;
+  }
+
+  /** After the sale is saved: log + `money_minor_mismatch` audit event (source: client) + metric. NEVER throws and never changes the sale. */
+  private async recordClientMismatches(sale: any, mismatches: Array<Record<string, any>>, exp: number): Promise<void> {
+    if (!mismatches.length) return;
+    try {
+      PosMinorMetrics.recordClient(mismatches.length);
+      // eslint-disable-next-line no-console
+      console.warn(`[pos-minor-mismatch] client payload for sale ${String(sale?._id)} disagreed with itself: ${JSON.stringify(mismatches.slice(0, 5))}`);
+      await this.writeAuditLog({
+        storeId: String(sale?.storeId ?? ''), employeeId: sale?.employeeId ?? null, action: 'money_minor_mismatch', targetId: sale?._id ? String(sale._id) : null, targetType: 'sale',
+        sessionId: sale?.sessionId ?? null, registerId: sale?.registerId ?? null, shiftId: sale?.shiftId ?? null,
+        metadata: { source: 'client', exponent: exp, offline: !!sale?.isOffline, serverTotalMinor: sale?.totalMinor != null ? (typeof sale.totalMinor.toNumber === 'function' ? sale.totalMinor.toNumber() : sale.totalMinor) : null, count: mismatches.length, mismatches: mismatches.slice(0, 10) },
+      });
+    } catch (e: any) {
+      // eslint-disable-next-line no-console
+      console.error('[pos-minor-mismatch] could not record a client mismatch (ignored):', e?.message);
+    }
+  }
+
+  /** Consistency checker (G1b b): `minor == toMinor(major)` for every pair of a just-written document. NEVER throws and never delays/fails the sale. */
+  private async checkMinor(kind: keyof typeof PosService.MINOR_PAIRS, doc: any, exp: number): Promise<MinorMismatch[]> {
+    try {
+      if (!doc) return [];
+      const plain = typeof doc.toObject === 'function' ? doc.toObject({ getters: true, virtuals: false }) : doc;
+      const mismatches = checkMinorPairs(plain, PosService.MINOR_PAIRS[kind], exp);
+      PosMinorMetrics.record(kind, mismatches.length);
+      if (mismatches.length === 0) return [];
+      // eslint-disable-next-line no-console
+      console.error(`[pos-minor-mismatch] ${kind} ${String(plain._id)}: ${JSON.stringify(mismatches.slice(0, 5))}`);
+      try {
+        await this.writeAuditLog({
+          storeId: String(plain.storeId ?? ''), employeeId: null, action: 'money_minor_mismatch', targetId: plain._id ? String(plain._id) : null, targetType: kind,
+          sessionId: plain.sessionId ?? (kind === 'session' ? String(plain._id) : null), registerId: plain.registerId ?? null, shiftId: plain.shiftId ?? null,
+          metadata: { exponent: exp, count: mismatches.length, mismatches: mismatches.slice(0, 10) },
+        });
+      } catch (e: any) {
+        // eslint-disable-next-line no-console
+        console.error('[pos-minor-mismatch] audit write failed:', e?.message);
+      }
+      return mismatches;
+    } catch (e: any) {
+      // eslint-disable-next-line no-console
+      console.error('[pos-minor-check] checker failed (ignored):', e?.message);
+      return [];
+    }
+  }
+
+  static readonly MINOR_PAIRS = {
+    sale: [
+      ['subtotal', 'subtotalMinor'], ['discount', 'discountMinor'], ['tax', 'taxMinor'], ['total', 'totalMinor'],
+      ['changeGiven', 'changeGivenMinor'], ['paymentShortfall', 'paymentShortfallMinor'], ['refundedAmount', 'refundedAmountMinor'],
+      ['items[].price', 'items[].priceMinor'], ['items[].listPrice', 'items[].listPriceMinor'], ['items[].lineTotal', 'items[].lineTotalMinor'],
+      ['payments[].amount', 'payments[].amountMinor'], ['payments[].tendered', 'payments[].tenderedMinor'],
+      ['refunds[].amount', 'refunds[].amountMinor'],
+    ],
+    session: [
+      ['openingCash', 'openingCashMinor'], ['closingCash', 'closingCashMinor'], ['expectedCash', 'expectedCashMinor'], ['cashDifference', 'cashDifferenceMinor'],
+      ['cashSales', 'cashSalesMinor'], ['cardSales', 'cardSalesMinor'], ['otherSales', 'otherSalesMinor'], ['digitalSales', 'digitalSalesMinor'], ['totalSales', 'totalSalesMinor'], ['totalRefunds', 'totalRefundsMinor'],
+      ['cashAdjustments[].amount', 'cashAdjustments[].amountMinor'],
+      ['cardReconciliation.slipTotal', 'cardReconciliation.slipTotalMinor'], ['cardReconciliation.expectedCard', 'cardReconciliation.expectedCardMinor'], ['cardReconciliation.variance', 'cardReconciliation.varianceMinor'],
+    ],
+    payment: [['amount', 'amountMinor'], ['tendered', 'tenderedMinor']],
+    refund: [['amount', 'amountMinor'], ['tenders[].amount', 'tenders[].amountMinor']],
+  } as unknown as Record<'sale' | 'session' | 'payment' | 'refund', Array<[string, string]>>;
+
+  /** card / other are only RECORDED by the cashier today (no terminal integration); cash the cashier physically took is confirmed. */
+  private paymentStatus(tender: string): 'confirmed' | 'recorded_unverified' {
+    return tender === 'cash' || isDigitalTender(tender) ? 'confirmed' : 'recorded_unverified'; // a digital payment is only ever attached once CONFIRMED
+  }
+
+  /**
+   * G2.3 — Raast QR lines. A QR line is accepted only when it points at a payment the provider has CONFIRMED (and nothing else):
+   * confirmed, unused, unrefunded, in this store and shift, in the sale's currency and for exactly the line's amount. Never offline
+   * (a digital payment is proven by the server, not by the till). Checked BEFORE stock is touched; the payment is then marked used
+   * inside the sale's transaction (`consumeDigital`). Returns the lines with the provider reference filled in.
+   */
+  private async verifyDigitalLines<L extends { method: string; amount: number; reference?: string | null; intentId?: string | null }>(
+    storeId: string, sessionId: string, lines: L[], money: { currency: string; exp: number }, isOffline: boolean,
+  ): Promise<{ lines: L[]; digital: Array<{ intentId: string; providerRef: string }> }> {
+    const digital: Array<{ intentId: string; providerRef: string }> = [];
+    const hasDigital = lines.some((l) => isDigitalTender(l.method));
+    if (!hasDigital) return { lines, digital };
+    if (isOffline) throw moneyError('DIGITAL_PAYMENT_ONLINE_ONLY', 'A Raast QR payment cannot be part of an offline sale: it needs the network');
+    if (!this.payments) throw new HttpException({ statusCode: 503, code: 'DIGITAL_PAYMENTS_UNAVAILABLE', message: 'Digital payments are not available' }, 503);
+    const seen = new Set<string>();
+    const out: L[] = [];
+    for (const l of lines) {
+      if (!isDigitalTender(l.method)) { out.push(l); continue; }
+      if (!l.intentId) throw moneyError('PAYMENT_INTENT_REQUIRED', 'A Raast QR line must carry the confirmed payment it settles (intentId)');
+      if (seen.has(String(l.intentId))) throw moneyError('PAYMENT_USED_TWICE', 'The same payment cannot settle two lines of one sale');
+      seen.add(String(l.intentId));
+      const v = await this.payments.verifyForSale(storeId, String(l.intentId), { sessionId, amountMinor: toMinor(l.amount, money.exp), currency: money.currency });
+      digital.push({ intentId: v.intentId, providerRef: v.providerRef });
+      out.push({ ...l, reference: v.providerRef });
+    }
+    return { lines: out, digital };
+  }
+
+  /** Marks the confirmed payments as belonging to this sale — inside the sale's transaction (one sale per payment, race-safe). */
+  private async consumeDigital(storeId: string, digital: Array<{ intentId: string }>, sale: any, tx?: ClientSession): Promise<void> {
+    for (const d of digital) await this.payments!.consumeInTx(storeId, d.intentId, { id: String(sale._id), number: sale.saleNumber ?? null }, tx);
+  }
+
+  /** One immutable PosPayment per tender line. (saleId, lineNo) and (store, idempotencyKey, lineNo) are unique → a retry cannot add a second row. */
+  private async recordPayments(
+    sale: any,
+    lines: Array<{ method: string; amount: number; tendered?: number | null; reference?: string | null; intentId?: string | null }>,
+    ctx: { sessionId: string | null; registerId: string | null; shiftId: string | null; employeeId: string | null },
+    tx?: ClientSession,
+  ): Promise<void> {
+    if (!lines.length) return;
+    const deviceId = this.callerDeviceId();
+    await this.r.posPaymentModel.insertMany(
+      lines.map((l, i) => ({
+        saleId: String(sale._id), saleNumber: sale.saleNumber ?? null, lineNo: i,
+        tender: l.method, amount: l.amount, tendered: l.tendered ?? null,
+        amountMinor: toMinor(l.amount, sale.currencyExponent ?? 2), ...(l.tendered !== undefined && l.tendered !== null ? { tenderedMinor: toMinor(l.tendered, sale.currencyExponent ?? 2) } : {}),
+        currency: sale.currency ?? null, currencyExponent: sale.currencyExponent ?? null,
+        reference: l.reference ?? null, status: this.paymentStatus(l.method), confirmationSource: isDigitalTender(l.method) ? 'raast' : null, confirmedAt: isDigitalTender(l.method) ? new Date() : null,
+        paymentIntentId: isDigitalTender(l.method) ? (l.intentId ?? null) : null,
+        storeId: sale.storeId, registerId: ctx.registerId, sessionId: ctx.sessionId, shiftId: ctx.shiftId, deviceId, employeeId: ctx.employeeId,
+        ...(sale.idempotencyKey ? { idempotencyKey: sale.idempotencyKey } : {}),
+      })),
+      tx ? { session: tx, ordered: true } : { ordered: true },
+    );
   }
 
   // ── REGISTER CRUD EXTENSIONS ──────────────────────────────────────────────
@@ -1724,7 +2878,10 @@ export class PosService {
 
     const setFields: any = {};
     if (dto.name !== undefined) setFields['registers.$.name'] = dto.name;
-    if (dto.defaultFloatCash !== undefined) setFields['registers.$.defaultFloatCash'] = dto.defaultFloatCash;
+    if (dto.defaultFloatCash !== undefined) {
+      setFields['registers.$.defaultFloatCash'] = dto.defaultFloatCash;
+      setFields['registers.$.defaultFloatCashMinor'] = toMinor(dto.defaultFloatCash, isoExponent((store as any).baseCurrency));
+    }
     if (dto.status !== undefined) setFields['registers.$.status'] = dto.status;
     if (dto.locationId !== undefined) setFields['registers.$.locationId'] = dto.locationId;
 
@@ -1830,7 +2987,7 @@ export class PosService {
       .select('-pin');
 
     if (dto.pin || (dto as any).status === 'inactive') await this.revocations?.revokeEmployee(employeeId);
-    this.writeAuditLog({ storeId, employeeId: null, action: 'employee_updated', targetId: employeeId, targetType: 'employee', metadata: { fields: Object.keys(dto) } }).catch(() => {});
+    await this.writeAuditLog({ storeId, employeeId: null, action: 'employee_updated', targetId: employeeId, targetType: 'employee', metadata: { fields: Object.keys(dto) } });
 
     return { success: true, message: 'Employee updated', data: updated };
   }
@@ -1846,7 +3003,7 @@ export class PosService {
     await this.r.employeeModel.findByIdAndUpdate(employeeId, { isDelete: true, status: 'inactive' });
     await this.revocations?.revokeEmployee(employeeId);
 
-    this.writeAuditLog({ storeId, employeeId: null, action: 'employee_deactivated', targetId: employeeId, targetType: 'employee' }).catch(() => {});
+    await this.writeAuditLog({ storeId, employeeId: null, action: 'employee_deactivated', targetId: employeeId, targetType: 'employee' });
     return { success: true, message: 'Employee deactivated' };
   }
 
@@ -1870,7 +3027,7 @@ export class PosService {
     await this.r.employeeModel.findByIdAndUpdate(employeeId, { pin: hashedPin, pinFailedAttempts: 0, pinLockedUntil: null });
     await this.revocations?.revokeEmployee(employeeId); // sessions opened with the OLD pin end now
 
-    this.writeAuditLog({ storeId, employeeId: null, action: 'employee_pin_reset', targetId: employeeId, targetType: 'employee' }).catch(() => {});
+    await this.writeAuditLog({ storeId, employeeId: null, action: 'employee_pin_reset', targetId: employeeId, targetType: 'employee' });
     return { success: true, message: 'PIN reset successfully' };
   }
 
@@ -1896,6 +3053,7 @@ export class PosService {
           status: 'closed',
           closedAt: new Date(),
           expectedCash,
+          expectedCashMinor: toMinor(expectedCash, forceExp),
           closingCash: null,
           cashDifference: null,
           forceClosedBy: sellerId,
@@ -1907,7 +3065,7 @@ export class PosService {
     );
     if (!updated) throw businessConflict('SESSION_ALREADY_CLOSED', 'This session was already closed');
 
-    this.writeAuditLog({ storeId: (session as any).storeId, employeeId: null, action: 'session_force_closed', targetId: sessionId, targetType: 'session', metadata: { reason: dto.reason } }).catch(() => {});
+    await this.writeAuditLog({ storeId: (session as any).storeId, employeeId: null, action: 'session_force_closed', targetId: sessionId, targetType: 'session', metadata: { reason: dto.reason } });
     return { success: true, message: 'Session force-closed', data: updated };
   }
 
@@ -1916,17 +3074,15 @@ export class PosService {
   async getProductByBarcode(sellerId: string, storeId: string, barcode: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
 
-    const variant = await this.r.productVariantModel
-      .findOne({ barcode, isDelete: false, status: 'active' })
-      .lean();
-
-    if (!variant) throw new NotFoundException(`No product found with barcode: ${barcode}`);
-
-    const product = await this.r.productModel
-      .findOne({ _id: (variant as any).productId, storeId, isDelete: false, status: 'active' })
-      .select('_id name type gallery coverImages')
-      .lean();
-
+    // G2.6: a barcode is unique per STORE, not globally — several stores may use the same code, so pick the match that belongs to THIS store
+    const candidates: any[] = await this.r.productVariantModel.find({ barcode, isDelete: false, status: 'active' }).limit(50).lean();
+    if (!candidates.length) throw new NotFoundException(`No product found with barcode: ${barcode}`);
+    let variant: any = null; let product: any = null;
+    for (const c of candidates) {
+      if (c.storeId && String(c.storeId) !== storeId) continue;
+      const p = await this.r.productModel.findOne({ _id: c.productId, storeId, isDelete: false, status: 'active' }).select('_id name type gallery coverImages').lean();
+      if (p) { variant = c; product = p; break; }
+    }
     if (!product) throw new NotFoundException('Product not found in this store');
 
     return {
@@ -1953,7 +3109,8 @@ export class PosService {
 
   // ── SALES EXTENSIONS ──────────────────────────────────────────────────────
 
-  async voidSale(sellerId: string, saleId: string, dto: { reason?: string }, employeeToken: string | undefined) {
+  async voidSale(sellerId: string, saleId: string, dto: { reason?: string; reasonCode?: string; registerId?: string }, employeeToken: string | undefined) {
+    const voidReason = normalizeReason('void', dto?.reasonCode, dto?.reason);
     const sale = await this.r.saleModel.findById(saleId);
     if (!sale) throw new NotFoundException('Sale not found');
     if ((sale as any).status !== 'completed') {
@@ -1966,27 +3123,79 @@ export class PosService {
 
     // Claim the void with a status-guarded update first; only the request that wins the
     // `completed → voided` transition restores stock and reverses the session totals.
-    const claimed = await this.r.saleModel.findOneAndUpdate(
-      { _id: saleId, status: 'completed' },
-      { $set: { status: 'voided', voidedAt: new Date(), voidedBy: actor.employeeId } },
-    );
+    await this.ensureSettings(String((sale as any).storeId));
+    const { exp: cnExp, currency: cnCurrency } = await this.docMoney(sale);
+    // G3.0: a void pays the customer back at the till the manager is standing at — same shift rule as a refund
+    const voidRegisterId: string | null = dto?.registerId ?? (sale as any).registerId ?? null;
+    const voidNow: any = voidRegisterId ? await this.r.registerSessionModel.findOne({ registerId: voidRegisterId, storeId: (sale as any).storeId, status: 'open' }) : null;
+    const voidCash = effectivePayments(sale as any).some((l: any) => l.method === 'cash' && l.amount > 0);
+    if (voidRegisterId && dto?.registerId && voidCash && !voidNow) throw businessConflict('OPEN_SHIFT_REQUIRED', 'Open a shift on this register before paying a cash refund');
+    const voidShift = await this.refundShiftFor(sale, voidNow);
+    const voidCtx = { sessionId: voidShift ? String(voidShift._id) : null, registerId: voidRegisterId, shiftId: voidShift?.shiftId ?? null };
+    // G3.3: a void gives back what the sale took from the customer's store credit and points
+    const voidCust = this.customers && (sale as any).customerId ? await this.customers.resolve(String((sale as any).storeId), String((sale as any).customerId)) : null;
+    const voidCreditMinor = effectivePayments(sale as any).filter((l: any) => l.method === 'store_credit').reduce((s2: number, l: any) => s2 + toMinor(l.amount, cnExp), 0);
+    if (voidCreditMinor > 0 && (!this.customers || !voidCust)) throw moneyError('CUSTOMER_REQUIRED_FOR_CREDIT', 'The customer of this sale could not be found — the store credit cannot be given back');
+    let voidCreditNote: any = null;
+    const claimed = await this.atomic(async (tx) => {
+      const c = await this.r.saleModel.findOneAndUpdate(
+        { _id: saleId, status: 'completed' },
+        { $set: { status: 'voided', voidedAt: new Date(), voidedBy: actor.employeeId, voidReason: voidReason.note, voidReasonCode: voidReason.code } },
+        tx ? { session: tx } : undefined,
+      );
+      if (!c) return null;
+      // G2.5: a void is a full return — it produces a credit note too (every line, restocked)
+      const bdv = this.saleBreakdown(sale as any, cnExp);
+      voidCreditNote = await this.createCreditNote(tx, {
+        sale: sale as any, kind: 'void', scope: 'full', refundId: null, reason: voidReason, exp: cnExp, currency: cnCurrency,
+        lines: (sale as any).items.map((it: any, idx: number) => ({ idx, qty: it.qty, a: returnLineAmounts(bdv[idx], it.qty, 0, it.qty), restock: !it.isCustom, restockReason: null })),
+        tenders: effectivePayments(sale as any).map((l: any) => ({ method: l.method, amountMinor: toMinor(l.amount, cnExp) })), actorId: actor.employeeId, approvedBy: actor.employeeId, approvalReasons: [],
+        ctx: voidCtx,
+      });
+      if (voidCreditMinor > 0) await this.customers!.ledger.addLot({ storeId: String((sale as any).storeId), customerId: voidCust!.ledgerId, amountMinor: voidCreditMinor, type: 'spend_reversal', idemKey: `pos-void:${saleId}`, note: `Void of sale ${(sale as any).saleNumber}`, actor: { actorId: actor.employeeId, actorRole: 'manager' }, refs: { saleId, creditNoteNumber: voidCreditNote?.number ?? null, deviceId: this.callerDeviceId(), registerId: voidRegisterId, sessionId: voidShift ? String(voidShift._id) : null } }, tx);
+      const vloy: any = (sale as any).loyalty;
+      if (vloy && voidCust) {
+        const cfg = await this.customers!.loyaltyConfig(String((sale as any).storeId));
+        const rev = Math.max(0, (vloy.earnedPoints ?? 0) - (vloy.reversedPoints ?? 0)); const rest = Math.max(0, (vloy.redeemedPoints ?? 0) - (vloy.restoredPoints ?? 0));
+        if (rev > 0) await this.customers!.earnInTx(tx, { storeId: String((sale as any).storeId), ledgerId: voidCust.ledgerId, points: -rev, saleId, description: `Void — sale ${(sale as any).saleNumber}`, tiers: cfg.tiers, type: 'adjustment' });
+        if (rest > 0) await this.customers!.earnInTx(tx, { storeId: String((sale as any).storeId), ledgerId: voidCust.ledgerId, points: rest, saleId, description: `Points restored — void of sale ${(sale as any).saleNumber}`, tiers: cfg.tiers, type: 'adjustment' });
+      }
+      await this.recordMovements(tx, { type: 'void', refType: 'void', refId: saleId, storeId: String((sale as any).storeId), locationId: (sale as any).locationId ?? null, ctx: { employeeId: actor.employeeId, registerId: voidRegisterId, sessionId: voidShift ? String(voidShift._id) : null },
+        lines: ((sale as any).items as any[]).flatMap((it: any, idx: number) => this.movementLines(it, idx, it.qty, it.lots ?? [])) });
+      await this.writeAuditLog({
+        storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_voided', targetId: saleId, targetType: 'sale',
+        ...voidCtx, metadata: { reason: voidReason.note, reasonCode: voidReason.code, saleSessionId: (sale as any).sessionId ?? null, saleRegisterId: (sale as any).registerId ?? null },
+      }, tx);
+      return c;
+    });
     if (!claimed) throw businessConflict('SALE_CHANGED_CONCURRENTLY', 'This sale was already voided or refunded');
 
     await this.restoreSoldStock(
-      (sale as any).items.map((item: any) => ({ variantId: String(item.variantId), qty: item.qty })),
+      (sale as any).items.filter((item: any) => !item.isCustom).map((item: any) => ({ variantId: String(item.variantId), qty: item.qty })),
       (sale as any).locationId ?? null,
     );
+    // G3.2: a void puts every unit back into the lots it came from
+    for (const it of ((sale as any).items as any[]).filter((x: any) => !x.isCustom && (x.lots ?? []).length)) {
+      await restoreToLots(this.r as any, String(it.variantId), (it.lots as any[]).map((l: any) => ({ lotId: l.lotId, qty: l.qty }))).catch(() => undefined);
+    }
 
     // A void reverses the whole sale: total and per-tender nets (cash net of change) come out of the session.
     const { exp: voidExp } = await this.docMoney(sale);
     const voidNets = tenderNets({ ...(sale as any).toObject?.() ?? sale, refundedAmount: 0, status: 'completed' }, voidExp);
-    await this.r.registerSessionModel.findByIdAndUpdate((sale as any).sessionId, {
-      $inc: { totalSales: -(sale as any).total, totalTransactions: -1, ...this.tenderInc(voidNets, -1) },
-    });
+    // On the shift that paid it. Same shift as the sale: exactly as before. Another shift: it books a refund there and the sale's own shift is untouched.
+    const voidSame = !!voidShift && String(voidShift._id) === String((sale as any).sessionId);
+    const voidInc: any = voidSame
+      ? { totalSales: -(sale as any).total, totalTransactions: -1, ...this.tenderInc(voidNets, -1) }
+      : { totalRefunds: (sale as any).total, totalSales: -(sale as any).total, ...this.tenderInc(voidNets, -1) };
+    const voidedSession = voidShift ? await this.incSessionCounters(String(voidShift._id), voidInc, voidExp) : null;
+    if (voidedSession) await this.checkMinor('session', voidedSession, voidExp);
 
     await this.recordPosRefundInLedger(sale, (sale as any).total - ((sale as any).refundedAmount || 0), 'void');
-    this.writeAuditLog({ storeId: (sale as any).storeId, employeeId: actor.employeeId, action: 'sale_voided', targetId: saleId, targetType: 'sale', metadata: { reason: dto.reason } }).catch(() => {});
-    return { success: true, message: 'Sale voided and stock restored' };
+
+    // G2.3: voiding a sale that was paid by Raast QR sends that money back through the provider
+    const voidPlan = this.payments ? digitalRefundPlan(effectivePayments(sale as any) as any, 0, (sale as any).total, voidExp) : [];
+    const digitalRefunds = voidPlan.length ? await this.payments!.refundForSale(String((sale as any).storeId), voidPlan, { employeeId: actor.employeeId, refundId: `void-${saleId}`, reason: dto.reason?.trim() ?? 'void' }) : undefined;
+    return { success: true, message: 'Sale voided and stock restored', data: { ...(digitalRefunds ? { digitalRefunds } : {}), creditNote: voidCreditNote ? { id: String(voidCreditNote._id), number: voidCreditNote.number, totalMinor: voidCreditNote.totalMinor } : null } };
   }
 
   async editHeldSaleItems(sellerId: string, saleId: string, dto: UpdateSaleItemsDto, employeeToken: string | undefined) {
@@ -2004,6 +3213,7 @@ export class PosService {
     const saleItems: any[] = [];
 
     for (const item of dto.items) {
+      if (item.isCustom) { saleItems.push(this.customLine(item, await this.defaultTaxCategory(String((sale as any).storeId)))); continue; }
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
 
@@ -2024,14 +3234,16 @@ export class PosService {
     }
 
     const money = await this.moneyContext(String((sale as any).storeId));
-    const totals = computeTotals(saleItems, { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
+    await this.approveCustomItems(String((sale as any).storeId), saleItems, money.exp, employeeToken);
+    const totals = computeTotals(this.taxLines(saleItems), { exp: money.exp, discountType: discountReq.type, discountValue: discountReq.value, taxRate: money.taxRate });
     saleItems.forEach((it, i) => { it.lineTotal = totals.lineTotals[i]; });
 
     const updated = await this.r.saleModel.findByIdAndUpdate(
       saleId,
       {
         $set: {
-          items: saleItems, subtotal: totals.subtotal, discount: totals.discount, tax: totals.tax, total: totals.total,
+          items: this.itemsMinor(saleItems, totals, money.exp), subtotal: totals.subtotal, discount: totals.discount, tax: totals.tax, total: totals.total,
+          ...this.saleMoneyMinor(totals, discountReq, money.exp),
           currency: money.currency, currencyExponent: money.exp, taxRate: money.taxRate,
           discountType: discountReq.value > 0 ? discountReq.type : null, discountValue: discountReq.value > 0 ? discountReq.value : null,
         },
@@ -2039,6 +3251,7 @@ export class PosService {
       { new: true },
     );
 
+    await this.checkMinor('sale', updated, money.exp);
     return { success: true, message: 'Held sale items updated', data: updated };
   }
 
@@ -2050,11 +3263,8 @@ export class PosService {
 
     if (!query.from || !query.to) throw new BadRequestException('from and to date are required');
 
-    const from = new Date(query.from);
-    const to = new Date(query.to);
-    to.setHours(23, 59, 59, 999);
-
-    const scope: any = { storeId, createdAt: { $gte: from, $lte: to }, ...(query.locationId ? { locationId: query.locationId } : {}) };
+    const rangeTz = await this.storeTz(storeId);
+    const scope: any = { storeId, createdAt: localRange(query.from, query.to, rangeTz), ...(query.locationId ? { locationId: query.locationId } : {}) };
     const sales = await this.r.saleModel.find({ ...scope, status: { $in: ['completed', 'partially_refunded'] } }).lean();
     const reversed = await this.r.saleModel.find({ ...scope, status: { $in: ['refunded', 'voided'] } }).lean();
     const summary = this.summarizeSales(sales, reversed, exp);
@@ -2062,7 +3272,7 @@ export class PosService {
     const dailyMap: Record<string, number> = {};
     const productSales: Record<string, { name: string; qty: number; revenue: number }> = {};
     for (const sale of sales) {
-      const day = new Date((sale as any).createdAt).toISOString().split('T')[0];
+      const day = localKey((sale as any).createdAt, rangeTz);
       dailyMap[day] = roundMoney((dailyMap[day] || 0) + (sale as any).total, exp);
       for (const item of (sale as any).items) {
         if (!productSales[item.productId]) productSales[item.productId] = { name: item.name, qty: 0, revenue: 0 };
@@ -2096,17 +3306,14 @@ export class PosService {
     const store = await this.r.storeModel.findOne({ sellerId, isDelete: false, 'registers._id': registerId });
     if (!store) throw new NotFoundException('Register not found or unauthorized');
 
-    const from = query.from ? new Date(query.from) : null;
-    const to = query.to ? (() => { const d = new Date(query.to); d.setHours(23, 59, 59, 999); return d; })() : null;
-
     const sessionFilter: any = { registerId };
-    if (from || to) { sessionFilter.createdAt = {}; if (from) sessionFilter.createdAt.$gte = from; if (to) sessionFilter.createdAt.$lte = to; }
+    if (query.from || query.to) sessionFilter.createdAt = localRange(query.from, query.to, await this.storeTz(String((store as any)._id)));
 
     const sessions = await this.r.registerSessionModel.find(sessionFilter).lean();
     const sessionIds = sessions.map((s: any) => s._id.toString());
 
     const salesFilter: any = { registerId, status: { $in: ['completed', 'partially_refunded'] } };
-    if (from || to) { salesFilter.createdAt = {}; if (from) salesFilter.createdAt.$gte = from; if (to) salesFilter.createdAt.$lte = to; }
+    if (sessionFilter.createdAt) salesFilter.createdAt = sessionFilter.createdAt;
 
     const sales = await this.r.saleModel.find(salesFilter).lean();
 
@@ -2145,18 +3352,15 @@ export class PosService {
     const employee = await this.r.employeeModel.findOne({ _id: employeeId, storeId: query.storeId, isDelete: false }).select('-pin').lean();
     if (!employee) throw new NotFoundException('Employee not found');
 
-    const from = query.from ? new Date(query.from) : null;
-    const to = query.to ? (() => { const d = new Date(query.to); d.setHours(23, 59, 59, 999); return d; })() : null;
-
     const filter: any = { employeeId, storeId: query.storeId, status: { $in: ['completed', 'partially_refunded'] } };
-    if (from || to) { filter.createdAt = {}; if (from) filter.createdAt.$gte = from; if (to) filter.createdAt.$lte = to; }
+    if (query.from || query.to) filter.createdAt = localRange(query.from, query.to, await this.storeTz(query.storeId));
 
     const sales = await this.r.saleModel.find(filter).lean();
     const empMoney = await this.moneyContext(query.storeId);
     const totalRevenue = roundMoney(sales.reduce((s: number, sale: any) => s + sale.total, 0), empMoney.exp);
 
     const sessionFilter: any = { employeeId, storeId: query.storeId };
-    if (from || to) { sessionFilter.createdAt = {}; if (from) sessionFilter.createdAt.$gte = from; if (to) sessionFilter.createdAt.$lte = to; }
+    if (filter.createdAt) sessionFilter.createdAt = filter.createdAt;
     const sessions = await this.r.registerSessionModel.find(sessionFilter).lean();
 
     return {
@@ -2179,9 +3383,9 @@ export class PosService {
     await this.verifyStoreOwnership(storeId, sellerId);
     const { currency, exp } = await this.moneyContext(storeId);
 
-    const date = query.date ? new Date(query.date) : new Date();
-    const startOfDay = new Date(date); startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(date); endOfDay.setHours(23, 59, 59, 999);
+    const csvDay = localDay(query.date, await this.storeTz(storeId));
+    const startOfDay = csvDay.start;
+    const endOfDay = new Date(csvDay.end.getTime() - 1);
 
     const sales = await this.r.saleModel.find({
       storeId,
@@ -2219,6 +3423,13 @@ export class PosService {
 
   // ── POS SETTINGS ──────────────────────────────────────────────────────────
 
+  /** G4.9: `loyaltyBalanceAfterPoints` on the sale — the customer's points after this sale, read from the ledger inside the sale's transaction. */
+  private async stampPointsAfter(tx: any, sale: any, storeId: string, ledgerId: string, known?: number) {
+    const after = known ?? (await this.customers!.pointsBalanceInTx(tx, storeId, ledgerId));
+    await this.r.saleModel.updateOne({ _id: sale._id }, { $set: { loyaltyBalanceAfterPoints: after } }, tx ? { session: tx } : undefined);
+    if (typeof sale.set === 'function') sale.set('loyaltyBalanceAfterPoints', after); else sale.loyaltyBalanceAfterPoints = after;
+  }
+
   async getPosSettings(sellerId: string, storeId: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
 
@@ -2230,7 +3441,9 @@ export class PosService {
     // The authoritative selling currency comes from the store, not from the free-text `currencySymbol`.
     await this.ensureVersionRow(storeId);
     const { currency, exp } = await this.moneyContext(storeId);
-    return { success: true, data: { ...settings, autoLockMinutes: settings.autoLockMinutes ?? 5, settingsVersion: settings.settingsVersion || 1, currency, currencyExponent: exp } };
+    // G4.9: the store's public id + the base of the receipt link a till builds offline (`<base><sale client key>`), cached with the settings
+    const store: any = await this.r.storeModel.findById(storeId).select('slug').lean();
+    return { success: true, data: { ...settings, autoLockMinutes: settings.autoLockMinutes ?? 5, settingsVersion: settings.settingsVersion || 1, currency, currencyExponent: exp, ...offlineLinkBaseOf(store?.slug) } };
   }
 
   async updatePosSettings(sellerId: string, storeId: string, dto: UpdatePosSettingsDto) {
@@ -2264,7 +3477,7 @@ export class PosService {
       settings = await this.r.posSettingsModel.findOneAndUpdate({ storeId }, { $set: dto }, { new: true, upsert: true });
     }
 
-    this.writeAuditLog({ storeId, employeeId: null, action: 'settings_updated', targetId: storeId, targetType: 'settings', metadata: { fields: Object.keys(dto), settingsVersion: settings?.settingsVersion } }).catch(() => {});
+    await this.writeAuditLog({ storeId, employeeId: null, action: 'settings_updated', targetId: storeId, targetType: 'settings', metadata: { fields: Object.keys(dto), settingsVersion: settings?.settingsVersion } });
 
     return { success: true, message: 'POS settings updated', data: settings };
   }
@@ -2282,11 +3495,7 @@ export class PosService {
     if (query.employeeId) filter.employeeId = query.employeeId;
     if (query.action) filter.action = query.action;
     if (query.targetType) filter.targetType = query.targetType;
-    if (query.from || query.to) {
-      filter.createdAt = {};
-      if (query.from) filter.createdAt.$gte = new Date(query.from);
-      if (query.to) { const t = new Date(query.to); t.setHours(23, 59, 59, 999); filter.createdAt.$lte = t; }
-    }
+    if (query.from || query.to) filter.createdAt = localRange(query.from, query.to, await this.storeTz(query.storeId ?? filter.storeId));
 
     const total = await this.r.posAuditLogModel.countDocuments(filter);
     const logs = await this.r.posAuditLogModel

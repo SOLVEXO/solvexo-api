@@ -12,6 +12,8 @@ export const ADMIN_PERMISSIONS = [
   'content.manage', // announcements, FAQs, testimonials, contact messages, newsletter, onboarding slides
   'marketing.manage', // platform coupons, promotions, banners
   'marketplace.manage',
+  'kyb.review', // business verification (KYB): review submissions, view documents, approve / reject, set the sub-merchant reference
+  'kyb.settings', // KYB document retention settings and the purge job
   'themes.manage', // theme catalog
   'apps.manage', // store app requests
   'config.manage', // platform config + email health

@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import {
-  IsArray, IsNumber, IsOptional, IsString, Min, ValidateNested,
+  IsArray, IsBoolean, IsIn, IsNumber, IsOptional, IsString, MaxLength, Min, ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -15,6 +15,17 @@ export class RefundItemDto {
   @IsNumber()
   @Min(1)
   qty: number;
+
+  @ApiProperty({ required: false, default: true, description: 'G2.5: put these units back in stock? false needs `restockReason` (damaged, opened…)' })
+  @IsOptional()
+  @IsBoolean()
+  restock?: boolean;
+
+  @ApiProperty({ required: false, description: 'why the returned units are NOT going back on the shelf' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  restockReason?: string;
 }
 
 export class RefundSaleDto {
@@ -24,4 +35,32 @@ export class RefundSaleDto {
   @ValidateNested({ each: true })
   @Type(() => RefundItemDto)
   items?: RefundItemDto[];
+
+  @ApiProperty({ required: false, description: 'Why the refund is being made (optional; recorded on the refund record)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  reason?: string;
+
+  @ApiProperty({ required: false, description: 'G2.7: the register of the till doing the return (its open shift pays a cash refund). Defaults to the register the sale was made on.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  registerId?: string;
+
+  @ApiProperty({ required: false, enum: ['original', 'store_credit'], description: 'G3.3 (D3): where the money goes. `store_credit` turns the cash / card / other part of the refund into store credit for the sale\'s customer (needs a customer on the sale; above the store\'s limit a manager must approve). Digital (QR) parts always go back through the provider; a part that was PAID with store credit always goes back to credit.' })
+  @IsOptional()
+  @IsIn(['original', 'store_credit'])
+  refundTo?: 'original' | 'store_credit';
+
+  @ApiProperty({ required: false, default: true, description: 'G2.5: did the customer bring the original receipt? false makes the return need a manager' })
+  @IsOptional()
+  @IsBoolean()
+  receiptPresented?: boolean;
+
+  @ApiProperty({ required: false, description: 'G2.4 reason code (picker): wrong_item, damaged_or_defective, customer_changed_mind, price_error, duplicate_charge, other' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  reasonCode?: string;
 }

@@ -33,6 +33,15 @@ export class LoyaltyProgram {
   @Prop({ type: Number, default: 0 })
   birthdayBonusPoints: number;
 
+  // ── At the till (G3.3, D2) — integers only, in MINOR units of the store currency; null = off ──
+  /** spend (minor units, net of discount and tax) that earns ONE point at the till: points = floor(netSpendMinor / this) */
+  @Prop({ type: Number, default: null })
+  posEarnSpendMinor: number | null;
+
+  /** what ONE point is worth when redeemed at the till, in minor units (the discount = points × this) */
+  @Prop({ type: Number, default: null })
+  posRedeemMinorPerPoint: number | null;
+
   // null = points never expire
   @Prop({ type: Number, default: null })
   pointsExpiryMonths: number | null;

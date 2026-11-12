@@ -25,6 +25,6 @@ import { SupplierReturnsService } from './supplier-returns.service';
   providers: [PurchaseOrdersService, SupplierReturnsService, EmailService],
   // Exported so SchedulerModule (the daily overdue-PO-alert cron job) can
   // inject PurchaseOrdersService directly instead of duplicating its logic.
-  exports: [PurchaseOrdersService],
+  exports: [PurchaseOrdersService, SupplierReturnsService],
 })
 export class PurchaseOrdersModule {}

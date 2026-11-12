@@ -32,6 +32,9 @@ import { RefundRequestModule } from './refund-request/refund-request.module';
 import { CheckoutModule } from './checkout/checkout.modoule';
 import { OrdersModule } from './orders/orders.module';
 import { PaymentModule } from './payment/payment.module';
+import { KybModule } from './kyb/kyb.module';
+import { JobLeaseModule } from './common/job-lease/job-lease.module';
+import { PaymentsCoreModule } from './payments-core/payments-core.module';
 import { StoreModule } from './store/store.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { RatingModule } from './rating/rating.module';
@@ -188,6 +191,9 @@ import { AppI18nModule } from './i18n/i18n.module';
     OrdersModule,
     // OrdersModule,
     PaymentModule,
+    JobLeaseModule,
+    KybModule,
+    PaymentsCoreModule,
     // PaymentProcessingModule,
     StoreModule,
     InventoryModule,

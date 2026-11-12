@@ -19,6 +19,7 @@ import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { importSuppliersCsv } from './supplier-bulk-import';
 import { buildPurchaseOrderPdf, type PoPdfBrand, type PoPdfData } from './po-pdf.util';
 import { buildPurchaseOrderEmailHtml } from './po-email.util';
+import { costTwin, expOf, recordCostMinor } from '../common/cost-minor.util';
 
 function round(n: number) {
   return Math.round(n * 100) / 100;
@@ -79,8 +80,8 @@ export class PurchaseOrdersService {
       { $group: {
         _id: '$supplierId',
         poCount: { $sum: 1 },
-        openPoCount: { $sum: { $cond: [{ $in: ['$status', ['draft', 'ordered', 'partially_received']] }, 1, 0] } },
-        spent: { $sum: { $cond: [{ $in: ['$status', ['ordered', 'partially_received', 'received', 'closed_short']] }, '$total', 0] } },
+        openPoCount: { $sum: { $cond: [{ $in: ['$status', ['draft', 'approved', 'sent', 'ordered', 'partially_received']] }, 1, 0] } },
+        spent: { $sum: { $cond: [{ $in: ['$status', ['approved', 'sent', 'ordered', 'partially_received', 'received', 'closed_short']] }, '$total', 0] } },
         lastOrderAt: { $max: { $ifNull: ['$orderedAt', '$createdAt'] } },
       } },
     ]);
@@ -534,7 +535,7 @@ export class PurchaseOrdersService {
       }
       await this.repos.productVariantModel.updateOne(
         { _id: item.variantId },
-        { $inc: { stock: totalThisReceipt, damagedStock: damagedQty }, $set: { costPrice: round(newCost) } },
+        { $inc: { stock: totalThisReceipt, damagedStock: damagedQty }, $set: { costPrice: round(newCost), costPriceMinor: costTwin(round(newCost), expOf(po.currency)) } },
         { session },
       );
 
@@ -548,7 +549,7 @@ export class PurchaseOrdersService {
           storeId, productId: item.productId, variantId: item.variantId, locationId: po.locationId ?? null,
           lotNumber: line.lotNumber?.trim() || `LOT-${po.poNumber}-${item._id.toString().slice(-4).toUpperCase()}`,
           expiryDate: line.expiryDate ? new Date(line.expiryDate) : null,
-          quantityReceived: goodQty, quantityRemaining: goodQty, costPrice: item.unitCost,
+          quantityReceived: goodQty, quantityRemaining: goodQty, costPrice: item.unitCost, costPriceMinor: costTwin(item.unitCost, expOf(po.currency)),
           supplierId: po.supplierId ?? null, purchaseOrderId: po._id.toString(),
           status: 'active',
         }], { session });
@@ -582,6 +583,7 @@ export class PurchaseOrdersService {
 
       if (goodQty > 0) {
         await (this.repos.stockAdjustmentModel as any).create([{
+          unitCostMinor: costTwin(item.unitCost, expOf(po.currency)),
           storeId, productId: item.productId, variantId: item.variantId, locationId: po.locationId ?? null,
           productName: item.name, sku: item.sku,
           previousStock, newStock: previousStock + goodQty, delta: goodQty,
@@ -606,6 +608,7 @@ export class PurchaseOrdersService {
     if (fullyReceived) po.receivedAt = new Date();
     if (dto.requestId) po.receivedRequestIds = [...(po.receivedRequestIds ?? []).slice(-49), dto.requestId];
     await po.save({ session });
+    recordCostMinor('purchaseOrder', po, expOf(po.currency));
 
     return { po: po.toObject(), discrepancies, duplicate: false };
   }
@@ -617,7 +620,7 @@ export class PurchaseOrdersService {
    *  own supplier, not an aggregate count. */
   async sendOverdueAlerts(): Promise<void> {
     const overdue = await this.repos.purchaseOrderModel
-      .find({ status: { $in: ['ordered', 'partially_received'] }, expectedAt: { $lt: new Date() }, overdueAlertSentAt: null })
+      .find({ status: { $in: ['approved', 'sent', 'ordered', 'partially_received'] }, expectedAt: { $lt: new Date() }, overdueAlertSentAt: null })
       .lean();
 
     for (const po of overdue) {

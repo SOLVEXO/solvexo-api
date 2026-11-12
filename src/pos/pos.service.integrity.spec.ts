@@ -24,13 +24,15 @@ function makeRepos(over: Record<string, any> = {}) {
     saleModel: {
       findOne: jest.fn().mockReturnValue(lean(null)),
       findById: jest.fn(),
-      create: jest.fn().mockImplementation((d: any) => Promise.resolve({ _id: 'sale1', ...d })),
+      // createSale now passes an array (so it can join a transaction) and gets the created documents back as an array
+      create: jest.fn().mockImplementation((d: any) => Promise.resolve((Array.isArray(d) ? d : [d]).map((x: any) => ({ _id: 'sale1', ...x })))),
       findOneAndUpdate: jest.fn(),
       findOneAndDelete: jest.fn(),
       distinct: jest.fn().mockResolvedValue([]),
     },
     registerSessionModel: {
       findOne: jest.fn().mockResolvedValue({ _id: 'sess1', storeId: 's1', locationId: null }),
+      findById: jest.fn().mockResolvedValue({ _id: 'sess1', storeId: 's1', shiftId: null }),
       findByIdAndUpdate: jest.fn().mockResolvedValue({}),
       findOneAndUpdate: jest.fn(),
       create: jest.fn(),
@@ -43,10 +45,14 @@ function makeRepos(over: Record<string, any> = {}) {
       exists: jest.fn().mockResolvedValue({ _id: 'v1' }),
       find: jest.fn().mockReturnValue(chain([])),
     },
-    productModel: { findOne: jest.fn().mockReturnValue({ select: () => Promise.resolve({ name: 'Tea', gallery: [] }) }) },
-    posSettingsModel: { findOneAndUpdate: jest.fn().mockResolvedValue({ saleCounter: 1 }), findOne: jest.fn().mockReturnValue(lean(null)) },
+    // find: main's bundle-component stock lookup (no bundles here)
+    productModel: { findOne: jest.fn().mockReturnValue({ select: () => Promise.resolve({ name: 'Tea', gallery: [] }) }), find: jest.fn().mockReturnValue(chain([])) },
+    posSettingsModel: { findOneAndUpdate: jest.fn().mockResolvedValue({ saleCounter: 1, invoiceCounter: 1, creditNoteCounter: 1 }), findOne: jest.fn().mockReturnValue(lean(null)), updateOne: jest.fn().mockResolvedValue({}) },
+    posCreditNoteModel: { create: jest.fn().mockImplementation((d: any) => Promise.resolve((Array.isArray(d) ? d : [d]).map((x: any) => ({ _id: 'cn1', ...x })))) },
     variantLocationStockModel: { find: jest.fn().mockReturnValue(chain([])) },
-    posAuditLogModel: { create: jest.fn().mockResolvedValue({}) },
+    posAuditLogModel: { create: jest.fn().mockResolvedValue([{}]) },
+    posPaymentModel: { insertMany: jest.fn().mockResolvedValue([]) },
+    posRefundModel: { create: jest.fn().mockResolvedValue([{}]), findOne: jest.fn().mockReturnValue(lean(null)) },
     orderModel: { aggregate: jest.fn().mockResolvedValue([]) },
     userModel: { find: jest.fn().mockReturnValue({ select: () => ({ limit: () => ({ lean: () => Promise.resolve([]) }) }) }) },
     ...over,
@@ -132,7 +138,7 @@ describe('PosService — Phase 5A sale integrity', () => {
 
       await expect(build(r).completeSale('seller1', 'sale1', { paymentMethod: 'cash' } as any, undefined)).rejects.toBeInstanceOf(ConflictException);
 
-      expect(r.saleModel.findOneAndUpdate).toHaveBeenCalledWith({ _id: 'sale1', status: 'held' }, expect.anything(), expect.anything());
+      expect(r.saleModel.findOneAndUpdate).toHaveBeenCalledWith({ _id: 'sale1', status: 'held', deletedAt: null, 'invoice.number': null }, expect.anything(), expect.anything()); // (G2.5: the invoice is issued only once)
       expect(r.productVariantModel.updateOne).toHaveBeenCalledWith({ _id: 'v1' }, { $inc: { stock: 2 } });
       expect(r.registerSessionModel.findByIdAndUpdate).not.toHaveBeenCalled(); // no double count
     });
@@ -210,12 +216,13 @@ describe('PosService — Phase 5A sale integrity', () => {
   });
 
   describe('discardHeldSale', () => {
-    it('is status-guarded so it cannot delete a sale that just became real', async () => {
+    it('is status-guarded so it cannot discard a sale that just became real — and it never physically deletes (G1a soft delete)', async () => {
       const r = makeRepos();
       r.saleModel.findById.mockResolvedValue({ _id: 'sale1', status: 'held', storeId: 's1' });
-      r.saleModel.findOneAndDelete.mockResolvedValue(null);
+      r.saleModel.findOneAndUpdate.mockResolvedValue(null);
       await expect(build(r).discardHeldSale('seller1', 'sale1')).rejects.toBeInstanceOf(ConflictException);
-      expect(r.saleModel.findOneAndDelete).toHaveBeenCalledWith({ _id: 'sale1', status: 'held' });
+      expect(r.saleModel.findOneAndUpdate).toHaveBeenCalledWith({ _id: 'sale1', status: 'held', deletedAt: null }, expect.anything(), expect.anything());
+      expect(r.saleModel.findOneAndDelete).not.toHaveBeenCalled();
     });
   });
 

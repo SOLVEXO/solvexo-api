@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsNumber, IsOptional, Min } from 'class-validator';
+import { IsArray, IsInt, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class OpenSessionDto {
@@ -29,4 +30,13 @@ export class OpenSessionDto {
   @IsNumber()
   @Min(0)
   openingCash: number;
+
+  @ApiProperty({ required: false, type: [Object], description: 'G4.6: the notes / coins counted into the float, [{ valueMinor, count }]. When sent, their total must equal openingCash.' })
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => DenominationDto)
+  denominations?: DenominationDto[];
+}
+
+export class DenominationDto {
+  @ApiProperty({ example: 50000 }) @IsInt() @Min(1) valueMinor: number;
+  @ApiProperty({ example: 3 }) @IsInt() @Min(0) count: number;
 }

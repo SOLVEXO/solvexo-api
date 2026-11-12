@@ -62,6 +62,7 @@ describe('which POS routes are idempotent (Idempotency-Key honoured)', () => {
     const NOT_MONEY = /^(POST pin-(login|logout)|POST devices|POST employees|POST registers|POST shifts|POST locations|POST sales\/quote|POST sales\/:saleId\/resolve-review)/;
     const unwired = routes().filter((r) => /^(POST|PATCH|DELETE) (sales|sessions)/.test(r.key) && !r.idem && !NOT_MONEY.test(r.key)).map((r) => r.key);
     // Known, documented exceptions (5A): held-sale item edit is an absolute replace; force-close is now status-guarded (pos.session-close spec).
-    expect(unwired.sort()).toEqual(['PATCH sales/:saleId/items', 'POST sessions/:sessionId/force-close'].sort());
+    // the receipt-link revoke is naturally idempotent (revoking a revoked link changes nothing) and moves no money
+    expect(unwired.sort()).toEqual(['PATCH sales/:saleId/items', 'POST sales/:saleId/receipt-link/revoke', 'POST sessions/:sessionId/force-close'].sort());
   });
 });

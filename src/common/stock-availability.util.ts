@@ -52,6 +52,9 @@ export const AVAILABLE_STOCK_EXPR = {
   ],
 };
 
+/** Like [AVAILABLE_STOCK_EXPR] but EXPIRED units count as available — only for the manager override that knowingly sells them (G3.2, audited). */
+export const AVAILABLE_STOCK_INCL_EXPIRED_EXPR = { $add: [AVAILABLE_STOCK_EXPR, EXPIRED_UNITS_EXPR] };
+
 /**
  * May an ONLINE buyer put `qty` of this variant in a cart / check it out? Unlimited and explicit backorder variants always
  * can (the merchant chose that). Everything else needs `available >= qty` AND `available > 0` — so a variant whose stock went

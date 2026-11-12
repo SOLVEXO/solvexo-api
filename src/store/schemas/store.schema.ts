@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import '../../common/schema-types/minor-money';
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
 
@@ -80,6 +81,10 @@ export class Register {
   @Prop({ type: Number, default: 100 })
   defaultFloatCash: number;     // shuruaati float
 
+  // G1b: integer minor-unit twin of the default float (the store's baseCurrency exponent)
+  @Prop({ type: 'MinorMoney' })
+  defaultFloatCashMinor?: number;
+
   @Prop({ enum: ['active', 'inactive'], default: 'active' })
   status: string;
 
@@ -90,6 +95,7 @@ export class Register {
   locationId: string | null;
 }
 export const RegisterSchema = SchemaFactory.createForClass(Register);
+RegisterSchema.set('toJSON', { getters: true, virtuals: false });
 
 @Schema({ _id: true })
 export class Shift {

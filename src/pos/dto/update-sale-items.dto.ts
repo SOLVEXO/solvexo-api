@@ -4,22 +4,10 @@ import {
   IsArray, IsNumber, IsOptional, IsString, Min, ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { SaleItemDto } from './create-sale.dto';
 
-export class EditSaleItemDto {
-  @ApiProperty({ example: '664variant1' })
-  @IsString()
-  variantId: string;
-
-  @ApiProperty({ example: '664product1' })
-  @IsString()
-  productId: string;
-
-  @ApiProperty({ example: 2 })
-  @Type(() => Number)
-  @IsNumber()
-  @Min(1)
-  qty: number;
-}
+/** Same shape as a sale line (catalog item or G2.4 custom item); the server prices it. */
+export class EditSaleItemDto extends SaleItemDto {}
 
 export class UpdateSaleItemsDto {
   @ApiProperty({ type: [EditSaleItemDto] })

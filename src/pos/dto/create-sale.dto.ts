@@ -2,21 +2,61 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsString, IsNotEmpty, IsArray, ValidateNested,
-  IsNumber, IsOptional, IsEnum, Min, IsInt, IsDateString, IsBoolean,
+  IsNumber, IsOptional, IsEnum, Min, Max, IsInt, IsDateString, IsBoolean, ValidateIf, MaxLength,
+  Matches,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { PaymentLineDto } from './payment.dto';
 
+export class ModifierChoiceDto {
+  @ApiProperty({ example: '665group1' }) @IsString() @IsNotEmpty() @MaxLength(40) groupId: string;
+  @ApiProperty({ type: [String] }) @IsArray() @IsString({ each: true }) @MaxLength(40, { each: true }) optionIds: string[];
+}
+
 export class SaleItemDto {
-  @ApiProperty({ example: '664product1' })
+  @ApiProperty({ required: false, type: [ModifierChoiceDto], description: 'G4.5: the modifier options chosen for this line (ids only — the SERVER prices them)' })
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => ModifierChoiceDto)
+  modifiers?: ModifierChoiceDto[];
+
+  @ApiProperty({ example: '664product1', required: false, description: 'Required unless isCustom' })
+  @ValidateIf((o) => !o.isCustom)
   @IsString()
   @IsNotEmpty()
   productId: string;
 
-  @ApiProperty({ example: '664variant1' })
+  @ApiProperty({ example: '664variant1', required: false, description: 'Required unless isCustom' })
+  @ValidateIf((o) => !o.isCustom)
   @IsString()
   @IsNotEmpty()
   variantId: string;
+
+  @ApiProperty({ required: false, description: 'G3.2: knowingly sell units of an EXPIRED lot. Needs a manager (PIN in x-pos-approver-token); audited. Ignored on offline sales (the server never blocks those).' })
+  @IsOptional()
+  @IsBoolean()
+  sellExpired?: boolean;
+
+  @ApiProperty({ required: false, description: 'G2.4 custom item: a line with no catalog product. Needs `customName` and `unitPrice`; never touches stock; needs a manager above the store\'s limit.' })
+  @IsOptional()
+  @IsBoolean()
+  isCustom?: boolean;
+
+  @ApiProperty({ required: false, example: 'Gift wrapping' })
+  @ValidateIf((o) => !!o.isCustom)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  customName?: string;
+
+  @ApiProperty({ required: false, enum: ['standard', 'exempt'], description: 'custom item: standard = the store tax rate, exempt = no tax on this line' })
+  @IsOptional()
+  @IsEnum(['standard', 'exempt'])
+  taxCategory?: 'standard' | 'exempt';
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  customNote?: string;
 
   @ApiProperty({ example: 2 })
   @Type(() => Number)
@@ -30,9 +70,20 @@ export class SaleItemDto {
   @IsNumber()
   @Min(0)
   unitPrice?: number;
+
+  @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of unitPrice in the currency's minor unit. Cross-check only: if both are sent and disagree the sale is still accepted at the server's values and the mismatch is recorded (never a rejection).` })
+  @IsOptional()
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
+  unitPriceMinor?: number;
 }
 
 export class CreateSaleDto {
+  @ApiProperty({ required: false, description: 'G2.4: a POS-enabled seller coupon code. Validated server-side; cannot be combined with a manual discount; not on offline or held sales.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  couponCode?: string;
+
   @ApiProperty({ example: '664abc123' })
   @IsString()
   @IsNotEmpty()
@@ -77,6 +128,10 @@ export class CreateSaleDto {
   @IsNumber()
   @Min(0)
   discountValue?: number;
+  @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of discountValue — only when discountType is 'amount' (a percentage is not money). Cross-check only.` })
+  @IsOptional()
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
+  discountValueMinor?: number;
 
   @ApiProperty({ required: false, deprecated: true, description: 'IGNORED. Tax is computed by the server from the store tax rate.' })
   @IsOptional()
@@ -91,9 +146,13 @@ export class CreateSaleDto {
   @IsNumber()
   @Min(0)
   clientTotal?: number;
+  @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of clientTotal (minor units). Cross-check only.` })
+  @IsOptional()
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
+  clientTotalMinor?: number;
 
-  @ApiProperty({ enum: ['cash', 'card', 'other'], default: 'cash', description: 'Single-payment form; ignored when `payments` is sent' })
-  @IsEnum(['cash', 'card', 'other'])
+  @ApiProperty({ enum: ['cash', 'card', 'other', 'raast_qr', 'store_credit'], default: 'cash', description: 'Single-payment form; ignored when `payments` is sent' })
+  @IsEnum(['cash', 'card', 'other', 'raast_qr', 'store_credit'])
   paymentMethod: string;
 
   @ApiProperty({ type: [PaymentLineDto], required: false, description: 'Split tender: one entry per tender. Overrides paymentMethod.' })
@@ -109,6 +168,10 @@ export class CreateSaleDto {
   @IsNumber()
   @Min(0)
   amountTendered?: number;
+  @ApiProperty({ required: false, example: 5876, description: `G1b: integer twin of amountTendered (minor units). Cross-check only.` })
+  @IsOptional()
+  // no strict validation on purpose: a malformed twin must never reject a sale — the server records it as a mismatch and uses its own values
+  amountTenderedMinor?: number;
 
   @ApiProperty({ required: false, description: 'Single non-cash payment: card auth code / bank reference' })
   @IsOptional()
@@ -142,10 +205,26 @@ export class CreateSaleDto {
   @Min(1)
   settingsVersion?: number;
 
+  @ApiProperty({ required: false, description: 'G4.5: price the sale with this price book (else the customer\'s book, else list prices)' })
+  @IsOptional() @IsString() @MaxLength(40)
+  priceBookId?: string;
+
+  @ApiProperty({ required: false, description: 'G3.3 (D2): redeem this many loyalty points as a discount (whole points, online only, needs customerId; cannot be combined with a coupon or manual discount). The server prices it.' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  redeemPoints?: number;
+
   @ApiProperty({ required: false, description: 'ISO time the sale was really made on the device (offline sales)' })
   @IsOptional()
   @IsDateString()
   clientCreatedAt?: string;
+
+  @ApiProperty({ required: false, example: 'OFF-3FA9C1-0007', description: 'Offline replays only: the provisional receipt number the till PRINTED before the sale synced. Stored as a LOOKUP reference (unique per store, searchable in Orders / Returns) — never used for sequencing and never the invoice number.' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^OFF-[A-Za-z0-9]{1,12}-\d{1,8}$/, { message: 'provisionalNumber must look like OFF-<device>-<number>' })
+  provisionalNumber?: string;
 
   @ApiProperty({ required: false, description: 'true when this is a queued sale being replayed after the device was offline' })
   @IsOptional()
