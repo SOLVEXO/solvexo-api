@@ -9,6 +9,7 @@ import { ContactMessageStatus } from './schemas/store-contact-message.schema';
 import { EmailService } from '../otp/services/email.service';
 import { notificationEmailShell } from '../notifications/templates/notification-email.template';
 import { textToParagraphs } from '../notifications/customer-email-template.util';
+import { ContactFormField, resolveContactFields, validateContactAnswers } from './contact-form-fields.util';
 
 const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 // A store can only answer so fast: stops the inbox being used to push mail out.
@@ -42,26 +43,58 @@ export class StoreContactService {
     const recent = await this.model.countDocuments({ storeId, createdAt: { $gte: new Date(Date.now() - 3_600_000) } });
     if (recent >= MAX_VISITOR_MESSAGES_PER_HOUR) return { success: true, message: 'Thanks — your message was sent.' };
 
-    const doc = await this.model.create({
-      storeId,
-      name: dto.name,
-      email: dto.email,
-      phone: dto.phone?.trim() || null,
-      message: dto.message,
-    });
+    let name = '', email = '', phone = '', message = '';
+    let fields: { id: string; label: string; type: string; value: string }[] = [];
+    if (dto.sectionId) {
+      // The seller's own field list decides what is accepted, never what the visitor's browser claims.
+      const defs = await this.findFormFields(storeId, dto.sectionId);
+      if (!defs) throw new BadRequestException('This form is no longer available. Please reload the page and try again.');
+      const r = validateContactAnswers(defs, dto.answers);
+      ({ name, email, phone, message } = r);
+      fields = r.clean;
+    } else {
+      // Older storefront builds send the fixed Name / Email / Phone / Message form.
+      name = String(dto.name ?? '').trim(); email = String(dto.email ?? '').trim(); phone = String(dto.phone ?? '').trim(); message = String(dto.message ?? '').trim();
+      if (!name) throw new BadRequestException('Your name is required');
+      if (!email) throw new BadRequestException('Enter a valid email address');
+      if (!message) throw new BadRequestException('Please write a message');
+    }
+
+    const doc = await this.model.create({ storeId, name, email, phone: phone || null, message, fields });
 
     // Tell the owner (in-app bell + email, per their notification preferences). Never fails the visitor's request.
+    const who = name || email || phone || 'a visitor';
+    const summary = message || fields.slice(0, 3).map(f => `${f.label}: ${f.value}`).join(' · ');
     this.notificationsService.notify({
       recipientId: String(store.sellerId),
       recipientRole: 'seller',
       storeId,
       type: NOTIFICATION_TYPES.CONTACT_FORM_MESSAGE,
-      title: `New message from ${dto.name}`,
-      body: dto.message.length > 160 ? `${dto.message.slice(0, 157)}…` : dto.message,
+      title: `New message from ${who}`,
+      body: summary.length > 160 ? `${summary.slice(0, 157)}…` : summary,
       data: { link: `/store/${storeId}/online-store/contact-messages`, messageId: String(doc._id) },
     }).catch(() => undefined);
 
     return { success: true, message: 'Thanks — your message was sent.' };
+  }
+
+  /** The live field list of one contact form (any page or template section), or null when that section is gone. */
+  private async findFormFields(storeId: string, sectionId: string): Promise<ContactFormField[] | null> {
+    const pick = (sections?: any[]): ContactFormField[] | null => {
+      const sec = (sections ?? []).find(x => String(x?._id) === sectionId && x.type === 'contact_form' && x.enabled !== false);
+      return sec ? resolveContactFields(sec.settings) : null;
+    };
+    const repos: any = this.databaseService.repositories;
+    // A page keeps its live sections per installed theme (themeTemplates[].sections); the root `sections` is the older copy.
+    const page: any = await repos.storePageModel
+      .findOne({ storeId, isDelete: false, $or: [{ 'sections._id': sectionId }, { 'themeTemplates.sections._id': sectionId }] })
+      .select('sections themeTemplates.sections').lean();
+    if (page) {
+      const fromPage = pick(page.sections) ?? (page.themeTemplates ?? []).map((t: any) => pick(t?.sections)).find(Boolean) ?? null;
+      if (fromPage) return fromPage;
+    }
+    const tpl: any = await repos.collectionTemplateModel.findOne({ storeId, 'sections._id': sectionId }).select('sections').lean();
+    return tpl ? pick(tpl.sections) : null;
   }
 
   // ── Seller ───────────────────────────────────────────────────────────────
@@ -97,9 +130,10 @@ export class StoreContactService {
 
     const msg: any = await this.model.findOne({ _id: id, storeId }).lean();
     if (!msg) throw new NotFoundException('Message not found');
+    if (!msg.email) throw new BadRequestException('This visitor did not leave an email address, so you cannot reply from here.');
     const store: any = await this.storeModel.findById(storeId).select('name logo contactEmail').lean();
     const storeName = String(store?.name ?? 'the store');
-    const quoted = `<blockquote style="margin:16px 0 0;padding:8px 12px;border-left:3px solid #ddd;color:#666;font-size:13px;">${textToParagraphs(String(msg.message))}</blockquote>`;
+    const quoted = `<blockquote style="margin:16px 0 0;padding:8px 12px;border-left:3px solid #ddd;color:#666;font-size:13px;">${textToParagraphs(String(msg.message || (msg.fields ?? []).map((f: any) => `${f.label}: ${f.value}`).join(String.fromCharCode(10))))}</blockquote>`;
     const html = notificationEmailShell(escapeHtml(`Re: Your message to ${storeName}`), `${textToParagraphs(text)}<p style="color:#888;font-size:12px;margin-top:18px;">Your message:</p>${quoted}`, undefined, { name: storeName, logoUrl: store?.logo ?? null });
     const ok = await this.emailService.sendMail(String(msg.email), `Re: Your message to ${storeName}`, html, store?.contactEmail ?? null, undefined, undefined, storeName, storeId);
     if (!ok) throw new BadRequestException('The reply could not be sent. Check your email settings and try again.');

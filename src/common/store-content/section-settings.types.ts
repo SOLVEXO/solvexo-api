@@ -205,6 +205,8 @@ export interface ContactFormSectionSettings extends BaseSectionSettings {
   buttonLabel?: string;
   successMessage?: string;
   showPhone?: boolean;
+  /** The seller-built field list (see store-contact/contact-form-fields.util.ts). Missing = the old fixed form. */
+  fields?: unknown[];
 }
 
 // ── Shopify-parity section library ──────────────────────────────────────────

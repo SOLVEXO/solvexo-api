@@ -15,17 +15,21 @@ export class StoreContactMessage {
   @Prop({ required: true, index: true })
   storeId: string;
 
-  @Prop({ required: true, trim: true, maxlength: 80 })
+  @Prop({ default: '', trim: true, maxlength: 80 })
   name: string;
 
-  @Prop({ required: true, trim: true, lowercase: true, maxlength: 120 })
+  @Prop({ default: '', trim: true, lowercase: true, maxlength: 120 })
   email: string;
 
   @Prop({ type: String, default: null, trim: true, maxlength: 30 })
   phone: string | null;
 
-  @Prop({ required: true, trim: true, maxlength: 3000 })
+  @Prop({ default: '', trim: true, maxlength: 3000 })
   message: string;
+
+  /** Every answer of the seller-built form, in the order of the form (label as it was when sent). */
+  @Prop({ type: [{ _id: false, id: String, label: String, type: { type: String }, value: String }], default: [] })
+  fields: { id: string; label: string; type: string; value: string }[];
 
   @Prop({ type: String, enum: CONTACT_MESSAGE_STATUSES, default: 'new' })
   status: ContactMessageStatus;
