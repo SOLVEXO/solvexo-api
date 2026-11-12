@@ -2319,11 +2319,26 @@ export class PosService {
   // this codebase's sale paths uses one, and the per-variant `$gte`-guarded `$inc` is atomic.)
 
   /** Takes `qty` of each stock-tracked line, all-or-nothing. Unlimited-stock variants are skipped. */
+  /** A POS line for a BUNDLE becomes one line per component (qty x component qty); other lines pass through. */
+  private async expandBundleLines<T extends { variantId: string; qty: number }>(items: T[]): Promise<T[]> {
+    if (!items.length) return items;
+    const variants: any[] = await this.r.productVariantModel.find({ _id: { $in: items.map((i) => i.variantId) } }).select('productId').lean();
+    const prodByVariant = new Map(variants.map((v) => [String(v._id), String(v.productId)]));
+    const bundles: any[] = await this.r.productModel.find({ _id: { $in: [...new Set(prodByVariant.values())] }, isBundle: true }).select('bundleComponents').lean();
+    if (bundles.length === 0) return items;
+    const compsByProduct = new Map(bundles.map((b) => [String(b._id), (b.bundleComponents ?? []) as { variantId: string; quantity: number }[]]));
+    return items.flatMap((i) => {
+      const comps = compsByProduct.get(prodByVariant.get(String(i.variantId)) ?? '');
+      return comps && comps.length > 0 ? comps.map((c) => ({ ...i, variantId: String(c.variantId), qty: c.quantity * i.qty })) : [i];
+    });
+  }
+
   private async reserveStock(
     items: Array<{ variantId: string; qty: number; sku?: string }>,
     locationId: string | null,
     opts: { allowNegative?: boolean; oversold?: Array<{ variantId: string; sku?: string; requested: number; available: number }>; includeExpired?: Set<string> } = {},
   ): Promise<Array<{ variantId: string; qty: number }>> {
+    items = await this.expandBundleLines(items);
     const taken: Array<{ variantId: string; qty: number }> = [];
     for (const item of items) {
       const result = await this.r.productVariantModel.updateOne(
@@ -2379,6 +2394,7 @@ export class PosService {
    */
   private async restoreSoldStock(items: Array<{ variantId: string; qty: number }>, locationId: string | null): Promise<void> {
     if (!items.length) return;
+    items = await this.expandBundleLines(items);
     const unlimited = new Set(
       (await this.r.productVariantModel
         .find({ _id: { $in: items.map((i) => i.variantId) }, unlimitedStock: true })
@@ -2989,6 +3005,17 @@ export class PosService {
 
     await this.writeAuditLog({ storeId, employeeId: null, action: 'employee_deactivated', targetId: employeeId, targetType: 'employee' });
     return { success: true, message: 'Employee deactivated' };
+  }
+
+  /** Owner lifts a PIN lockout WITHOUT changing the PIN (the employee just forgot / mistyped). Audited; the failed-attempt counter restarts. */
+  async unlockPin(sellerId: string, storeId: string, employeeId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const employee: any = await this.r.employeeModel.findOne({ _id: employeeId, storeId, isDelete: false }).select('+pinFailedAttempts +pinLockedUntil');
+    if (!employee) throw new NotFoundException('Employee not found');
+    const wasLocked = !!employee.pinLockedUntil && new Date(employee.pinLockedUntil).getTime() > Date.now();
+    await this.r.employeeModel.updateOne({ _id: employeeId }, { $set: { pinFailedAttempts: 0, pinLockedUntil: null } });
+    this.writeAuditLog({ storeId, employeeId: null, action: 'employee_pin_unlocked', targetId: employeeId, targetType: 'employee' }).catch(() => {});
+    return { success: true, message: wasLocked ? 'PIN unlocked. The employee can sign in again.' : 'This employee was not locked.', data: { wasLocked } };
   }
 
   async resetPin(sellerId: string, storeId: string, employeeId: string, dto: ResetPinDto) {

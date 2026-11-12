@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ImageEnhanceAdapter, ImageEnhanceRequest, ImageEnhanceResult,
@@ -54,6 +54,16 @@ export class ImageEnhanceService implements ImageEnhanceAdapter, OnModuleInit {
 
   get name(): string {
     return this.provider.name;
+  }
+
+  /** False while only the stub exists: it returns the original image, so the tool must not be offered or billed. */
+  get isAvailable(): boolean {
+    return this.provider.name !== 'stub';
+  }
+
+  /** Called before anything is held or charged. */
+  assertAvailable(): void {
+    if (!this.isAvailable) throw new ServiceUnavailableException('The Image Enhancer is not available yet. No credits were used.');
   }
 
   onModuleInit() {

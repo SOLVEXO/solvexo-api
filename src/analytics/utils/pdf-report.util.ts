@@ -1,3 +1,4 @@
+import { repairMojibake } from '@/common/repair-mojibake.util';
 /* eslint-disable prettier/prettier */
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib';
 
@@ -79,7 +80,7 @@ export class PdfReportBuilder {
   /** The standard Helvetica font can only draw WinAnsi characters (Urdu, emoji, ... would throw), so anything it can't encode becomes "?". */
   private safe(text: string, font: PDFFont): string {
     let out = '';
-    for (const ch of this.groupThousands(text.replace(/\s+/g, ' '))) {
+    for (const ch of this.groupThousands(repairMojibake(text).replace(/\s+/g, ' '))) {
       try { font.encodeText(ch); out += ch; } catch { out += '?'; }
     }
     return out;

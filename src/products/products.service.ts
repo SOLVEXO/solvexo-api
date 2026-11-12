@@ -1,3 +1,6 @@
+import { bundleAvailability } from '../common/bundle.util';
+import { preorderPublicView } from '../common/preorder.util';
+import { availableStock } from '../common/stock-availability.util';
 import { normalizeDigital } from './digital-input.util';
 
 const pickNewFile = (b: any) => ({ url: b?.url, name: b?.name, size: b?.size, mimeType: b?.mimeType });
@@ -311,10 +314,12 @@ export class ProductsService {
   private async restrictToActiveStores(query: any, excludeLocked = true): Promise<void> {
     // Marketplace-wide listings (no single storeId) also drop password-protected / coming_soon stores so a locked store never
     // leaks via search/category browse. A single exact storeId is left to the storefront-access middleware (owner/token bypass).
+    // Seller-trust limited stores (`marketplaceHidden`) are likewise left out of marketplace-wide listings only — a store's own
+    // storefront (single storeId) keeps showing its products.
     const wide = excludeLocked && typeof query.storeId !== 'string';
     const activeIds: string[] = (
       await this.databaseService.repositories.storeModel
-        .find({ status: 'active', isDelete: false, ...(wide ? { privacyMode: { $nin: ['password', 'coming_soon'] } } : {}) }, { _id: 1 })
+        .find({ status: 'active', isDelete: false, ...(wide ? { privacyMode: { $nin: ['password', 'coming_soon'] }, marketplaceHidden: { $ne: true } } : {}) }, { _id: 1 })
         .lean()
     ).map((s: any) => s._id.toString());
 
@@ -908,8 +913,26 @@ export class ProductsService {
     // Same real fix as getVariantById — a fully public route, and until now
     // every variant's `costPrice` (the seller's own margin data) leaked
     // straight through with no sanitization.
-    const publicVariants = variants.map((v: any) => { const { costPrice: _c, costPriceMinor: _cm, ...rest } = v; return rest; });
-    const publicDefaultVariant = defaultVariant ? (() => { const { costPrice: _c, costPriceMinor: _cm, ...rest } = defaultVariant as any; return rest; })() : null;
+    // the public view never carries cost (costPrice / costPriceMinor — G3.0)
+    // Pre-order: expose only what a buyer needs (label, date, message, remaining) — never the raw sold counter/limit.
+    const publicVariants = variants.map((v: any) => { const { costPrice: _c, costPriceMinor: _cm, preorder, ...rest } = v; return { ...rest, preorder: preorderPublicView(preorder, availableStock(v)) }; });
+    const publicDefaultVariant = defaultVariant ? (() => { const { costPrice: _c, costPriceMinor: _cm, preorder, ...rest } = defaultVariant as any; return { ...rest, preorder: preorderPublicView(preorder, availableStock(defaultVariant as any)) }; })() : null;
+
+    // Bundles: "includes" list + derived availability (min over components of floor(available / qty)); null = unlimited.
+    let bundle: { components: { name: string; image: string | null; quantity: number }[]; available: number | null } | null = null;
+    if ((product as any).isBundle && ((product as any).bundleComponents?.length ?? 0) > 0) {
+      const comps: any[] = (product as any).bundleComponents;
+      const [compVariants, compProducts] = await Promise.all([
+        productVariantModel.find({ _id: { $in: comps.map((c) => c.variantId) }, isDelete: false }).lean(),
+        productModel.find({ _id: { $in: comps.map((c) => c.productId) } }).select('name images').lean(),
+      ]);
+      const vById = new Map((compVariants as any[]).map((v) => [String(v._id), v]));
+      const pById = new Map((compProducts as any[]).map((x) => [String(x._id), x]));
+      bundle = {
+        components: comps.map((c) => ({ name: pById.get(String(c.productId))?.name ?? c.name ?? 'Item', image: pById.get(String(c.productId))?.images?.[0] ?? null, quantity: c.quantity })),
+        available: bundleAvailability(comps, vById),
+      };
+    }
 
     return {
       message: 'Product fetched successfully',
@@ -918,6 +941,7 @@ export class ProductsService {
         product: productWithSeller,
         variants: publicVariants,
         defaultVariant: publicDefaultVariant,
+        bundle,
       },
     };
   }

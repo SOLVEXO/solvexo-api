@@ -28,6 +28,21 @@ export class OrderItem {
   @Prop({ type: String, default: null })
   variantId: string | null;
 
+  // Product bundles (common/bundle.util.ts): snapshot of the components at purchase time (per ONE bundle).
+  @Prop({ type: [{ _id: false, productId: String, variantId: String, quantity: Number, name: { type: String, default: null } }], default: [] })
+  bundleComponents: { productId: string; variantId: string; quantity: number; name?: string | null }[];
+
+  // Pre-order (variant `preorder`): this unit was sold as a pre-order; the expected date/message are snapshots.
+  @Prop({ type: Boolean, default: false })
+  isPreorder: boolean;
+
+  @Prop({ type: Date, default: null })
+  preorderExpectedDate: Date | null;
+
+  @Prop({ type: String, default: null })
+  preorderMessage: string | null;
+
+
   @Prop({ type: String, enum: ['physical', 'digital'], required: true })
   type: string;
 
@@ -523,6 +538,13 @@ export class Order {
   @Prop({ type: String, enum: ['ship', 'pickup'], default: 'ship' })
   fulfillmentMethod: 'ship' | 'pickup';
 
+  // Local delivery by the store itself (Shopify "Local delivery" order tag) + the promised window.
+  @Prop({ type: Boolean, default: false })
+  localDelivery: boolean;
+
+  @Prop({ type: String, default: null, maxlength: 120 })
+  localDeliveryEta: string | null;
+
   @Prop({ type: { _id: false, name: { type: String, default: null }, address: { type: String, default: null }, instructions: { type: String, default: null } }, default: null })
   pickupLocation: { name: string | null; address: string | null; instructions: string | null } | null;
 
@@ -621,6 +643,7 @@ export class Order {
       'paystack',
       'flutterwave',
       'mollie',
+      'b2b_terms',
     ],
     required: true,
   })
@@ -758,6 +781,14 @@ export class Order {
   @Prop({ type: String, default: null })
   trafficSource: string | null;
 
+  /** Cash-on-delivery protection verdict (risk score, reasons, confirmation state). Merchant-only: never sent to buyers. */
+  @Prop({ type: Object, default: null })
+  codProtection?: Record<string, any> | null;
+
+  /** Wholesale (B2B) buyer + receivable (PO number, payment terms, installments). Null for retail orders. Seller records only: no money moves through Solvexo. */
+  @Prop({ type: Object, default: null })
+  b2b?: Record<string, any> | null;
+
   @Prop({ default: false })
   isDelete: boolean;
 
@@ -791,6 +822,7 @@ OrderSchema.index({ 'sellerOrders.items.status': 1 });
 OrderSchema.index({ 'sellerOrders.items.returnStatus': 1 });
 OrderSchema.index({ reviewRequestSentAt: 1, 'sellerOrders.deliveredAt': 1 }); // review-request cron // sidebar "returns to review" count (store-badges)
 OrderSchema.index({ paymentStatus: 1 });
+OrderSchema.index({ 'b2b.companyId': 1, isDelete: 1 }, { sparse: true });
 OrderSchema.index({ customerId: 1 });
 OrderSchema.index({ createdAt: -1 });
 // Every analytics aggregation (order-aggregation.util.ts#sellerOrderMatchStage,

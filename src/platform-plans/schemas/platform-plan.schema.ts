@@ -58,6 +58,14 @@ export class PlatformPlan {
 
   @Prop({ type: [String], default: [] }) featureBullets: string[]; // marketing copy only, cosmetic
 
+  // "Was" prices, shown crossed out on the pricing page next to the real price
+  // (e.g. ~~$49~~ $29). Display only: checkout always charges monthlyPriceUSD /
+  // yearlyPriceUSD. null = no strike-through. Must be higher than the real price.
+  @Prop({ type: Number, default: null }) compareAtMonthlyPriceUSD: number | null;
+  @Prop({ type: Number, default: null }) compareAtYearlyPriceUSD: number | null;
+  /** Set once the launch discount (see LAUNCH_DISCOUNT in platform-plan.catalog.ts) has been applied to this plan. */
+  @Prop({ type: Boolean, default: false }) launchDiscountApplied: boolean;
+
   // How many days a LOCKED (dunning-exhausted) or TRIAL_ENDED (never
   // converted) store's storefront stays fully browsable/purchasable-looking
   // before it's actually gated (Store.privacyMode -> 'coming_soon' — see
@@ -85,7 +93,7 @@ export class PlatformPlan {
       abandonedCartRecoveryAllowed: false,
       emailCampaignsAllowed: false,
       digitalMembershipsAllowed: true,
-      digitalLicensesAllowed: true,
+      digitalLicensesAllowed: true, b2bWholesaleAllowed: true,
       apiWebhooksAllowed: false,
       dedicatedAccountManager: false,
       prioritySupport: false,
@@ -115,6 +123,7 @@ export class PlatformPlan {
     emailCampaignsAllowed: boolean;
     digitalMembershipsAllowed: boolean;
     digitalLicensesAllowed: boolean;
+    b2bWholesaleAllowed: boolean;
     apiWebhooksAllowed: boolean;
     dedicatedAccountManager: boolean;
     prioritySupport: boolean;

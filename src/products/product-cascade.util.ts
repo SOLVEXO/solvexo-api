@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 /* eslint-disable prettier/prettier */
 import { ClientSession } from 'mongoose';
 
@@ -27,6 +28,14 @@ export async function softDeleteProducts(
 ): Promise<{ products: number; variants: number }> {
   const { storeId, productIds, session } = args;
   if (productIds.length === 0) return { products: 0, variants: 0 };
+
+  // A product that is a COMPONENT of a live bundle cannot be deleted until the bundle is changed/removed.
+  const usedBy: any[] = await r.productModel.find(
+    { storeId, isDelete: false, isBundle: true, _id: { $nin: productIds }, 'bundleComponents.productId': { $in: productIds } },
+  ).select('name').limit(3).lean();
+  if (usedBy.length > 0) {
+    throw new BadRequestException(`This product is part of the bundle "${usedBy[0].name}" — remove it from the bundle first`);
+  }
 
   const products = await r.productModel.updateMany(
     { _id: { $in: productIds }, storeId, isDelete: false },

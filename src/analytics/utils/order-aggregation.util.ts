@@ -17,6 +17,14 @@ import { round } from './analytics-number.util';
  * seller analytics report this module was extracted from).
  */
 
+/**
+ * Number-or-0 for a stored field. An old/odd order that holds a string (or junk) in a money field would make
+ * `$add`/`$divide`/`$multiply` throw and the whole report answer "Internal server error" for that store only.
+ */
+export function num(field: any) {
+  return { $convert: { input: field, to: 'double', onError: 0, onNull: 0 } };
+}
+
 export function notCancelledCond() {
   return { $ne: ['$sellerOrders.status', 'cancelled'] };
 }
@@ -35,12 +43,12 @@ export function giftCreditShareField() {
         as: 'i',
         in: {
           $multiply: [
-            { $add: [{ $ifNull: ['$$i.giftCardDiscountUSD', 0] }, { $ifNull: ['$$i.storeCreditDiscountUSD', 0] }] },
+            { $add: [num('$$i.giftCardDiscountUSD'), num('$$i.storeCreditDiscountUSD')] },
             {
               $subtract: [1, {
                 $cond: [
-                  { $gt: [{ $ifNull: ['$$i.totalPrice', 0] }, 0] },
-                  { $min: [1, { $divide: [{ $ifNull: ['$$i.refundedAmount', 0] }, '$$i.totalPrice'] }] },
+                  { $gt: [num('$$i.totalPrice'), 0] },
+                  { $min: [1, { $divide: [num('$$i.refundedAmount'), num('$$i.totalPrice')] }] },
                   0,
                 ],
               }],
@@ -54,12 +62,12 @@ export function giftCreditShareField() {
 
 /** Item sales of the current sellerOrder INCLUDING the part paid with a gift card / store credit — what every sales figure sums. */
 export function saleSubtotalExpr() {
-  return { $add: [{ $ifNull: ['$sellerOrders.subtotal', 0] }, giftCreditShareField()] };
+  return { $add: [num('$sellerOrders.subtotal'), giftCreditShareField()] };
 }
 
 /** Everything refunded on the current sellerOrder (items incl. their tax share + standalone refunds). */
 export function rawRefundedField() {
-  return { $add: [{ $sum: '$sellerOrders.items.refundedAmount' }, { $ifNull: ['$sellerOrders.manualRefundedAmount', 0] }] };
+  return { $add: [{ $sum: '$sellerOrders.items.refundedAmount' }, num('$sellerOrders.manualRefundedAmount')] };
 }
 
 /**
@@ -69,8 +77,8 @@ export function rawRefundedField() {
  */
 /** subtotal / (subtotal + tax) of the current sellerOrder: the part of any refund that is item value rather than tax. */
 export function taxFreeShareExpr() {
-  const sub = { $ifNull: ['$sellerOrders.subtotal', 0] };
-  const tax = { $ifNull: ['$sellerOrders.taxAmount', 0] };
+  const sub = num('$sellerOrders.subtotal');
+  const tax = num('$sellerOrders.taxAmount');
   return { $cond: [{ $gt: [{ $add: [sub, tax] }, 0] }, { $divide: [sub, { $add: [sub, tax] }] }, 1] };
 }
 
@@ -116,8 +124,8 @@ export function toUSDValue(amount: number, ratePerUSD: number | null | undefined
 export function toUSD(rawAmountExpr: any) {
   return {
     $cond: [
-      { $and: [{ $ne: ['$ratePerUSD', null] }, { $gt: ['$ratePerUSD', 0] }] },
-      { $divide: [rawAmountExpr, '$ratePerUSD'] },
+      { $gt: [num('$ratePerUSD'), 0] },
+      { $divide: [num(rawAmountExpr), num('$ratePerUSD')] },
       null,
     ],
   };
@@ -318,9 +326,9 @@ export async function aggregateProductSales(orderModel: Model<any>, from: Date, 
         orderCount: { $sum: 1 },
         unitsSold: { $sum: '$sellerOrders.items.quantity' },
         // item price + the part paid with a gift card / store credit (still a sale — see giftCreditShareField)
-        grossRevenue: sumUSD({ $add: ['$sellerOrders.items.totalPrice', { $ifNull: ['$sellerOrders.items.giftCardDiscountUSD', 0] }, { $ifNull: ['$sellerOrders.items.storeCreditDiscountUSD', 0] }] }, rc),
+        grossRevenue: sumUSD({ $add: [num('$sellerOrders.items.totalPrice'), num('$sellerOrders.items.giftCardDiscountUSD'), num('$sellerOrders.items.storeCreditDiscountUSD')] }, rc),
         // Item refunds carry their tax share, item revenue does not — scale to revenue terms.
-        refundedAmount: sumUSD({ $multiply: [{ $ifNull: ['$sellerOrders.items.refundedAmount', 0] }, taxFreeShareExpr()] }, rc),
+        refundedAmount: sumUSD({ $multiply: [num('$sellerOrders.items.refundedAmount'), taxFreeShareExpr()] }, rc),
       },
     },
   ]);

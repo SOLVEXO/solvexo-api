@@ -45,6 +45,29 @@ export class MediaLibraryService {
     return { ...uploaded, mediaAssetId: asset._id };
   }
 
+  /** Direct-upload flow, step 1: a short-lived signature so the browser can upload to this store's Cloudinary folder itself. */
+  signDirectUpload(storeId: string) {
+    return this.uploadService.signDirectImageUpload(`uploads/images/${storeId}`);
+  }
+
+  /** Direct-upload flow, step 2: verify what landed on Cloudinary and track it in the Files Library. */
+  async registerDirectUpload(
+    storeId: string, sellerId: string,
+    body: { publicId: string; filename?: string; altText?: string; tags?: string[] },
+  ) {
+    const existing = await this.model.findOne({ storeId, publicId: body.publicId }).lean();
+    if (existing) return { url: existing.url, publicId: existing.publicId, resourceType: 'image', width: existing.width, height: existing.height, mediaAssetId: existing._id };
+    const info = await this.uploadService.getDirectUploadedImage(body.publicId, `uploads/images/${storeId}/`);
+    const asset = await this.model.create({
+      ownerType: 'seller', ownerId: sellerId, storeId,
+      url: info.url, publicId: info.publicId, resourceType: 'image',
+      width: info.width ?? null, height: info.height ?? null,
+      sizeBytes: info.bytes ?? null, mimeType: info.format ? `image/${info.format}` : null,
+      filename: body.filename ?? '', altText: body.altText ?? '', tags: body.tags ?? [],
+    });
+    return { url: info.url, publicId: info.publicId, resourceType: 'image', width: info.width, height: info.height, mediaAssetId: asset._id };
+  }
+
   /** Same as `uploadAndTrack`, sourced from a pasted URL instead of a multipart
    *  file — the "paste URL" option in `ImageUpload`, tracked into the Files
    *  Library exactly like a real file upload would be. */

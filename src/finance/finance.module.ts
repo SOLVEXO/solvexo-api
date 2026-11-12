@@ -5,13 +5,14 @@ import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { AdminConfigModule } from '../admin-config/admin-config.module';
 import { StripeConnectModule } from '../stripe-connect/stripe-connect.module';
+import { SellerTrustModule } from '../seller-trust/seller-trust.module';
 
 @Module({
   // StripeConnectModule has no dependency back on FinanceModule (checked —
   // it only imports AuthModule/RedisModule), so this stays a one-directional
   // edge: FinanceService calls StripeConnectService to actually move money
   // for a payout; StripeConnectService never needs to know about Finance.
-  imports: [AuthModule, RedisModule, AdminConfigModule, StripeConnectModule],
+  imports: [AuthModule, RedisModule, AdminConfigModule, StripeConnectModule, SellerTrustModule],
   controllers: [FinanceController],
   providers: [FinanceService],
   exports: [FinanceService],

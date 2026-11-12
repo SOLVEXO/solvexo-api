@@ -32,6 +32,7 @@ export class PlatformPlanLimitsDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() emailCampaignsAllowed?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() digitalMembershipsAllowed?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() digitalLicensesAllowed?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() b2bWholesaleAllowed?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() apiWebhooksAllowed?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() dedicatedAccountManager?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() prioritySupport?: boolean;

@@ -1,3 +1,4 @@
+import { repairMojibake } from '@/common/repair-mojibake.util';
 /* eslint-disable prettier/prettier */
 import { escapeHtml } from '@/newsletter/marketing-email.util';
 import { notificationEmailShell, type EmailStoreBrand } from './templates/notification-email.template';
@@ -8,7 +9,7 @@ const TAG = /\{\{\s*([a-zA-Z][a-zA-Z0-9]*)\s*\}\}/g;
 
 function tagValue(vars: TemplateVars, name: string): string {
   const v = vars[name];
-  return v === null || v === undefined ? '' : String(v).trim();
+  return v === null || v === undefined ? '' : repairMojibake(String(v).trim());
 }
 
 /** Subject line: tags are replaced, an empty tag becomes ''. Single line, capped. */

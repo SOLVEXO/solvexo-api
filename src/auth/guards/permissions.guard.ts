@@ -1,11 +1,13 @@
 /* eslint-disable prettier/prettier */
 import {
   Injectable,
+  Optional,
   CanActivate,
   ExecutionContext,
   ForbiddenException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { MemberTwoFactorService } from '../member-two-factor.service';
 import { isValidObjectId } from 'mongoose';
 import { REQUIRE_PERMISSION_KEY } from '../decorators/require-permission.decorator';
 import { STAFF_STORE_PINNED_KEY } from '../decorators/staff-store-pinned.decorator';
@@ -33,9 +35,17 @@ const NOT_SCOPED = 'This staff account is not scoped to that store';
  *      `query.storeId = user.storeId`.
  *  A seller/admin caller has no such restriction — store ownership itself is checked separately inside each
  *  service method (e.g. `storeModel.findOne({_id, sellerId})`). */
+/** staff -> verdict of the store's two-factor policy, cached up to 10 s per person (and cleared at once when the policy or someone's 2FA changes). */
+export const staffTwoFactorCache = new Map<string, { at: number; blocked: boolean; message?: string }>();
+export const clearStaffTwoFactorCache = () => staffTwoFactorCache.clear();
+/** Other API instances cannot be told to clear their map, so a verdict is trusted for at most 10 s: a policy change reaches every instance within that. */
+export const STAFF_2FA_CACHE_TTL_MS = 10_000;
+
 @Injectable()
 export class PermissionsGuard implements CanActivate {
-  constructor(private reflector: Reflector, private db: DatabaseService) {}
+  private readonly tfCache = staffTwoFactorCache;
+
+  constructor(private reflector: Reflector, private db: DatabaseService, @Optional() private memberTwoFactor?: MemberTwoFactorService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
@@ -74,6 +84,7 @@ export class PermissionsGuard implements CanActivate {
       throw new ForbiddenException('You are viewing this store as an admin (read-only). Exit to make changes.');
     }
 
+    await this.assertStaffTwoFactor(user);
     await this.pinStaffToStore(request, user, context);
 
     if (!hasRequired) return true;
@@ -85,6 +96,32 @@ export class PermissionsGuard implements CanActivate {
       );
     }
     return true;
+  }
+
+  /**
+   * "Require two-factor for staff": once the owner's grace period is over, a staff member who has not turned two-factor on cannot use any
+   * permission-guarded route (their own security page, profile and the two-factor routes carry no permission guard, so setup stays reachable).
+   */
+  private async assertStaffTwoFactor(user: any) {
+    if (!this.memberTwoFactor || !user.storeId) return;
+    const staffId = String(user.userId ?? user.sub ?? '');
+    const key = `${user.storeId}:${staffId}`;
+    let hit = this.tfCache.get(key);
+    if (!hit || Date.now() - hit.at > STAFF_2FA_CACHE_TTL_MS) {
+      hit = { at: Date.now(), blocked: false };
+      const store: any = await this.db.repositories.storeModel.findById(user.storeId).select('requireStaffTwoFactor requireStaffTwoFactorSince staffTwoFactorGraceDays').lean();
+      if (store?.requireStaffTwoFactor) {
+        const since = store.requireStaffTwoFactorSince ? new Date(store.requireStaffTwoFactorSince).getTime() : 0;
+        const graceEnd = since + (Number(store.staffTwoFactorGraceDays ?? 7) * 86_400_000);
+        if (Date.now() >= graceEnd && !(await this.memberTwoFactor.isEnabled('staff', staffId))) {
+          hit.blocked = true;
+          hit.message = 'Your store requires two-factor sign-in. Turn it on in Security (2FA) to keep working.';
+        }
+      }
+      if (this.tfCache.size > 2000) this.tfCache.clear();
+      this.tfCache.set(key, hit);
+    }
+    if (hit.blocked) throw new ForbiddenException({ message: hit.message, code: 'TWO_FACTOR_REQUIRED' });
   }
 
   private async pinStaffToStore(request: any, user: any, context: ExecutionContext) {

@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Headers, Param, Patch, Post, Put, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { MemberTwoFactorService } from '../auth/member-two-factor.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -38,7 +39,7 @@ import { STORE_INTEGRATION_PROVIDERS, STORE_INTEGRATION_TYPES, StoreIntegrationP
 @RequirePermission('settings.payments.manage')
 @Controller('api/store/:storeId/integrations')
 export class SellerIntegrationsController {
-  constructor(private readonly service: StoreIntegrationsService) {}
+  constructor(private readonly service: StoreIntegrationsService, private readonly memberTwoFactor: MemberTwoFactorService) {}
 
   @Get()
   list(@Param('storeId') storeId: string, @Req() req: any) {
@@ -104,7 +105,8 @@ export class SellerIntegrationsController {
   }
 
   @Post(':type/:provider/connect')
-  connect(
+  async connect(
+    @Headers('x-step-up') stepUp: string | undefined,
     @Param('storeId') storeId: string,
     @Param('type') type: string,
     @Param('provider') provider: string,
@@ -117,7 +119,20 @@ export class SellerIntegrationsController {
     if (!STORE_INTEGRATION_PROVIDERS.includes(provider as StoreIntegrationProvider)) {
       throw new BadRequestException(`Unknown provider "${provider}"`);
     }
+    // Payment / courier credentials are sensitive: members who use two-factor must have just proved it (x-step-up token).
+    await this.memberTwoFactor.assertStepUp(req.user.role === 'staff' ? 'staff' : 'seller', String(req.user.userId ?? req.user.sub), stepUp);
     return this.service.connect(storeId, actingSellerId(req.user), type as StoreIntegrationType, provider as StoreIntegrationProvider, body ?? {});
+  }
+
+  /** Pakistani courier defaults: pickup/return address, preferred courier, default parcel weight. */
+  @Get('couriers/settings')
+  courierSettings(@Param('storeId') storeId: string, @Req() req: any) {
+    return this.service.getCourierSettings(storeId, actingSellerId(req.user));
+  }
+
+  @Put('couriers/settings')
+  saveCourierSettings(@Param('storeId') storeId: string, @Body() body: any, @Req() req: any) {
+    return this.service.saveCourierSettings(storeId, actingSellerId(req.user), body ?? {});
   }
 
   /** Shopify "Packages" + live-rate handling fee for the connected Shippo account. */

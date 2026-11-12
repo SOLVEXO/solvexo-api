@@ -58,6 +58,11 @@ export class EmailCampaign {
   @Prop({ type: Object, default: null })
   segment: EmailCampaignSegment | null;
 
+  // Optional SAVED customer segment (customer-segments/) used as an extra audience filter; evaluated at send time.
+  // A deleted segment sends to nobody (never silently widens the audience).
+  @Prop({ type: String, default: null })
+  segmentId: string | null;
+
   // The drag-and-drop editor's block design (owned by the web app —
   // marketing/emailDesign.ts). `message` holds its rendered HTML, which is
   // what's actually sent; this is kept so the seller can reopen and edit it.

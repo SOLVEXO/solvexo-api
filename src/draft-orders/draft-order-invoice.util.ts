@@ -1,3 +1,4 @@
+import { repairMojibake } from '@/common/repair-mojibake.util';
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib';
 
 // What goes out with a draft-order invoice email: the items as an HTML table in the mail body, and the same invoice as a PDF.
@@ -18,7 +19,7 @@ export interface InvoiceDraft {
   dueText?: string;
 }
 
-const esc = (s: unknown) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const esc = (s: unknown) => repairMojibake(String(s ?? '')).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 export const invoiceNumber = (id: string) => `#${String(id).slice(-6).toUpperCase()}`;
 const money = (symbol: string, n: number) => `${symbol} ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const optionText = (o: { name: string; value: string }[]) => o.map(x => x.value).filter(Boolean).join(' / ');
@@ -47,7 +48,7 @@ export function buildInvoiceItemsHtml(d: InvoiceDraft, symbol: string, labels: I
 }
 
 // Helvetica (the built-in PDF font) cannot draw other scripts: they print as "?" instead of failing.
-const safe = (s: string) => String(s ?? '').replace(/[^\x20-\x7E -ÿ]/g, '?');
+const safe = (s: string) => repairMojibake(String(s ?? '')).replace(/[^\x20-\x7E -ÿ]/g, '?');
 
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;

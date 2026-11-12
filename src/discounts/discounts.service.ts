@@ -44,6 +44,14 @@ export class DiscountsService {
     }
   }
 
+  /** A discount may only reference a segment of ITS OWN store (never another store's). null/undefined = everyone. */
+  private async assertSegmentBelongsToStore(storeId: string, segmentId?: string | null) {
+    if (!segmentId) return;
+    if (!(await this.r.customerSegmentModel.exists({ _id: segmentId, storeId }))) {
+      throw new BadRequestException('Customer segment not found for this store');
+    }
+  }
+
   async createDiscount(sellerId: string, storeId: string, dto: CreateAutomaticDiscountDto) {
     const store = await this.verifyStoreOwnership(storeId, sellerId);
     this.validateTargeting(dto);
@@ -52,8 +60,10 @@ export class DiscountsService {
       throw new BadRequestException('Percentage discount cannot exceed 100');
     }
 
+    await this.assertSegmentBelongsToStore(storeId, dto.customerSegmentId);
     const discount = await this.r.automaticDiscountModel.create({
       storeId,
+      customerSegmentId: dto.customerSegmentId ?? null,
       name: dto.name,
       discountType: dto.discountType,
       discountValue: dto.discountValue,
@@ -130,8 +140,9 @@ export class DiscountsService {
     const allowedFields = [
       'name', 'discountType', 'discountValue', 'buyQuantity', 'getQuantity',
       'getDiscountPercent', 'target', 'categoryIds', 'productIds',
-      'minOrderAmount', 'startsAt', 'endsAt', 'isActive',
+      'minOrderAmount', 'startsAt', 'endsAt', 'isActive', 'customerSegmentId',
     ] as const;
+    await this.assertSegmentBelongsToStore(storeId, dto.customerSegmentId);
     const patch: any = {};
     for (const key of allowedFields) {
       if ((dto as any)[key] !== undefined) patch[key] = (dto as any)[key];

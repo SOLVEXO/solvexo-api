@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { CodProtectionModule } from '../cod-protection/cod-protection.module';
 import { PaymentController } from './payment.controller';
 import { PaymentService } from './payment.service';
 import { AuthModule } from '@/auth/auth.module';
@@ -17,7 +18,7 @@ import { EmailService } from '@/otp/services/email.service';
 @Module({
   // CommissionRulesModule is @Global() (see its own module file) so it
   // doesn't need to be imported here to inject CommissionRulesService.
-  imports: [AuthModule, RedisModule, PromotionsModule, FinanceModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, StripeConnectModule, AbandonedCartModule, AffiliateModule, DraftOrdersModule],
+  imports: [AuthModule, RedisModule, CodProtectionModule, PromotionsModule, FinanceModule, AdminConfigModule, ExchangeRateModule, GiftCardsModule, StripeConnectModule, AbandonedCartModule, AffiliateModule, DraftOrdersModule],
   controllers: [PaymentController],
   providers: [PaymentService, EmailService],
   exports: [PaymentService],

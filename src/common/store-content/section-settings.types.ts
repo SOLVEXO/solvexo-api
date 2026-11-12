@@ -54,9 +54,16 @@ export interface LinkTarget {
 
 export interface HeroSectionSettings extends BaseSectionSettings {
   /** `adapt` = every slide takes its image's own height (nothing is cropped). */
-  heightPreset?: 'small' | 'medium' | 'large' | 'adapt';
+  heightPreset?: 'small' | 'medium' | 'large' | 'adapt' | 'custom';
   /** Height on phones; absent / `same` = follow `heightPreset`. */
-  mobileHeightPreset?: 'same' | 'small' | 'medium' | 'large' | 'adapt';
+  mobileHeightPreset?: 'same' | 'small' | 'medium' | 'large' | 'adapt' | 'custom';
+  /** `fill` crops the picture to the slide; `whole` shows all of it (the rest is a soft blur of the same picture). */
+  imageFit?: 'fill' | 'whole';
+  /** The seller's own slide height in px (150 to 1400) when the height is `custom`; the phone one falls back to this. */
+  customHeight?: number;
+  mobileCustomHeight?: number;
+  /** Optional max width of the whole slideshow in px (320 to 2400); absent = the theme's page width. */
+  maxWidth?: number;
   /** Phones: put the slide text over the image (default) or in its own area below it. */
   mobileTextLayout?: 'overlay' | 'below';
   /** Slideshow behaviour (Shopify parity). Absent = autoplay on, 5 s, no arrows, no pause button, dots, slide. */
@@ -135,7 +142,7 @@ export interface MetaobjectListSectionSettings extends BaseSectionSettings {
 /** No `collectionId`/`heading` here (unlike `ProductCatalogSectionSettings`) — this section is contextual, always the collection the visitor is currently on. See `SECTION_TYPES`'s comment for why it's excluded from the general "Add Section" picker. */
 export interface CollectionProductGridSectionSettings {
   defaultSort?: 'newest' | 'price_asc' | 'price_desc' | 'best_rated' | 'best_selling';
-  columns?: 2 | 3 | 4;
+  columns?: number;
   showFilters?: boolean;
 }
 
@@ -291,6 +298,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   blog_posts: BlogPostsSectionSettings;
   metaobject_list: MetaobjectListSectionSettings;
   collection_product_grid: CollectionProductGridSectionSettings;
+  category_product_grid: CollectionProductGridSectionSettings;
   editorial_lookbook: EditorialLookbookSectionSettings;
   farm_story: FarmStorySectionSettings;
   drop_countdown: DropCountdownSectionSettings;

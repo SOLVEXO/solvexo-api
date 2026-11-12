@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import '../../common/schema-types/minor-money';
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { attachResourceHooks, stockUpdateMatters } from '../../common/resource-events';
 import { Document } from 'mongoose';
 
 export type ProductVariantDocument = ProductVariant & Document;
@@ -139,6 +140,11 @@ export class ProductVariant {
   @Prop({ default: false })
   allowBackorder: boolean;
 
+  // Pre-order (Shopify purchase-option parity, no deposits): sellable at 0 stock until `expectedDate`; `sold` counts units
+  // sold under it (race-safe $inc against `limit`). null on every pre-existing variant.
+  @Prop({ type: Object, default: null })
+  preorder: { enabled: boolean; expectedDate: Date | null; limit: number | null; message: string | null; sold: number } | null;
+
   // Opt-in real batch/lot tracking (see StockLot schema) — when true,
   // Purchase Order receiving creates real lot rows instead of only updating
   // this variant's weighted-average `costPrice`, and stock-leaving actions
@@ -218,3 +224,6 @@ ProductVariantSchema.index(
 ProductVariantSchema.index({ barcode: 1 }, { sparse: true });
 ProductVariantSchema.set('toJSON', { getters: true, virtuals: false }); // G3.0: costPriceMinor (a MinorMoney) serialises as a plain integer
 ProductVariantSchema.set('toObject', { getters: true, virtuals: false });
+
+// Merchant webhooks: stock movements signal inventory.changed (common/resource-events.ts).
+attachResourceHooks(ProductVariantSchema, 'variant_stock', { matters: stockUpdateMatters, onUpdate: true });

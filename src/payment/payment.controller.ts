@@ -37,6 +37,16 @@ export class PaymentController {
     return this.paymentService.codPayment(userId, body);
   }
 
+  // Wholesale company buyers: place the order on the company's payment terms (net days / due on fulfilment).
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('user')
+  @UseInterceptors(IdempotencyInterceptor)
+  @Post('b2b-terms-payment')
+  async b2bTermsPayment(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
+    return this.paymentService.b2bTermsPayment(userId, body?.checkoutId);
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('user')
   @UseInterceptors(IdempotencyInterceptor)

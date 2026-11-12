@@ -12,6 +12,7 @@ import { createMaintenanceMiddleware } from './admin-config/maintenance.middlewa
 import { StorefrontAccessService, createStorefrontAccessMiddleware } from './storefront/storefront-access.service';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { assertPublicUrl } from './common/public-url.check';
+import { RepairMojibakeInterceptor } from './common/repair-mojibake.interceptor';
 
 // Make the real reason visible in the logs before the process dies.
 process.on('unhandledRejection', (reason) => {
@@ -72,6 +73,7 @@ async function bootstrap() {
   // still run on top of this. Untyped (`any`) bodies are not covered — those
   // handlers must whitelist fields themselves.
   app.useGlobalPipes(new ValidationPipe({ transform: false }));
+  app.useGlobalInterceptors(new RepairMojibakeInterceptor());
 
   const config = new DocumentBuilder()
     .setTitle('Solvexo API')

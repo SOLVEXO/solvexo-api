@@ -3,6 +3,8 @@
 // import { RolesGuard } from '../auth/guards/roles.guard';
 // import { OrdersService } from './orders.service';
 import { PurchaseShippingLabelDto } from './dto/purchase-label.dto';
+import { BookCourierDto, BulkBookCourierDto, CancelCourierDto } from './dto/courier.dto';
+import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { FulfilOrderDto } from './dto/fulfil-order.dto';
 import { PurchaseReturnLabelDto, UpdateTrackingDto } from './dto/purchase-label.dto';
 import { parseLabelItemsQuery } from './shipments.util';
@@ -45,6 +47,9 @@ import {
   Req,
   Res,
   UseGuards,
+  UseInterceptors,
+  ValidationPipe,
+  BadRequestException,
 } from '@nestjs/common';
 import { OrderEditingService } from './order-editing.service';
 import { OrderExchangeService } from './order-exchange.service';
@@ -228,6 +233,94 @@ export class OrdersController {
       actingSellerId(req.user), body.orderId, body.storeId, req.ip, req.headers['user-agent'],
       { rateId: body.rateId, packageId: body.packageId, items: body.items, notifyCustomer: body.notifyCustomer },
     );
+  }
+
+  // ── Pakistani couriers (PostEx, Leopards, …) — permission reused: orders.buy_shipping_label ────────────────
+
+  /** Bookable couriers (enabled + connected) and the store's courier defaults, for the order screen. */
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
+  @Get('courier/options/:storeId')
+  async courierOptions(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.ordersService.courierBookingOptions(actingSellerId(req.user), storeId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
+  @Get('courier/validate-city/:storeId')
+  async courierValidateCity(@Req() req: any, @Param('storeId') storeId: string, @Query('provider') provider: string, @Query('city') city: string) {
+    return this.ordersService.courierValidateCity(actingSellerId(req.user), storeId, provider, city);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
+  @Get('courier/order/:storeId/:orderId')
+  async courierBookingsForOrder(@Req() req: any, @Param('storeId') storeId: string, @Param('orderId') orderId: string) {
+    return this.ordersService.listCourierBookingsForOrder(actingSellerId(req.user), storeId, orderId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
+  @UseInterceptors(IdempotencyInterceptor)
+  @Put('courier/book')
+  async bookCourier(@Req() req: any, @Body(new ValidationPipe({ whitelist: true, transform: true })) body: BookCourierDto) {
+    return this.ordersService.bookCourierShipment(actingSellerId(req.user), body.orderId, body.storeId, req.ip, req.headers['user-agent'], {
+      provider: body.provider, items: body.items, weightKg: body.weightKg, pieces: body.pieces, notifyCustomer: body.notifyCustomer,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
+  @UseInterceptors(IdempotencyInterceptor)
+  @Put('courier/bulk-book')
+  async bulkBookCourier(@Req() req: any, @Body(new ValidationPipe({ whitelist: true, transform: true })) body: BulkBookCourierDto) {
+    return this.ordersService.bulkBookCourierShipments(actingSellerId(req.user), body.storeId, body.orderIds, req.ip, req.headers['user-agent'], {
+      provider: body.provider, notifyCustomer: body.notifyCustomer,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
+  @Put('courier/cancel')
+  async cancelCourier(@Req() req: any, @Body(new ValidationPipe({ whitelist: true, transform: true })) body: CancelCourierDto) {
+    return this.ordersService.cancelCourierBooking(actingSellerId(req.user), body.storeId, body.orderId, body.bookingId, req.ip, req.headers['user-agent']);
+  }
+
+  /** Combined airway bills for ?bookingIds=a,b,c — one PDF (merged) when the courier returns bytes, else the courier's links. */
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
+  @Get('courier/airway-bill/:storeId')
+  async courierAirwayBill(@Req() req: any, @Param('storeId') storeId: string, @Query('bookingIds') bookingIds: string, @Res() res: Response) {
+    return this.sendCourierDocuments(req, storeId, bookingIds, 'airway_bill', 'airway-bills.pdf', res);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.buy_shipping_label')
+  @Get('courier/load-sheet/:storeId')
+  async courierLoadSheet(@Req() req: any, @Param('storeId') storeId: string, @Query('bookingIds') bookingIds: string, @Res() res: Response) {
+    return this.sendCourierDocuments(req, storeId, bookingIds, 'load_sheet', 'load-sheet.pdf', res);
+  }
+
+  private async sendCourierDocuments(req: any, storeId: string, bookingIds: string, kind: 'airway_bill' | 'load_sheet', filename: string, res: Response) {
+    const ids = typeof bookingIds === 'string' ? bookingIds.split(',').map((s) => s.trim()).filter(Boolean) : [];
+    if (ids.length === 0 || ids.length > 100) throw new BadRequestException('Select between 1 and 100 bookings');
+    const out = await this.ordersService.courierDocuments(actingSellerId(req.user), storeId, ids, kind);
+    const pdfs = out.documents.filter((d) => d.pdf).map((d) => d.pdf as Buffer);
+    const urls = out.documents.filter((d) => d.url).map((d) => d.url as string);
+    if (pdfs.length > 0 && urls.length === 0) {
+      const merged = pdfs.length === 1 ? pdfs[0] : await mergePdfs(pdfs);
+      res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${filename}"`, 'Cache-Control': 'no-store' });
+      return res.send(merged);
+    }
+    return res.json({ success: true, data: { provider: out.provider, urls } });
   }
 
   /** Shopify "Buy shipping label" step 1 — real carrier rates for this order (optional ?packageId=). */
@@ -630,4 +723,16 @@ export class OrdersController {
     const storeId = resolveBuyerStoreScope(req.user.storeId, storeIdQuery);
     return this.ordersService.getOrderById(userId, orderId, storeId);
   }
+}
+
+/** Concatenates PDF byte buffers into one document (courier airway bills come back one PDF per batch). */
+async function mergePdfs(buffers: Buffer[]): Promise<Buffer> {
+  const { PDFDocument } = await import('pdf-lib');
+  const out = await PDFDocument.create();
+  for (const buf of buffers) {
+    const src = await PDFDocument.load(buf);
+    const pages = await out.copyPages(src, src.getPageIndices());
+    pages.forEach((pg) => out.addPage(pg));
+  }
+  return Buffer.from(await out.save());
 }

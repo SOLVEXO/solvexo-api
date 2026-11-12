@@ -40,6 +40,16 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
       'products.create', 'collections.manage', 'categories.manage', 'draft_orders.manage', 'reviews.manage', 'activity_log.view',
       // Added with PRESET_VERSION 2
       'digital.view', 'digital.manage', 'members.manage', 'courses.manage', 'licenses.manage',
+      // Added with PRESET_VERSION 3
+      'b2b.view', 'b2b.manage',
+      // Added with PRESET_VERSION 4
+      'khata.view', 'khata.manage',
+      // Added with PRESET_VERSION 5
+      'fulfillment.view', 'fulfillment.manage',
+      // Added with PRESET_VERSION 6
+      'product_subscriptions.view', 'product_subscriptions.manage',
+      // Added with PRESET_VERSION 7
+      'checkout_rules.view', 'checkout_rules.manage',
     ],
   },
   {
@@ -50,12 +60,12 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
   {
     name: 'Support Staff',
     description: 'View and fulfill orders, view customers, and reply to customer messages.',
-    permissions: ['home.view', 'orders.view', 'orders.fulfill', 'orders.return', 'customers.view', 'messaging.view', 'messaging.manage', 'reviews.manage', 'digital.view'],
+    permissions: ['home.view', 'orders.view', 'orders.fulfill', 'orders.return', 'customers.view', 'messaging.view', 'messaging.manage', 'reviews.manage', 'digital.view', 'b2b.view'],
   },
 ];
 
 /** Bump when PRESET_ROLES gains permissions; list what each preset gets in PRESET_ADDITIONS for that version. */
-const PRESET_VERSION = 2;
+const PRESET_VERSION = 7;
 const PRESET_ADDITIONS: Record<number, Record<string, string[]>> = {
   1: {
     'Store Manager': ['products.create', 'collections.manage', 'categories.manage', 'draft_orders.manage', 'reviews.manage', 'activity_log.view'],
@@ -64,6 +74,26 @@ const PRESET_ADDITIONS: Record<number, Record<string, string[]>> = {
   2: {
     'Store Manager': ['digital.view', 'digital.manage', 'members.manage', 'courses.manage', 'licenses.manage'],
     'Support Staff': ['digital.view'],
+  },
+  3: {
+    'Store Manager': ['b2b.view', 'b2b.manage'],
+    'Support Staff': ['b2b.view'],
+  },
+  4: {
+    'Store Manager': ['khata.view', 'khata.manage'],
+    'Support Staff': ['khata.view'],
+  },
+  5: {
+    'Store Manager': ['fulfillment.view', 'fulfillment.manage'],
+    'Support Staff': ['fulfillment.view'],
+  },
+  6: {
+    'Store Manager': ['product_subscriptions.view', 'product_subscriptions.manage'],
+    'Support Staff': ['product_subscriptions.view'],
+  },
+  7: {
+    'Store Manager': ['checkout_rules.view', 'checkout_rules.manage'],
+    'Support Staff': ['checkout_rules.view'],
   },
 };
 

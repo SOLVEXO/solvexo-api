@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { superadminAppUrl } from '@/common/app-urls.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { DatabaseService } from '../database/databaseservice';
@@ -15,7 +16,7 @@ const DAY = 86_400_000;
 /** The same alert isn't sent again for this long, as long as it stays active. */
 const ALERT_REPEAT_SECONDS = 24 * 60 * 60;
 const ALERT_SEVERITIES = new Set(['critical', 'warning']);
-const appUrl = () => (process.env.FRONTEND_URL || 'https://solvexo.store').replace(/\/+$/, '');
+const appUrl = () => superadminAppUrl() || 'https://superadmin.solvexo.store';
 
 /**
  * Keeps admins informed without opening the panel:

@@ -35,11 +35,16 @@ export class CartController {
   }
   @UseGuards(JwtAuthGuard)
   @Get('get-cart')
-  async getCart(@Req() req: any, @Query('storeId') queryStoreId: string) {
+  async getCart(@Req() req: any, @Query('storeId') queryStoreId: string, @Query('analyticsSessionId') analyticsSessionId?: string) {
     const { userId, storeId: userStoreId } = req.user;
     const storeId = resolveBuyerStoreScope(userStoreId, queryStoreId);
 
-    return this.cartService.getCart(userId, storeId);
+    const result: any = await this.cartService.getCart(userId, storeId);
+    // Shopify Live View counts every visitor whose cart holds items, also a cart saved from an earlier visit.
+    if (result?.data?.items?.length) {
+      void markStorefrontSession(this.databaseService.repositories.storefrontSessionModel, storeId, readAnalyticsSessionId({ analyticsSessionId }), { addedToCart: true, userId });
+    }
+    return result;
   }
 
   @UseGuards(JwtAuthGuard)

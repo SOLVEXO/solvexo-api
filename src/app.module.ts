@@ -1,3 +1,5 @@
+import { MerchandisingModule } from './merchandising/merchandising.module';
+import { CustomerSegmentsModule } from './customer-segments/customer-segments.module';
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
@@ -79,11 +81,13 @@ import { StoreBadgesModule } from './store-badges/store-badges.module';
 import { AdminConfigModule } from './admin-config/admin-config.module';
 import { AdminAnnouncementsModule } from './admin-announcements/admin-announcements.module';
 import { AdminMarketplaceModule } from './admin-marketplace/admin-marketplace.module';
+import { AdminSellerTrustModule } from './admin-seller-trust/admin-seller-trust.module';
 import { AdminModerationModule } from './admin-moderation/admin-moderation.module';
 import { AdminUsersModule } from './admin-users/admin-users.module';
 import { AdminClientsModule } from './admin-clients/admin-clients.module';
 import { AdminDigestModule } from './admin-digest/admin-digest.module';
 import { SalesOpsModule } from './sales-ops/sales-ops.module';
+import { SiteAnalyticsModule } from './site-analytics/site-analytics.module';
 import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
 import { ShippingZonesModule } from './shipping-zones/shipping-zones.module';
 import { ShippingCarriersModule } from './shipping-carriers/shipping-carriers.module';
@@ -97,6 +101,16 @@ import { StoreChatSettingsModule } from './store-chat-settings/store-chat-settin
 import { DigitalAccessModule } from './digital-access/digital-access.module';
 import { MembershipsModule } from './memberships/memberships.module';
 import { LicensesModule } from './licenses/licenses.module';
+import { B2BModule } from './b2b/b2b.module';
+import { FulfillmentServicesModule } from './fulfillment-services/fulfillment.module';
+import { SellingPlansModule } from './selling-plans/selling-plans.module';
+import { CheckoutRulesModule } from './checkout-rules/checkout-rules.module';
+import { KhataModule } from './khata/khata.module';
+import { ProductFeedsModule } from './product-feeds/product-feeds.module';
+import { MerchantApiModule } from './merchant-api/merchant-api.module';
+import { SearchDiscoveryModule } from './search-discovery/search-discovery.module';
+import { CodProtectionModule } from './cod-protection/cod-protection.module';
+import { MessagingChannelsModule } from './messaging-channels/messaging-channels.module';
 import { CoursesModule } from './courses/courses.module';
 import { DashboardLayoutsModule } from './dashboard-layouts/dashboard-layouts.module';
 import { StoreContactModule } from './store-contact/store-contact.module';
@@ -125,6 +139,8 @@ import { AppI18nModule } from './i18n/i18n.module';
 
 @Module({
   imports: [
+    MerchandisingModule,
+    CustomerSegmentsModule,
     ConfigModule.forRoot({ isGlobal: true }),
     EventEmitterModule.forRoot(),
     ThrottlerModule.forRootAsync({
@@ -213,11 +229,13 @@ import { AppI18nModule } from './i18n/i18n.module';
     AdminConfigModule,
     AdminAnnouncementsModule,
     AdminMarketplaceModule,
+    AdminSellerTrustModule,
     AdminModerationModule,
     AdminUsersModule,
     AdminClientsModule,
     AdminDigestModule,
     SalesOpsModule,
+    SiteAnalyticsModule,
     AdminMarketingModule,
     ShippingZonesModule,
     ShippingCarriersModule,
@@ -231,6 +249,16 @@ import { AppI18nModule } from './i18n/i18n.module';
     DigitalAccessModule,
     MembershipsModule,
     LicensesModule,
+    B2BModule,
+    FulfillmentServicesModule,
+    SellingPlansModule,
+    CheckoutRulesModule,
+    KhataModule,
+    ProductFeedsModule,
+    MerchantApiModule,
+    SearchDiscoveryModule,
+    CodProtectionModule,
+    MessagingChannelsModule,
     CoursesModule,
     DashboardLayoutsModule,
     StoreContactModule,

@@ -7,7 +7,7 @@ import { IsArray, IsString, ArrayMaxSize } from 'class-validator';
 export class UpdateCollectionProductsDto {
   @ApiProperty({ type: [String] })
   @IsArray()
-  @ArrayMaxSize(200)
+  @ArrayMaxSize(5000)
   @IsString({ each: true })
   productIds: string[];
 }

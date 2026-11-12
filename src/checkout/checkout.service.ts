@@ -1,3 +1,11 @@
+import { preorderCanFill } from '../common/preorder.util';
+import { assertBundleInStock, componentDisplayName } from '../common/bundle.util';
+import { B2BContextService } from '../b2b/b2b-context.service';
+import { CheckoutRulesService, buildContext as buildRuleContext } from '../checkout-rules/checkout-rules.service';
+import { applyShippingRules as applyRuleShipping, filterPaymentMethods as filterRulePaymentMethods } from '../checkout-rules/checkout-rules.util';
+import { filterPaymentMethodsForB2B } from '../b2b/b2b-order.util';
+import { CodProtectionService } from '../cod-protection/cod-protection.service';
+import { CustomerSegmentsService } from '../customer-segments/customer-segments.service';
 import { assertOrderQuantity } from '@/products/selling-options.util';
 import { isValidObjectId } from 'mongoose';
 import { resolveZoneShippingPrice } from '@/shipping-zones/shipping-rate.util';
@@ -11,6 +19,7 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { availableStock, AVAILABLE_STOCK_EXPR, isPurchasableOnline } from '@/common/stock-availability.util';
@@ -70,6 +79,14 @@ export class CheckoutService {
     private readonly profilesService: ShippingProfilesService,
     private readonly marketsService: MarketsService,
     private readonly marketPricingService: MarketPricingService,
+    // Last + optional so positional-constructor specs keep working; provided by CheckoutModule.
+    @Optional() private readonly customerSegments?: CustomerSegmentsService,
+    // Wholesale (B2B) prices, rules and payment restrictions for approved company buyers; retail buyers are unaffected.
+    @Optional() private readonly b2bContext?: B2BContextService,
+    // Hides cash on delivery up front when the store's COD rules already refuse this order (placement re-checks it).
+    @Optional() private readonly codProtection?: CodProtectionService,
+    // The store's own declarative checkout rules (discounts, payment / shipping filters, validation blocks).
+    @Optional() private readonly checkoutRules?: CheckoutRulesService,
   ) {}
 
   private round(n: number) {
@@ -172,6 +189,19 @@ export class CheckoutService {
    *  currency (or null if unknown), passed in rather than re-queried per
    *  zone; falls back to SHIPPING_ZONE_CURRENCY only if that's missing. */
   /** Total shipping weight (kg) of checkout/cart lines; lines are matched to variants by `variantKey`. */
+  /** Bundle components for the order line, with a readable name per component (looked up once here, frozen on the order). */
+  private async snapshotBundleComponents(components: any[]) {
+    if (components.length === 0) return [];
+    const { productModel, productVariantModel } = this.databaseService.repositories as any;
+    const [products, variants] = await Promise.all([
+      productModel.find({ _id: { $in: components.map((c) => c.productId) } }).select('name').lean(),
+      productVariantModel.find({ _id: { $in: components.map((c) => c.variantId) } }).select('options').lean(),
+    ]);
+    const pName = new Map<string, string>(products.map((p: any) => [String(p._id), p.name]));
+    const vOpts = new Map<string, any[]>(variants.map((v: any) => [String(v._id), v.options ?? []]));
+    return components.map((c: any) => ({ productId: c.productId, variantId: c.variantId, quantity: c.quantity, name: c.name ?? componentDisplayName(pName.get(String(c.productId)), vOpts.get(String(c.variantId))) }));
+  }
+
   private async totalWeightKgForLines(lines: { variantId?: string | null; quantity?: number }[]): Promise<number> {
     const ids = [...new Set(lines.map((l) => l.variantId).filter(Boolean) as string[])];
     if (ids.length === 0) return 0;
@@ -363,7 +393,7 @@ export class CheckoutService {
     // always single-store today (the marketplace-to-standalone-store
     // pivot), so this one store's enabledCurrencies is authoritative for
     // the whole checkout.
-    const targetStore = await storeModel.findById(storeId).select('baseCurrency enabledCurrencies').lean();
+    const targetStore = await storeModel.findById(storeId).select('baseCurrency enabledCurrencies wholesaleOnly').lean();
     // Shopify Markets: the buyer's country picks the store's market (delivery address first, else the country the
     // storefront reported). A buyer who explicitly chose a currency keeps it; otherwise the market's currency is the
     // default. The store's enabled-currency list (and plan cap) still has the last word.
@@ -438,6 +468,14 @@ export class CheckoutService {
       return storeStatusCache.get(storeId)!;
     };
 
+    // Wholesale: resolved from the logged-in buyer on the server (never from the request). Null = retail rules.
+    const b2bCtx = this.b2bContext ? await this.b2bContext.getContext(storeId, String(userId)) : null;
+    const b2bPricedVariants = new Set<string>();
+    // Wholesale-only store: nobody but an approved company buyer may check out.
+    if ((targetStore as any)?.wholesaleOnly && !b2bCtx) {
+      throw new BadRequestException({ message: 'This store sells to approved wholesale customers only.', code: 'B2B_ONLY' });
+    }
+
     // Pass 1: resolve product/variant and validate stock.
     const rawItems: Array<{ product: any; variant: any; cartItem: any }> = [];
 
@@ -460,7 +498,8 @@ export class CheckoutService {
           `An item in your cart is no longer available. Please remove it and try again.`,
         );
 
-      assertOrderQuantity(product as any, cartItem.quantity);
+      // A wholesale buyer's quantity rule (catalog entry, falling back to the product's) is enforced in pass 2 by the B2B resolver.
+      if (!b2bCtx) assertOrderQuantity(product as any, cartItem.quantity);
 
       // Shopify catalog availability: a product the buyer's market doesn't sell can't be checked out there.
       if (!isProductAvailableInMarket(market, String(product._id))) {
@@ -505,10 +544,13 @@ export class CheckoutService {
         // when out of stock") never fails this pre-flight check — the real
         // atomic reserve at order-placement time (PaymentService.createOrder)
         // is the only place that decides whether it's genuinely oversold.
-        if (!isPurchasableOnline(variant as any, cartItem.quantity)) {
+        if (!isPurchasableOnline(variant as any, cartItem.quantity) && !((variant as any).preorder?.enabled && preorderCanFill((variant as any).preorder))) {
           throw new BadRequestException(
             `Insufficient stock for: ${product.name}`,
           );
+        }
+        if (product.isBundle && (product.bundleComponents?.length ?? 0) > 0) {
+          await assertBundleInStock(this.databaseService.repositories.productVariantModel, product.bundleComponents as any, cartItem.quantity, product.name, (v, q) => isPurchasableOnline(v as any, q));
         }
       }
 
@@ -529,16 +571,25 @@ export class CheckoutService {
       : [];
     const sellerMap = new Map(sellers.map((s: any) => [s._id.toString(), s]));
 
-    // Pass 2: build the checkout lines at the variant's list price.
+    // Pass 2: build the checkout lines at the variant's list price (or the buyer's wholesale price).
+    const b2bEntries = b2bCtx && this.b2bContext ? await this.b2bContext.loadEntries(b2bCtx, rawItems.map((r) => String(r.variant._id))) : new Map();
     const checkoutItems: any[] = [];
     for (const { product, variant, cartItem } of rawItems) {
-      const unitPrice = variant.price;
+      let unitPrice = variant.price;
+      if (b2bCtx && this.b2bContext) {
+        // Wholesale price, availability and quantity rule, recomputed here. A violation throws a buyer-readable 400.
+        unitPrice = this.b2bContext.resolveLine(b2bCtx, b2bEntries, {
+          productName: product.name, product, variantId: String(variant._id), basePrice: variant.price, quantity: cartItem.quantity,
+        }).unitPrice;
+        b2bPricedVariants.add(String(variant._id));
+      }
 
       const seller = sellerMap.get(product.sellerId?.toString());
 
       checkoutItems.push({
         productId: product._id.toString(),
         variantId: variant._id.toString(),
+        bundleComponents: product.isBundle ? await this.snapshotBundleComponents(product.bundleComponents ?? []) : [],
         sellerId: product.sellerId,
         sellerName: seller ? seller.name : null,
         sellerVerified: seller ? !!seller.isVerified : false,
@@ -576,6 +627,8 @@ export class CheckoutService {
       for (const item of checkoutItems) {
         const fixed = fixedPriceFor(marketFixedPrices, item.productId, item.variantId);
         if (!marketRule && !fixed) continue;
+        // A wholesale price is final: the market's price rule does not stack on it.
+        if (b2bPricedVariants.has(String(item.variantId))) continue;
         const unit = marketAdjustedNativeAmount(item.price, item.currency, checkoutCurrency, marketRule, marketSnapshots, fixed?.fixedPrice ?? null);
         item.price = unit;
         item.totalPrice = Math.round(unit * item.quantity * 1e6) / 1e6;
@@ -635,6 +688,7 @@ export class CheckoutService {
     // each discount's own targeted subset of items (whole store / a set of
     // categories / a set of products).
     let autoDiscountSavingsUSD = 0;
+    const segmentMemberCache = new Map<string, boolean>();
     const activeDiscountsByStore = await this.discountsService.getActiveDiscountsForStores(cartStoreIds);
 
     for (const sId of cartStoreIds) {
@@ -662,6 +716,15 @@ export class CheckoutService {
         // the whole checkout's shipping fee, in addShippingInCheckout below
         // (shipping is a flat whole-checkout amount, never a per-item one).
         if (discount.discountType === 'free_shipping') continue;
+        // Customer eligibility: a segment-restricted discount only applies to CURRENT members of that saved segment
+        // (evaluated now, for this buyer, never a stored list). No segment service / not a member => skipped.
+        if (discount.customerSegmentId) {
+          const key = `${sId}:${discount.customerSegmentId}`;
+          if (!segmentMemberCache.has(key)) {
+            segmentMemberCache.set(key, this.customerSegments ? await this.customerSegments.isMember(sId, String(discount.customerSegmentId), userId).catch(() => false) : false);
+          }
+          if (!segmentMemberCache.get(key)) continue;
+        }
         if (discount.minOrderAmount != null && wholeStoreSubtotal < discount.minOrderAmount) continue;
 
         const eligible = discount.target === 'store'
@@ -707,6 +770,29 @@ export class CheckoutService {
       if (best) {
         this.distributeAutoDiscount(best.items, best.amount, String(best.discount._id));
         autoDiscountSavingsUSD = this.round(autoDiscountSavingsUSD + best.amount);
+      }
+    }
+
+    // Checkout rules (store-owned, declarative): cart-level discounts + validation blocks. Same evaluation the cart preview uses.
+    let ruleDiscountTotal = 0;
+    const ruleDiscountLabels: string[] = [];
+    if (this.checkoutRules) {
+      for (const sId of cartStoreIds) {
+        if (!(await this.checkoutRules.hasActiveRules(sId))) continue;
+        const storeItems = checkoutItems.filter((i) => i.storeId === sId);
+        const facts = await this.checkoutRules.customerFacts(sId, userId);
+        const ev = await this.checkoutRules.evaluate(sId, buildRuleContext({ lines: storeItems.map((i) => ({ productId: i.productId, quantity: i.quantity, total: i.totalPrice, type: i.type })), ...facts }));
+        this.checkoutRules.throwIfBlocked(ev);
+        for (const d of ev.discount.applied) {
+          const eligible = d.productIds.length ? storeItems.filter((i) => d.productIds.includes(String(i.productId))) : storeItems;
+          this.proportionallyDistribute(eligible, d.amount, (item, share) => {
+            if (item.originalPrice == null) item.originalPrice = item.price;
+            item.totalPrice = this.round(item.totalPrice - share);
+            item.price = item.quantity > 0 ? this.round(item.totalPrice / item.quantity) : item.totalPrice;
+          });
+          ruleDiscountTotal = this.round(ruleDiscountTotal + d.amount);
+          if (!ruleDiscountLabels.includes(d.label)) ruleDiscountLabels.push(d.label);
+        }
       }
     }
 
@@ -844,7 +930,8 @@ export class CheckoutService {
       const cfg = taxCfgByStore.get(sid) ?? {};
       const storeItems = checkoutItems.filter((item: any) => item.storeId === sid);
       // A seller who is not tax-registered collects no tax at all (rates stay saved for when they register).
-      if (isTaxCollectionOff(cfg as any)) {
+      // A seller who is not tax-registered, or a tax-exempt wholesale company, is charged no tax (rates stay saved).
+      if (isTaxCollectionOff(cfg as any) || (b2bCtx?.taxExempt && sid === storeId)) {
         for (const item of storeItems) { item.taxUSD = 0; item.includedTaxUSD = 0; }
         continue;
       }
@@ -926,12 +1013,15 @@ export class CheckoutService {
       includedTaxAmount,
       campaignDiscountTotalUSD: campaignSavingsUSD,
       autoDiscountTotalUSD: autoDiscountSavingsUSD,
+      ruleDiscountTotal,
+      ruleDiscountLabels,
       totalAmount,
       status: 'pending',
       attributionSource,
       attributedBannerId: body.attributedBannerId ?? null,
       attributedStoreBannerId: body.attributedStoreBannerId ?? null,
       attributedAffiliateCode: body.attributedAffiliateCode ?? null,
+      b2b: b2bCtx && this.b2bContext ? this.b2bContext.snapshot(b2bCtx, body.poNumber) : null,
       expiredAt: new Date(Date.now() + 30 * 60 * 1000),
       isDelete: false,
     });
@@ -1004,6 +1094,8 @@ export class CheckoutService {
       cardStoreIds.length === 1 &&
       !!(await this.stripeConnectService.getEligibleConnectAccountForStore(cardStoreIds[0]));
     const withoutCardIfNoProvider = (methods: string[]) => stripCardMethodsIfNoProvider(methods, cardAvailable);
+    const codVerdict = this.codProtection ? await this.codProtection.evaluateCheckout(checkout, userId).catch(() => null) : null;
+    const withoutBlockedCod = (methods: string[]) => (codVerdict?.evaluation.decision === 'block_cod' ? methods.filter((m) => m !== 'cash_on_delivery' && m !== 'split') : methods);
 
     return {
       success: true,
@@ -1016,11 +1108,12 @@ export class CheckoutService {
         // 'stripe' and 'cash_on_delivery' as before — unless COD isn't
         // eligible (see codEligible above), in which case 'stripe' (pay
         // everything online) is always the safe fallback.
-        allowedPaymentMethods: withoutCardIfNoProvider(withoutUnsupportedStripe(
+        // Wholesale companies: narrowed by the company's allow-list, plus payment terms when they have them (single store only).
+        allowedPaymentMethods: await this.applyPaymentRules(checkout, userId, cardStoreIds, withoutBlockedCod(filterPaymentMethodsForB2B(withoutCardIfNoProvider(withoutUnsupportedStripe(
           hasDigital
             ? withManualTransfer(hasPhysical && codEligible ? ['stripe', 'split'] : ['stripe'])
             : withManualTransfer(codEligible ? ['stripe', 'cash_on_delivery'] : ['stripe']),
-        )),
+        )), (checkout as any).b2b, cardStoreIds.length === 1))),
         cardPaymentAvailable: cardAvailable,
         summary: {
           subtotal,
@@ -1219,6 +1312,16 @@ export class CheckoutService {
     let shippingFxSnapshots: FxSnapshot[] = (checkout.fxSnapshots as any) ?? [];
     const storeCurrencyCache = new Map<string, string | null>();
     const feeByStore = new Map<string, number>();
+    // Checkout rules: validation blocks + hidden delivery options, enforced here so a hidden option cannot be forced by hand.
+    if (this.checkoutRules) {
+      const zonesOfStore: Record<string, any[]> = {};
+      for (const sid of storeIdsInCheckout) zonesOfStore[String(sid)] = await shippingZoneModel.find({ storeId: sid, isDelete: false, status: 'active' }).select('name zoneType').lean();
+      await this.checkoutRules.enforceCheckout(
+        { ...(checkout as any).toObject(), addressId: deliveryAddress ? String(deliveryAddress._id) : (checkout as any).addressId ?? null },
+        userId, { zoneIds: selectedZones.map((s) => String(s.zone._id)), zonesOfStore },
+      );
+    }
+
     const selections: { profileId: string | null; shippingZoneId: string; fee: number; storeId: string }[] = [];
 
     if (liveRate) {
@@ -1363,6 +1466,8 @@ export class CheckoutService {
       // legacy readers; `shippingSelections` carries one pick per delivery group.
       shippingZoneId: legacyZoneId,
       shippingSelections: savedSelections,
+      localDelivery: !isPickup && !liveRate && selectedZones.some((s) => s.zone.zoneType === 'local_delivery'),
+      localDeliveryEta: (() => { const z = selectedZones.find((s) => s.zone.zoneType === 'local_delivery'); const e = z && typeof z.zone.estimatedDeliveryTime === 'string' ? z.zone.estimatedDeliveryTime.trim().slice(0, 120) : ''; return !isPickup && !liveRate && e ? e : null; })(),
       liveShippingRateId: liveRate ? liveRateId : null,
       liveShippingCarrier: liveRate ? liveRate.carrier : null,
       liveShippingService: liveRate ? liveRate.service : null,
@@ -1423,7 +1528,7 @@ export class CheckoutService {
       .findById(storeId)
       .select('taxRate taxRegions taxShipping taxPricesIncludeTax taxRegistered')
       .lean();
-    if (!store?.taxShipping || isTaxCollectionOff(store)) return { added: 0, included: 0 };
+    if (!store?.taxShipping || isTaxCollectionOff(store) || checkout?.b2b?.taxExempt) return { added: 0, included: 0 };
     if (address?.country) {
       const storeSubtotal = items
         .filter((i) => i.storeId === storeId)
@@ -1556,7 +1661,7 @@ export class CheckoutService {
         profileId: k === GENERAL_GROUP_KEY ? null : k,
         name: k === GENERAL_GROUP_KEY ? 'General' : groupNames.get(k) ?? 'Shipping',
       }));
-      return { message: 'Shipping zones fetched successfully', data, groups };
+      return { message: 'Shipping zones fetched successfully', data: await this.applyShippingRulesToZones(storeId, userId, data), groups };
     } catch (error) {
       throw error;
     }
@@ -1705,6 +1810,13 @@ export class CheckoutService {
       throw new BadRequestException('This coupon has expired');
     if (coupon.usageLimit != null && coupon.usageCount >= coupon.usageLimit) {
       throw new BadRequestException('This coupon has reached its usage limit');
+    }
+    // Segment-restricted coupon: only CURRENT members of that saved segment may redeem it (evaluated now, not a snapshot).
+    if ((coupon as any).customerSegmentId) {
+      const member = this.customerSegments && coupon.storeId
+        ? await this.customerSegments.isMember(String(coupon.storeId), String((coupon as any).customerSegmentId), userId).catch(() => false)
+        : false;
+      if (!member) throw new BadRequestException('This coupon is not available for your account');
     }
 
     // Revert any previously-applied coupon first so re-applying (or
@@ -2143,6 +2255,16 @@ export class CheckoutService {
     return { success: true, message: 'Note saved', data: { customerNote: note } };
   }
 
+  /** Wholesale buyers: the purchase-order number printed on their order and invoice. Only for a checkout that carries a company snapshot. */
+  async setB2BPoNumber(userId: string, body: any) {
+    const { checkout, checkoutModel } = await this.loadOpenCheckoutForCredit(userId, body?.checkoutId);
+    if (!(checkout as any).b2b?.companyId) throw new BadRequestException('Purchase order numbers are only for wholesale accounts.');
+    if (body?.poNumber != null && typeof body.poNumber !== 'string') throw new BadRequestException('poNumber must be text');
+    const poNumber = String(body?.poNumber ?? '').trim().slice(0, 60) || null;
+    await checkoutModel.updateOne({ _id: checkout._id }, { $set: { 'b2b.poNumber': poNumber } });
+    return { success: true, message: 'Purchase order number saved', data: { poNumber } };
+  }
+
   private async persistStoreCredit(checkoutModel: any, checkout: any, items: any[], flag: { storeCreditApplied: boolean; storeCreditStoreId: string | null }) {
     const { applied, currency } = await this.settleStoreCredit({ ...checkout.toObject?.() ?? checkout, userId: checkout.userId, ...flag }, items);
     const newSubtotal = this.convertedSubtotal(items, checkout.currency, checkout.fxSnapshots as any);
@@ -2503,6 +2625,24 @@ export class CheckoutService {
   /** Distributes a seller's own AutomaticDiscount (DiscountsService) across
    *  the subset of items it targets — same math as distributeCampaignDiscount,
    *  writing to the discount-specific fields instead. */
+  /** Store rules that hide / rename / reorder payment methods (single-store checkouts only). */
+  private async applyPaymentRules(checkout: any, userId: string, storeIds: string[], methods: string[]): Promise<string[]> {
+    if (!this.checkoutRules || storeIds.length !== 1) return methods;
+    try {
+      const r = await this.checkoutRules.evaluateCheckoutStore(checkout, userId, storeIds[0]);
+      return r ? filterRulePaymentMethods(methods, r.ev).methods : methods;
+    } catch { return methods; }
+  }
+
+  /** Store rules that hide / rename / reorder delivery options for this buyer's cart. */
+  private async applyShippingRulesToZones(storeId: string, userId: string | null | undefined, zones: any[]): Promise<any[]> {
+    if (!this.checkoutRules || !userId || zones.length === 0) return zones;
+    try {
+      const ev = await this.checkoutRules.evaluateUserCart(storeId, userId);
+      return ev ? applyRuleShipping(zones, ev).zones : zones;
+    } catch { return zones; }
+  }
+
   private distributeAutoDiscount(items: any[], totalDiscount: number, discountId: string) {
     this.proportionallyDistribute(items, totalDiscount, (item, share) => {
       if (item.originalPrice == null) item.originalPrice = item.price;

@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { sellerAppUrl } from '@/common/app-urls.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { EmailService } from '../otp/services/email.service';
@@ -96,7 +97,7 @@ export class ScheduledReportsService {
       attachment = { filename: `${safeName}.csv`, content: csv, contentType: 'text/csv' };
     }
 
-    const frontend = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+    const frontend = sellerAppUrl();
     const link = frontend ? `${frontend}/store/${report.storeId}/analytics` : '';
     const html = `<div style="font-family:sans-serif;max-width:520px">
       <p>Hi ${escapeHtml(seller.name ?? 'there')},</p>

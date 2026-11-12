@@ -72,12 +72,25 @@ describe('resolveCustomerIdentities — Phase 4 real-identity resolution (never 
   });
 
   it('deduplicates repeated userIds into a single resolution', async () => {
-    const userModel = buildUserModel([{ _id: 'u1', name: 'Amina Khan', email: 'amina@example.com' }]);
+    const id = 'a'.repeat(24);
+    const userModel = buildUserModel([{ _id: id, name: 'Amina Khan', email: 'amina@example.com' }]);
     const orderModel = { aggregate: jest.fn().mockResolvedValue([]) };
 
-    await resolveCustomerIdentities(userModel as any, orderModel as any, ['u1', 'u1', 'u1']);
+    await resolveCustomerIdentities(userModel as any, orderModel as any, [id, id, id]);
 
     const findFilter = userModel.find.mock.calls[0][0];
-    expect(findFilter._id.$in).toEqual(['u1']);
+    expect(findFilter._id.$in).toEqual([id]);
+  });
+
+  it('never sends a non-ObjectId or empty id to the User query (a CastError would 500 the whole report)', async () => {
+    const id = 'b'.repeat(24);
+    const userModel = buildUserModel([]);
+    const orderModel = { aggregate: jest.fn().mockResolvedValue([]) };
+
+    const result = await resolveCustomerIdentities(userModel as any, orderModel as any, [id, 'not-an-object-id', null as any]);
+
+    expect(userModel.find.mock.calls[0][0]._id.$in).toEqual([id]);
+    expect(result.get(id)?.name).toBe('Deleted account');
+    expect(result.get('not-an-object-id')?.name).toBe('Deleted account');
   });
 });

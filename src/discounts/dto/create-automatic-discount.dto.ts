@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsEnum, IsNumber, IsOptional, IsDateString, IsArray, Min } from 'class-validator';
+import { IsMongoId } from 'class-validator';
 
 export class CreateAutomaticDiscountDto {
   @ApiProperty({ example: 'Summer Sale' })
@@ -66,4 +67,9 @@ export class CreateAutomaticDiscountDto {
   @IsOptional()
   @IsDateString()
   endsAt?: string;
+
+  @ApiProperty({ required: false, description: 'Saved customer segment id — only its members get this discount (null = everyone)' })
+  @IsOptional()
+  @IsMongoId()
+  customerSegmentId?: string | null;
 }

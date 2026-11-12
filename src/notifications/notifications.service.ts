@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { sellerAppUrl, superadminAppUrl } from '@/common/app-urls.util';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -257,7 +258,7 @@ export class NotificationsService {
     const isAdminAlert = recipientRole === 'admin';
     if (type === NOTIFICATION_TYPES.ADMIN_EMAIL_FAILURE) return null; // an email about broken email would just fail too
     if (!isAdminAlert && !(recipientRole === 'seller' && SELLER_EMAIL_TYPES.has(type))) return null;
-    const base = (process.env.FRONTEND_URL || 'https://solvexo.store').replace(/\/+$/, '');
+    const base = (isAdminAlert ? superadminAppUrl() : sellerAppUrl()) || 'https://solvexo.store';
     const link = typeof data?.link === 'string' && data.link.startsWith('/') ? data.link : isAdminAlert ? '/admin' : storeId ? `/store/${storeId}` : '/seller';
     return {
       subject: title,

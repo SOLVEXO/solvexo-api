@@ -81,6 +81,6 @@ export function paymentAvailability(provider: string, country: string | null): P
 /** Third-party gateways (everything except Stripe Connect and bank transfer) a store in `country` can connect, in catalog order. */
 export function gatewayKeysForCountry(country: string | null): string[] {
   return Object.values(PAYMENT_PROVIDER_CATALOG)
-    .filter((e) => e.key !== 'stripe' && e.key !== 'bank_transfer' && paymentAvailability(e.key, country).available)
+    .filter((e) => e.key !== 'stripe' && e.key !== 'bank_transfer' && !e.unverified && paymentAvailability(e.key, country).available)
     .map((e) => e.key);
 }

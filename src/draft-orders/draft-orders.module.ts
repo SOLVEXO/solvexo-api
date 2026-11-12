@@ -6,6 +6,7 @@ import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 import { EmailService } from '../otp/services/email.service';
 import { StripeConnectModule } from '../stripe-connect/stripe-connect.module';
 import { FinanceModule } from '../finance/finance.module';
+import { B2BModule } from '../b2b/b2b.module';
 import { DraftOrdersController } from './draft-orders.controller';
 import { PublicDraftOrdersController } from './public-draft-orders.controller';
 import { DraftOrdersService } from './draft-orders.service';
@@ -18,7 +19,7 @@ import { DraftOrdersService } from './draft-orders.service';
   // StripeConnectModule — real Connect-routed invoice payments (see
   // DraftOrdersService.createInvoicePaymentIntent). CommissionRulesService
   // is @Global() so it needs no explicit import here.
-  imports: [AuthModule, RedisModule, ActivityLogModule, ExchangeRateModule, StripeConnectModule, FinanceModule],
+  imports: [AuthModule, RedisModule, ActivityLogModule, ExchangeRateModule, StripeConnectModule, FinanceModule, B2BModule],
   controllers: [DraftOrdersController, PublicDraftOrdersController],
   providers: [DraftOrdersService, EmailService],
   exports: [DraftOrdersService],

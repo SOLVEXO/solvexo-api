@@ -4,7 +4,7 @@ import { Document } from 'mongoose';
 
 export type StoreIntegrationDocument = StoreIntegration & Document;
 
-export const STORE_INTEGRATION_TYPES = ['payment', 'whatsapp', 'tax', 'shipping', 'customer_login'] as const;
+export const STORE_INTEGRATION_TYPES = ['payment', 'whatsapp', 'tax', 'shipping', 'customer_login', 'courier'] as const;
 export type StoreIntegrationType = (typeof STORE_INTEGRATION_TYPES)[number];
 
 export const STORE_INTEGRATION_PROVIDERS = [
@@ -21,6 +21,8 @@ export const STORE_INTEGRATION_PROVIDERS = [
   'paystack',
   'flutterwave',
   'mollie',
+  // Buy-now-pay-later (Pakistan). Built as a disabled, UNVERIFIED adapter: see providers/qisstpay.provider.ts.
+  'qisstpay',
   // Manual bank transfer — the seller's own bank account details, shown to
   // the buyer at checkout (not a secret, unlike every other provider here:
   // no credentialsEncrypted, the account number IS what gets displayed).
@@ -43,6 +45,17 @@ export const STORE_INTEGRATION_PROVIDERS = [
   // seller-integrations controller (which only lists payment/whatsapp/tax/shipping).
   'google_login',
   'facebook_login',
+  // Pakistani couriers (type 'courier') — the seller's OWN courier-account credentials; see integrations/couriers/.
+  // Keep in sync with COURIER_KEYS (couriers/courier.types.ts).
+  'postex',
+  'leopards',
+  'tcs',
+  'trax',
+  'mnp',
+  'blueex',
+  'callcourier',
+  'swyft',
+  'daewoo_fastex',
 ] as const;
 export type StoreIntegrationProvider = (typeof STORE_INTEGRATION_PROVIDERS)[number];
 

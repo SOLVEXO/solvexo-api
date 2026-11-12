@@ -8,6 +8,7 @@ import { ThemeCatalogModule } from '../theme-catalog/theme-catalog.module';
 import { StoreThemeController } from './store-theme.controller';
 import { PublicStoreThemeController } from '../storefront/public-store-theme.controller';
 import { StoreThemeService } from './store-theme.service';
+import { ThemeContentCarryService } from './theme-content-carry.service';
 import { LiquidThemeController } from '../themes/liquid/liquid-theme.controller';
 import { PublicLiquidThemeController } from '../themes/liquid/public-liquid-theme.controller';
 import { ThemePackageService } from '../themes/liquid/theme-package.service';
@@ -26,7 +27,7 @@ import { ThemeImportProcessor } from '../themes/liquid/theme-import.processor';
     ThemeCatalogModule,
   ],
   controllers: [StoreThemeController, PublicStoreThemeController, LiquidThemeController, PublicLiquidThemeController],
-  providers: [StoreThemeService, ThemePackageService, ThemeImportProcessor],
+  providers: [StoreThemeService, ThemeContentCarryService, ThemePackageService, ThemeImportProcessor],
   exports: [StoreThemeService],
 })
 export class StoreThemeModule {}

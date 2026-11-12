@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { randomBytes } from 'crypto';
+import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { StripeConnectService } from '../stripe-connect/stripe-connect.service';
@@ -13,6 +14,9 @@ import { WhatsAppCloudProvider } from './providers/whatsapp-cloud.provider';
 import { toDecryptedPaymentConfig } from './integration-credentials.helper';
 import { gatewayKeysForCountry, paymentAvailability, resolveStoreCountry } from './payment-availability.util';
 import { catalogEntry, gatewayChargeCurrency, inferGatewayMode } from './payment-provider-catalog';
+import { CourierService, CourierSettingsInput } from './couriers/courier.service';
+import { COURIER_CATALOG, courierCatalogEntry, enabledCourierProviders, isCourierEnabled } from './couriers/courier-catalog';
+import { CourierProviderRegistry } from './couriers/courier-provider.registry';
 import { WHATSAPP_EVENTS, WHATSAPP_PARAM_TOKENS, isWhatsAppEvent, resolveWhatsAppEventSettings } from './whatsapp-events';
 import {
   STORE_INTEGRATION_PROVIDERS,
@@ -65,6 +69,8 @@ export class StoreIntegrationsService implements OnModuleInit {
     private readonly stripeConnectService: StripeConnectService,
     private readonly taxService: TaxService,
     private readonly shippingRatesService: ShippingRatesService,
+    private readonly courierService: CourierService,
+    private readonly courierRegistry: CourierProviderRegistry,
   ) {}
 
   private get repos() {
@@ -126,6 +132,7 @@ export class StoreIntegrationsService implements OnModuleInit {
 
   async updateManualMethod(storeId: string, sellerId: string, methodId: string, body: Record<string, any>) {
     await this.assertOwnedStore(storeId, sellerId);
+    if (!isValidObjectId(methodId)) throw new NotFoundException('Payment method not found');
     const data = this.parseManualBody(body ?? {}, true);
     try {
       const doc: any = await this.repos.manualPaymentMethodModel
@@ -141,6 +148,7 @@ export class StoreIntegrationsService implements OnModuleInit {
 
   async deleteManualMethod(storeId: string, sellerId: string, methodId: string) {
     await this.assertOwnedStore(storeId, sellerId);
+    if (!isValidObjectId(methodId)) throw new NotFoundException('Payment method not found');
     const res = await this.repos.manualPaymentMethodModel.updateOne({ _id: methodId, storeId, isDelete: false }, { $set: { isDelete: true, isActive: false } });
     if (!res.matchedCount) throw new NotFoundException('Payment method not found');
     return { success: true };
@@ -363,6 +371,8 @@ export class StoreIntegrationsService implements OnModuleInit {
         // Store.taxRate / per-zone shipping price keeps working).
         tax: tax ? this.toPublicView(tax) : notConnected('tax', 'taxjar'),
         shipping: shipping ? this.toPublicView(shipping) : notConnected('shipping', 'shippo'),
+        // Pakistani couriers: only those the platform owner enabled (COURIER_ENABLED_PROVIDERS) are listed at all.
+        couriers: await this.listCouriers(storeId, notConnected),
       },
     };
   }
@@ -392,6 +402,9 @@ export class StoreIntegrationsService implements OnModuleInit {
       }
       if (catalogEntry(provider)?.generic) return this.connectGeneric(storeId, sellerId, provider, body, store);
       return this.connectPayment(storeId, sellerId, provider, body);
+    }
+    if (type === 'courier') {
+      return this.connectCourier(storeId, sellerId, provider, body);
     }
     if (type === 'whatsapp' && provider === 'whatsapp_cloud') {
       return this.connectWhatsApp(storeId, sellerId, body);
@@ -452,6 +465,74 @@ export class StoreIntegrationsService implements OnModuleInit {
     return { success: true, data: { ...this.toPublicView(doc!), catalog: this.catalogView('stripe_standard', store) } };
   }
 
+  // ── Couriers (type 'courier') ────────────────────────────────────────────────────────────────────────────────
+
+  private async listCouriers(storeId: string, notConnected: (t: StoreIntegrationType, p: StoreIntegrationProvider) => any) {
+    const enabled = enabledCourierProviders();
+    if (enabled.length === 0) return [];
+    const stored = await this.repos.storeIntegrationModel.find({ storeId, type: 'courier', provider: { $in: enabled } });
+    const byProvider = new Map(stored.map((d) => [d.provider, d]));
+    return enabled.map((key) => {
+      const entry = COURIER_CATALOG[key];
+      const impl = this.courierRegistry.isSupported(key) ? this.courierRegistry.resolve(key) : null;
+      const doc = byProvider.get(key as StoreIntegrationProvider);
+      return {
+        ...(doc ? this.toPublicView(doc) : notConnected('courier', key as StoreIntegrationProvider)),
+        available: true,
+        catalog: {
+          label: entry.label,
+          fields: entry.fields.map((f) => ({ key: f.key, label: f.label, secret: f.secret, optional: !!f.optional })),
+          capabilities: impl?.capabilities ?? null,
+          verified: (impl as any)?.verified ?? false,
+          docsUrl: entry.docsUrl ?? null,
+        },
+      };
+    });
+  }
+
+  private async connectCourier(storeId: string, sellerId: string, provider: StoreIntegrationProvider, body: Record<string, any>) {
+    const entry = courierCatalogEntry(provider);
+    if (!entry || !this.courierRegistry.isSupported(provider)) throw new BadRequestException(`"${provider}" is not a supported courier`);
+    if (!isCourierEnabled(provider)) throw new BadRequestException(`${entry.label} is not enabled on this platform yet`);
+    const credentials: Record<string, string> = {};
+    const missing: string[] = [];
+    for (const f of entry.fields) {
+      const v = typeof body[f.key] === 'string' ? body[f.key].trim() : '';
+      if (!v && !f.optional) missing.push(f.label);
+      if (v) credentials[f.key] = v.slice(0, 500);
+    }
+    if (missing.length) throw new BadRequestException(`${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} required`);
+    const mode = resolveMode(body.mode, 'sandbox');
+    const credentialsEncrypted = encryptCredential(JSON.stringify(credentials), 'INTEGRATIONS');
+    const secretOnly = Object.fromEntries(entry.fields.filter((f) => f.secret && credentials[f.key]).map((f) => [f.key, credentials[f.key]]));
+    const doc = await this.repos.storeIntegrationModel.findOneAndUpdate(
+      { storeId, type: 'courier', provider },
+      {
+        $set: { sellerId, mode, status: 'connected', credentialsEncrypted, 'config.displayName': entry.label, 'config.maskedHints': maskCredentials(secretOnly), lastError: null, lastVerifiedAt: null },
+        // Same opaque routing token every integration row carries (also the future courier push-webhook route key).
+        $setOnInsert: { webhookToken: randomBytes(32).toString('hex'), isEnabledForCheckout: false },
+      },
+      { new: true, upsert: true },
+    );
+    await this.logChange(storeId, sellerId, 'integration.connect', doc, { provider, mode });
+    return { success: true, data: this.toPublicView(doc) };
+  }
+
+  async getCourierSettings(storeId: string, sellerId: string) {
+    await this.assertOwnedStore(storeId, sellerId);
+    return { success: true, data: await this.courierService.getSettings(storeId) };
+  }
+
+  async saveCourierSettings(storeId: string, sellerId: string, input: CourierSettingsInput) {
+    await this.assertOwnedStore(storeId, sellerId);
+    const data = await this.courierService.saveSettings(storeId, input);
+    await this.activityLogService.log({
+      storeId, category: 'integrations', action: 'courier.settings_update', description: 'Courier settings updated',
+      actorId: sellerId, actorRole: 'seller', targetId: storeId, targetType: 'Store', metadata: { defaultProvider: data.defaultProvider },
+    });
+    return { success: true, data };
+  }
+
   async updateShippingSettings(storeId: string, sellerId: string, dto: ShippingSettingsInput) {
     await this.assertOwnedStore(storeId, sellerId);
     return this.shippingRatesService.updateSettings(storeId, sellerId, dto);
@@ -478,6 +559,7 @@ export class StoreIntegrationsService implements OnModuleInit {
   /** Connect form for the catalog-driven global gateways (Stripe own keys, PayPal, Razorpay, Paystack, Flutterwave, Mollie). */
   private async connectGeneric(storeId: string, sellerId: string, provider: StoreIntegrationProvider, body: Record<string, any>, store: { baseCurrency?: string | null }) {
     const entry = catalogEntry(provider)!;
+    if (entry.unverified) throw new BadRequestException(`${entry.label} is not available yet: it has not been verified with the provider.`);
     const credentials: Record<string, string> = {};
     const missing: string[] = [];
     for (const f of entry.fields) {
@@ -703,6 +785,17 @@ export class StoreIntegrationsService implements OnModuleInit {
       const { isValid } = await this.whatsAppProvider.checkTokenValidity(config.credentials.accessToken);
       ok = isValid;
       message = isValid ? 'WhatsApp access token is valid' : 'WhatsApp access token is invalid or expired';
+    } else if (integration.type === 'courier') {
+      // REAL authenticated call to the courier with the seller's own credentials in the integration's current mode.
+      try {
+        const conn = await this.courierService.resolveConnection(storeId, integration.provider);
+        const result = await conn.provider.testConnection(conn.ctx);
+        ok = result.ok;
+        message = result.message;
+      } catch (err: any) {
+        ok = false;
+        message = err?.message ?? 'Courier test failed';
+      }
     } else if (integration.type === 'payment' && this.registry.isSupported(integration.provider)) {
       // A REAL call to the gateway with the seller's own credentials in the integration's current mode.
       try {
@@ -748,9 +841,9 @@ export class StoreIntegrationsService implements OnModuleInit {
     if (!integration) throw new NotFoundException('Integration not found');
 
     const modeChange = (patch.mode === 'live' || patch.mode === 'sandbox') && patch.mode !== integration.mode ? patch.mode : null;
-    if (modeChange && integration.type !== 'payment') throw new BadRequestException('Only payment integrations have a test mode');
+    if (modeChange && integration.type !== 'payment' && integration.type !== 'courier') throw new BadRequestException('Only payment and courier integrations have a test mode');
     const effectiveMode = modeChange ?? integration.mode;
-    if (patch.isEnabledForCheckout && effectiveMode === 'live' && (modeChange || !integration.lastVerifiedAt)) {
+    if (patch.isEnabledForCheckout && effectiveMode === 'live' && integration.provider !== 'bank_transfer' && (modeChange || !integration.lastVerifiedAt)) {
       throw new BadRequestException('Run a successful test before enabling a live-mode integration for checkout');
     }
 

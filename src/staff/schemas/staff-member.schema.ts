@@ -85,6 +85,16 @@ export const STAFF_PERMISSIONS = [
   'activity_log.view',
   // Digital commerce (downloads, memberships, courses, license keys)
   'digital.view', 'digital.manage', 'members.manage', 'courses.manage', 'licenses.manage',
+  // Wholesale / B2B (companies, catalogs, applications)
+  'b2b.view', 'b2b.manage',
+  // Khata (customer ledger)
+  'khata.view', 'khata.manage',
+  // 3PL / fulfilment services
+  'fulfillment.view', 'fulfillment.manage',
+  // Product subscriptions (selling plans)
+  'product_subscriptions.view', 'product_subscriptions.manage',
+  // Checkout rules
+  'checkout_rules.view', 'checkout_rules.manage',
   // Finance
   'finance.payouts.view', 'finance.payments.manage', 'finance.tax_documents.manage',
   // Messaging — no dedicated `:storeId` route param on this controller

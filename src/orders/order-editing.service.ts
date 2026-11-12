@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { syncReceivableStatus } from '../b2b/b2b-order.util';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { Types } from 'mongoose';
@@ -320,7 +321,8 @@ export class OrderEditingService {
       const claimed = await this.r.orderModel.findOneAndUpdate(
         { _id: order._id, updatedAt: order.updatedAt },
         {
-          $set: { sellerOrders: plain.sellerOrders, ...newTotals },
+          // A wholesale order on terms: what the company owes follows the edited total (never below what is already recorded as paid).
+          $set: { sellerOrders: plain.sellerOrders, ...newTotals, ...((order as any).b2b?.terms ? { 'b2b.total': Math.max((order as any).b2b.paidTotal ?? 0, newTotals.totalAmount) } : {}) },
           $push: { timeline: this.entry('edit', message, actor) },
         },
       );
@@ -329,6 +331,8 @@ export class OrderEditingService {
       await rollbackStock().catch(() => undefined);
       throw err;
     }
+
+    if ((order as any).b2b?.terms) await syncReceivableStatus(this.r.orderModel, String(order._id)).catch(() => undefined);
 
     // ── 4b) the ledger row of a directly-settled sale follows the edited amount (no-op for platform-held sales) ──
     try {

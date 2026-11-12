@@ -53,6 +53,15 @@ describe('CartService.addToCart — store/product/quantity validation', () => {
     expect(res.message).toMatch(/added/i);
   });
 
+  it('REGRESSION (staging smoke): a sold-out variant with pre-order on can be added; without pre-order it is refused', async () => {
+    productModel = leanModel([{ ...PRODUCT, type: 'physical' }]);
+    const soldOut = { ...VARIANT, stock: 0 };
+    const mk = (v: any) => new CartService({ repositories: { cartModel, productModel, productVariantModel: leanModel([v]), wishListModel } } as unknown as DatabaseService);
+    await expect(mk({ ...soldOut }).addToCart(USER_ID, STORE_ID, dto())).rejects.toThrow(/out of stock/);
+    await mk({ ...soldOut, preorder: { enabled: true, limit: 5, sold: 0 } }).addToCart(USER_ID, STORE_ID, dto());
+    expect(cartModel.create).toHaveBeenCalled();
+  });
+
   it('defaults a missing quantity to 1', async () => {
     await service.addToCart(USER_ID, STORE_ID, dto({ quantity: undefined }));
     expect(cartModel.create).toHaveBeenCalledWith(expect.objectContaining({ items: [expect.objectContaining({ quantity: 1 })] }));

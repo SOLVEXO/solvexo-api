@@ -34,7 +34,7 @@ describe('PaymentWebhooksController.handle', () => {
     expect(paymentService.assertGatewayPaymentMatches).toHaveBeenCalledWith({
       providerSessionId: 'track_1', paymentType: 'safepay', storeId: STORE, paidAmount: 200, paidCurrency: 'PKR',
     });
-    expect(paymentService.finalizeGatewayPayment).toHaveBeenCalledWith('track_1', 'safepay');
+    expect(paymentService.finalizeGatewayPayment).toHaveBeenCalledWith('track_1', 'safepay', undefined);
   });
 
   it('REGRESSION: a signed "succeeded" event the gateway does NOT confirm as paid never creates an order', async () => {

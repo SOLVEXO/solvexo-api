@@ -1,3 +1,6 @@
+import { preorderCanFill } from '../common/preorder.util';
+import { stockLinesForItem } from '../common/bundle.util';
+import { sellerAppUrl } from '@/common/app-urls.util';
 import { emitOrdersDisputed } from '../common/order-events';
 import {
   Injectable,
@@ -14,6 +17,7 @@ import { escapeHtml } from '@/newsletter/marketing-email.util';
 import { buyerEmail } from '@/common/buyer-email.util';
 import { buildStoreEmailTotals } from '@/common/order-email-total.util';
 import { DatabaseService } from '@/database/databaseservice';
+import { CheckoutRulesService } from '../checkout-rules/checkout-rules.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { PromotionsService } from '@/promotions/promotions.service';
@@ -40,6 +44,9 @@ import { markStorefrontSession } from '../common/storefront-session.util';
 import { GATEWAY_PAYMENT_TYPES, catalogEntry } from '../integrations/payment-provider-catalog';
 import { toDecryptedPaymentConfig } from '../integrations/integration-credentials.helper';
 import { PaymentProviderRegistry } from '../integrations/payment-provider.registry';
+import { creditLimitCheck, isPaymentMethodAllowed } from '../b2b/b2b-pricing.util';
+import { buildOrderB2B, companyOutstanding, notifyB2BOrderChanged } from '../b2b/b2b-order.util';
+import { CodProtectionService } from '../cod-protection/cod-protection.service';
 
 /** Thrown by createOrder when the atomic stock reservation loses (the last unit was sold between the buyer paying
  *  and the order being created). Distinct type so the payment-finalize paths can auto-refund instead of retrying forever. */
@@ -86,6 +93,8 @@ export class PaymentService {
     private readonly storeCreditService: StoreCreditService,
     // Lazily resolves the gateway registry (IntegrationsModule imports this module, so it cannot be injected directly).
     @Optional() private readonly moduleRef?: ModuleRef,
+    // Store COD rules (limit, block list, confirmation); stores without protection are unaffected.
+    @Optional() private readonly codProtection?: CodProtectionService,
   ) {
     const secretKey = this.configService
       .get<string>('STRIPE_SECRET_KEY')
@@ -310,7 +319,9 @@ export class PaymentService {
       throw new BadRequestException('Checkout has expired');
     }
 
-    await this.assertDiscountsStillValid(checkout);
+    await this.assertDiscountsStillValid(checkout, 'stripe');
+    // A mixed cart paid in two parts ('split') leaves the physical part as COD: the store's COD rules apply to it too.
+    if (paymentMode === 'split') await this.codProtection?.assertCodAllowed(checkout, userId);
 
     const physicalItems = checkout.items.filter(
       (i: any) => i.type === 'physical',
@@ -1435,12 +1446,14 @@ export class PaymentService {
       if (order.paymentStatus !== 'authorized') continue; // already resolved some other way
 
       for (const so of order.sellerOrders) {
-        for (const item of so.items) {
-          if (item.type !== 'physical' || !item.variantId) continue;
-          await productVariantModel.updateOne(
-            { _id: item.variantId },
-            { $inc: { committedStock: -item.quantity } },
-          );
+        for (const rawItem of so.items) {
+          if (rawItem.type !== 'physical' || !rawItem.variantId) continue;
+          for (const line of stockLinesForItem(rawItem)) {
+            await productVariantModel.updateOne(
+              { _id: line.variantId },
+              { $inc: { committedStock: -line.quantity } },
+            );
+          }
         }
         so.status = 'cancelled';
         so.cancelledAt = new Date();
@@ -1898,9 +1911,16 @@ export class PaymentService {
    * when an order is placed), and store credit may have been spent elsewhere. Throws a readable error so the buyer can
    * remove the discount and continue — they are never charged a discounted total that can no longer be honored.
    */
-  async assertDiscountsStillValid(checkout: any) {
+  async assertDiscountsStillValid(checkout: any, method?: string) {
     await this.assertCouponStillUsable(checkout);
     await this.assertStoreCreditStillCovers(checkout);
+    // Wholesale companies may be limited to certain payment methods (seller setting, snapshotted on the checkout). Store credit is never blocked.
+    if (method && method !== 'store_credit' && !isPaymentMethodAllowed(checkout?.b2b?.allowedPaymentMethods, method)) {
+      throw new BadRequestException('This payment method is not available for your company. Please choose another one.');
+    }
+    // The store's own checkout rules (validation blocks, hidden payment methods) are enforced here too, never only in the UI.
+    const rules = this.moduleRef?.get(CheckoutRulesService, { strict: false });
+    if (rules && checkout?.userId) await rules.enforceCheckout(checkout, String(checkout.userId), method && method !== 'store_credit' ? { paymentMethod: method } : {});
   }
 
   private async assertCouponStillUsable(checkout: any) {
@@ -1958,14 +1978,14 @@ export class PaymentService {
     if (checkout.totalAmount > 0.005) {
       throw new BadRequestException('Your store credit does not cover the full amount — choose a payment method for the rest.');
     }
-    await this.assertDiscountsStillValid(checkout);
+    await this.assertDiscountsStillValid(checkout, 'store_credit');
 
     for (const item of checkout.items) {
       if (item.type !== 'physical') continue;
       const variant = await productVariantModel.findOne({ _id: item.variantId, isDelete: false });
       if (!variant) throw new BadRequestException(`Item not available: ${item.name}`);
       const availablePreCheck = availableStock(variant as any);
-      if (!variant.unlimitedStock && !(variant as any).allowBackorder && availablePreCheck < item.quantity) {
+      if (!variant.unlimitedStock && !(variant as any).allowBackorder && !preorderCanFill((variant as any).preorder) && availablePreCheck < item.quantity) {
         throw new BadRequestException(`Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`);
       }
     }
@@ -2031,7 +2051,9 @@ export class PaymentService {
       throw new BadRequestException('Checkout has expired');
     }
 
-    await this.assertDiscountsStillValid(checkout);
+    await this.assertDiscountsStillValid(checkout, 'cash_on_delivery');
+    // The store's COD rules (amount limit, block list, high risk) can refuse cash on delivery for this order.
+    await this.codProtection?.assertCodAllowed(checkout, userId);
 
     const hasDigital = checkout.items.some((i: any) => i.type === 'digital');
     if (hasDigital)
@@ -2067,7 +2089,7 @@ export class PaymentService {
       const availablePreCheck = availableStock(variant as any);
       // See ProductVariant.allowBackorder — never fails this friendly
       // pre-check; the real gate is createOrder's atomic reserve below.
-      if (!variant.unlimitedStock && !(variant as any).allowBackorder && availablePreCheck < item.quantity) {
+      if (!variant.unlimitedStock && !(variant as any).allowBackorder && !preorderCanFill((variant as any).preorder) && availablePreCheck < item.quantity) {
         throw new BadRequestException(
           `Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`,
         );
@@ -2125,7 +2147,7 @@ export class PaymentService {
       await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
       throw new BadRequestException('Checkout has expired');
     }
-    await this.assertDiscountsStillValid(checkout);
+    await this.assertDiscountsStillValid(checkout, 'manual');
 
     await checkoutModel.findByIdAndUpdate(checkoutId, { paymentType: 'manual', status: 'payment_pending' });
     const info = { paymentType: 'manual', isPaid: false, paymentStatus: 'unpaid', paymentMethodName: method.name };
@@ -2201,7 +2223,7 @@ export class PaymentService {
       throw new BadRequestException('Bank transfer is only available for checkouts in PKR');
     }
 
-    await this.assertDiscountsStillValid(checkout);
+    await this.assertDiscountsStillValid(checkout, 'manual_bank_transfer');
 
     // Bank transfer settles into ONE seller's own bank account (see
     // StoreIntegrationsService — 'bank_transfer' provider), so a cart that
@@ -2228,7 +2250,7 @@ export class PaymentService {
       // Same real-availability pre-check as the COD path above — see
       // ProductVariant.allowBackorder for why it's skipped here too.
       const availablePreCheck = availableStock(variant as any);
-      if (!variant.unlimitedStock && !(variant as any).allowBackorder && availablePreCheck < item.quantity) {
+      if (!variant.unlimitedStock && !(variant as any).allowBackorder && !preorderCanFill((variant as any).preorder) && availablePreCheck < item.quantity) {
         throw new BadRequestException(`Insufficient stock for ${item.name}. Available: ${availablePreCheck}, required: ${item.quantity}`);
       }
     }
@@ -2385,7 +2407,114 @@ export class PaymentService {
     }
   }
 
-  private async createOrder(
+  /**
+   * Places the orders of one checkout exactly once. `createOrderUnclaimed` only de-duplicates with a read, so two parallel
+   * placements (double-click on "Place order", a webhook retry racing the poller) both passed it and created two orders and
+   * reserved the stock twice. The claim is one atomic update on the checkout document; a loser waits for the winner's
+   * orders and returns them. A claim from a crashed process expires after 2 minutes.
+   */
+  private async createOrder(userId: string, checkout: any, ...rest: any[]) {
+    const checkoutModel = this.databaseService.repositories.checkoutModel;
+    const orderModel = rest[0];
+    if (!checkoutModel) return this.createOrderUnclaimed(userId, checkout, ...(rest as [any, any]));
+    const staleBefore = new Date(Date.now() - 2 * 60_000);
+    const claim = await checkoutModel.updateOne(
+      { _id: checkout._id, $or: [{ orderPlacementClaimedAt: null }, { orderPlacementClaimedAt: { $exists: false } }, { orderPlacementClaimedAt: { $lt: staleBefore } }] },
+      { $set: { orderPlacementClaimedAt: new Date() } },
+    );
+    if (claim.modifiedCount === 0) {
+      for (let i = 0; i < 40; i++) {
+        const existing = await orderModel.find({ checkoutId: String(checkout._id), isDelete: false });
+        if (existing.length > 0) return existing;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      throw new BadRequestException('This checkout is already being placed. Please check your orders.');
+    }
+    try {
+      const created = await this.createOrderUnclaimed(userId, checkout, ...(rest as [any, any]));
+      await this.stampB2B(checkout, created, orderModel, rest[2]?.paymentType);
+      if (rest[2]?.paymentType === 'cash_on_delivery') await this.codProtection?.stampOrders(checkout, created, userId).catch((e: any) => console.error('COD protection stamp failed (order placed):', e?.message));
+      return created;
+    } catch (err) {
+      await checkoutModel.updateOne({ _id: checkout._id }, { $set: { orderPlacementClaimedAt: null } }).catch(() => undefined);
+      throw err;
+    }
+  }
+
+  /**
+   * Wholesale orders remember their company, location and PO number; an order placed on payment terms also gets its receivable
+   * (due date, deposit, installments). A failed stamp never fails an order that is already placed: the orders stay retail-shaped
+   * and the failure is logged.
+   */
+  private async stampB2B(checkout: any, orders: any[], orderModel: any, paymentType?: string) {
+    const snap = checkout?.b2b;
+    if (!snap?.companyId || !Array.isArray(orders)) return;
+    try {
+      for (const o of orders) {
+        if (o.b2b) continue;
+        const b2b = buildOrderB2B(snap, { total: o.totalAmount, currency: o.currency }, { withTerms: paymentType === 'b2b_terms' });
+        await orderModel.updateOne({ _id: o._id }, { $set: { b2b } });
+        o.b2b = b2b;
+        if (b2b.terms) await notifyB2BOrderChanged(String(o._id));
+      }
+    } catch (e: any) {
+      console.error('B2B order stamp failed (order placed):', e?.message, { checkoutId: String(checkout?._id) });
+    }
+  }
+
+  /**
+   * Places a wholesale order on the company's payment terms (net 15/30/60 or due on fulfilment): the order is created UNPAID
+   * (rail `manual`: no fee, no ledger credit) and the seller records what the company pays, in installments. Solvexo holds no
+   * money. Requires a B2B checkout whose terms allow it, a single store, and respects the seller's credit limit for the company.
+   */
+  async b2bTermsPayment(userId: string, checkoutId: string) {
+    if (!checkoutId) throw new BadRequestException('checkoutId is required');
+    const { checkoutModel, paymentTransactionModel, orderModel, addressModel, cartModel, storeModel } = this.databaseService.repositories;
+
+    const checkout = await checkoutModel.findOne({ _id: checkoutId, userId, isDelete: false });
+    if (!checkout) throw new NotFoundException('Checkout not found');
+    if (checkout.status === 'completed') throw new BadRequestException('Checkout already completed');
+    if (checkout.status === 'cancelled') throw new BadRequestException('Checkout is cancelled');
+    if (checkout.status === 'expired') throw new BadRequestException('Checkout has expired');
+    if (checkout.expiredAt && checkout.expiredAt < new Date()) {
+      await checkoutModel.findByIdAndUpdate(checkout._id, { status: 'expired' });
+      throw new BadRequestException('Checkout has expired');
+    }
+    const snap: any = checkout.b2b;
+    if (!snap?.companyId || !snap.paymentTerms) throw new BadRequestException('Payment terms are not available for your account.');
+    await this.assertDiscountsStillValid(checkout, 'b2b_terms');
+    const storeIds = [...new Set((checkout.items as any[]).map((i) => String(i.storeId)))];
+    if (storeIds.length !== 1) throw new BadRequestException('Payment terms apply to one store at a time. Please check out each store separately.');
+
+    // Seller-set credit limit: what the company already owes + this order (goods + tax, store currency) must fit.
+    if (snap.creditLimit) {
+      const store: any = await storeModel.findById(storeIds[0]).select('baseCurrency').lean();
+      const storeCurrency = store?.baseCurrency ?? 'USD';
+      const owed = await companyOutstanding(orderModel, (a, f, t, s) => this.exchangeRateService.convertWithSnapshots(a, f, t, s), storeIds[0], snap.companyId, storeCurrency);
+      const newOrder = (checkout.items as any[]).reduce((s, i) => s + (i.totalPrice ?? 0) + (i.taxUSD ?? 0), 0);
+      const check = creditLimitCheck(snap.creditLimit, owed, newOrder);
+      if (!check.ok) {
+        throw new BadRequestException({
+          message: `This order would put your company over its credit limit. Available credit: ${check.available}. Pay an open invoice or choose another payment method.`,
+          code: 'B2B_CREDIT_LIMIT', available: check.available,
+        });
+      }
+    }
+
+    await checkoutModel.findByIdAndUpdate(checkoutId, { paymentType: 'b2b_terms', status: 'payment_pending' });
+    const info = { paymentType: 'b2b_terms', isPaid: false, paymentStatus: 'unpaid', paymentMethodName: 'Payment terms' };
+    const orders = await this.createOrder(userId, checkout, orderModel, addressModel, info, info);
+
+    await paymentTransactionModel.create({
+      userId, checkoutId: checkout._id.toString(), orderIds: orders.map((o: any) => o._id.toString()), paymentType: 'b2b_terms', paymentMethodName: 'Payment terms',
+      amount: checkout.totalAmount, currency: checkout.currency, fxSnapshots: checkout.fxSnapshots, status: 'completed', stripePaymentIntentId: null, stripeClientSecret: null, paidAt: null,
+    });
+    await checkoutModel.findByIdAndUpdate(checkoutId, { status: 'completed' });
+    await this.removeCheckedOutItemsFromCart(userId, checkout, cartModel);
+    return { success: true, message: 'Order placed on payment terms', data: { orders: orders.map((o: any) => this.formatOrder(o)) } };
+  }
+
+  private async createOrderUnclaimed(
     userId: string,
     checkout: any,
     orderModel: any,
@@ -2461,17 +2590,21 @@ export class PaymentService {
     // Guard is `stock - committedStock >= quantity` (i.e. real availability),
     // via `$expr` since Mongo can't compare two of a document's own fields
     // in a plain query filter.
-    const reserved: { variantId: string; quantity: number }[] = [];
+    const reserved: { variantId: string; quantity: number; preorder?: boolean }[] = [];
+    // Pre-order (common/preorder.util.ts): variants reserved beyond stock under an active pre-order, with snapshots for the order line.
+    const preorderVariantIds = new Set<string>();
+    const preorderInfo = new Map<string, { expectedDate: Date | null; message: string | null }>();
+    const preVariantOf = (i: any) => stockLinesForItem(i).find((l) => preorderVariantIds.has(l.variantId))?.variantId;
     // See ProductVariant.allowBackorder — a checkout-only, per-variant
     // "continue selling when out of stock" toggle. A variant reserved here
     // while genuinely short is recorded so the built order line can be
     // flagged `isBackordered: true` below (informational only).
     const backorderedVariantIds = new Set<string>();
 
-    for (const item of physicalItems) {
+    for (const item of physicalItems.flatMap((it: any) => stockLinesForItem(it))) {
       const variant = await productVariantModel
         .findOne({ _id: item.variantId, isDelete: false })
-        .select('unlimitedStock allowBackorder stock committedStock damagedStock inTransitStock expiredStock expiryBuckets')
+        .select('unlimitedStock allowBackorder preorder stock committedStock damagedStock inTransitStock expiredStock expiryBuckets')
         .lean();
       if (!variant || (variant as any).unlimitedStock) continue;
 
@@ -2489,6 +2622,30 @@ export class PaymentService {
         continue;
       }
 
+      // Pre-order: stock cannot fill the line but an enabled pre-order is active -> reserve beyond stock, counting the units
+      // against the pre-order limit in the SAME atomic update (two buyers can never both take the last pre-order slot).
+      const pre = (variant as any).preorder;
+      if (pre?.enabled && availableStock(variant as any) < item.quantity && preorderCanFill(pre)) {
+        const limit = typeof pre.limit === 'number' && pre.limit > 0 ? pre.limit : 1e12;
+        const preRes = await productVariantModel.updateOne(
+          {
+            _id: item.variantId, isDelete: false, 'preorder.enabled': true,
+            $expr: { $lte: [{ $add: [{ $ifNull: ['$preorder.sold', 0] }, item.quantity] }, limit] },
+          },
+          { $inc: { committedStock: item.quantity, 'preorder.sold': item.quantity } },
+        );
+        if (preRes.modifiedCount === 0) {
+          for (const d of reserved) {
+            await productVariantModel.updateOne({ _id: d.variantId }, { $inc: { committedStock: -d.quantity, ...(d.preorder ? { 'preorder.sold': -d.quantity } : {}) } });
+          }
+          throw new StockUnavailableException(`Pre-order limit reached for item: ${item.name}`);
+        }
+        preorderVariantIds.add(String(item.variantId));
+        preorderInfo.set(String(item.variantId), { expectedDate: pre.expectedDate ? new Date(pre.expectedDate) : null, message: pre.message ?? null });
+        reserved.push({ variantId: item.variantId, quantity: item.quantity, preorder: true });
+        continue;
+      }
+
       const res = await productVariantModel.updateOne(
         {
           _id: item.variantId,
@@ -2502,7 +2659,7 @@ export class PaymentService {
         for (const d of reserved) {
           await productVariantModel.updateOne(
             { _id: d.variantId },
-            { $inc: { committedStock: -d.quantity } },
+            { $inc: { committedStock: -d.quantity, ...(d.preorder ? { 'preorder.sold': -d.quantity } : {}) } },
           );
         }
         throw new StockUnavailableException(
@@ -2625,6 +2782,10 @@ export class PaymentService {
             taxUSD: convFrom(i.taxUSD ?? 0, storeCurrency),
             includedTaxUSD: convFrom(i.includedTaxUSD ?? 0, storeCurrency),
             isBackordered: i.variantId ? backorderedVariantIds.has(i.variantId) : false,
+            bundleComponents: (i.bundleComponents ?? []).map((c: any) => ({ productId: c.productId, variantId: c.variantId, quantity: c.quantity, name: c.name ?? null })),
+            isPreorder: !!preVariantOf(i),
+            preorderExpectedDate: preVariantOf(i) ? (preorderInfo.get(preVariantOf(i)!)?.expectedDate ?? null) : null,
+            preorderMessage: preVariantOf(i) ? (preorderInfo.get(preVariantOf(i)!)?.message ?? null) : null,
             status: 'pending',
           })),
           subtotal: convFrom(subtotalNative, storeCurrency),
@@ -2658,6 +2819,7 @@ export class PaymentService {
 
     // === PHYSICAL ORDER ===
     if (physicalItems.length > 0) {
+      try {
       const sellerOrders = buildSellerOrders(physicalItems, physicalPayment.paymentType === 'stripe' && physicalPayment.isPaid);
       // Spans potentially multiple sellers/currencies — each item is
       // converted from its OWN native currency into orderCurrency before
@@ -2697,6 +2859,8 @@ export class PaymentService {
         shippingAddress,
         fulfillmentMethod: checkout.fulfillmentMethod === 'pickup' ? 'pickup' : 'ship',
         pickupLocation: checkout.fulfillmentMethod === 'pickup' ? (checkout.pickupLocation ?? null) : null,
+        localDelivery: checkout.fulfillmentMethod !== 'pickup' && checkout.localDelivery === true,
+        localDeliveryEta: checkout.fulfillmentMethod !== 'pickup' && checkout.localDelivery === true ? (checkout.localDeliveryEta ?? null) : null,
         customerNote: typeof checkout.customerNote === 'string' ? checkout.customerNote.slice(0, 500) : '',
         subtotal,
         shippingFee,
@@ -2727,6 +2891,16 @@ export class PaymentService {
         isDelete: false,
       });
       createdOrders.push(physicalOrder);
+      } catch (err) {
+        // The reservation above was real; a failed order insert must hand it back or the stock stays committed forever.
+        for (const d of reserved) {
+          await productVariantModel.updateOne(
+            { _id: d.variantId },
+            { $inc: { committedStock: -d.quantity, ...(d.preorder ? { 'preorder.sold': -d.quantity } : {}) } },
+          ).catch(() => undefined);
+        }
+        throw err;
+      }
     }
 
     // === DIGITAL ORDER ===
@@ -2929,7 +3103,7 @@ export class PaymentService {
         // Shopify's "New order" staff notification: the store owner gets an email too (their own
         // email on/off preference still applies inside notify()).
         const soStore: any = await storeModel.findById(so.storeId).select('name').lean().catch(() => null);
-        const orderLink = `${process.env.FRONTEND_URL ?? ''}/store/${so.storeId}/orders/detail/${createdOrder._id}`;
+        const orderLink = `${sellerAppUrl()}/store/${so.storeId}/orders/detail/${createdOrder._id}`;
         const itemCount = so.items.length;
         const newOrderEmail = {
           subject: `[${soStore?.name ?? 'Your store'}] New order #${createdOrder.orderNumber}`,
@@ -3029,7 +3203,7 @@ export class PaymentService {
     return {
       customerName: String(buyerName ?? '').trim().split(/\s+/)[0] ?? '',
       orderNumber: [...entry.orderNumbers].join(', '),
-      itemList: entry.items.map((i: any) => `${String(i.name ?? '')} × ${i.quantity} — ${money(i.totalPrice ?? 0)}`).join('\n'),
+      itemList: entry.items.map((i: any) => `${String(i.name ?? '')} × ${i.quantity} — ${money(i.totalPrice ?? 0)}${i.isPreorder ? ` (Pre-order${i.preorderExpectedDate ? ` — expected to ship around ${new Date(i.preorderExpectedDate).toISOString().slice(0, 10)}` : ''})` : ''}${(i.bundleComponents ?? []).length ? ` — includes: ${(i.bundleComponents as any[]).map((c) => `${c.name ?? 'item'} × ${c.quantity * i.quantity}`).join(', ')}` : ''}`).join('\n'),
       subtotal: money(entry.subtotal),
       shipping: entry.shipping > 0 ? money(entry.shipping) : null,
       tax: entry.tax > 0 ? money(entry.tax) : null,

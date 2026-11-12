@@ -1,0 +1,16 @@
+# Staging smoke run (2026-11-09), local throw-away stack only
+Stack: mongod 7 replica set on 127.0.0.1:27096 (own data dir, db `solvexo_smoke`), in-memory fake Redis (no EVAL: BullMQ jobs/queues did not run, log spam from it is expected), API built from `dist` started from a scratch cwd (repo `.env` never loaded), vite dev server on :5199, real Chrome via Playwright. No Atlas/production/real service was touched. Scripts live in the session scratchpad (`scratchpad/smoke/*.cjs`), not in the repo.
+
+Boot: all modules resolve (no DI errors, 1000+ routes mapped incl. khata, messaging, feeds, merchant-api, 2FA, b2b, cod-protection); health ready (mongo + redis up).
+
+Bugs found and fixed (each with a regression test):
+1. Cart refused a sold-out variant that has pre-order on (cart.service stock check ignored pre-order) -> `cart.service.spec`.
+2. COD / store-credit / card start pre-check refused pre-order variants ("Insufficient stock") -> `payment.preorder-precheck.spec`.
+3. Shipping a bundle never moved its components' stock (spread of a hydrated sub-document lost `bundleComponents`: on-hand stayed high, reservation stuck forever) -> `orders.bundle-ship.spec`. Verified live: shirt 10/3 -> 7/0, socks 20/3 -> 17/0 after shipping.
+Plus a stale staff-preset spec fixed earlier (P5 bump).
+
+Walked for real over HTTP: seller + store + 3 products (variants, barcode), bundle (1 shirt + 2 socks), pre-order variant (limit 5), buyer login, address, shipping zone, cart (4 lines), checkout, COD order, status processing -> shipped (mock courier tracking) -> delivered, buyer return request -> approve -> receive + restock (shirts back +2) -> refund step (unpaid COD: nothing to refund). Stock after each step checked. Also khata (limit refused 409, payment, aging), feeds (public XML 5 items, pre-order + in-stock present, health 0 problems), search synonyms (tee finds shirt, no-results report counts), COD protection + messaging endpoints answer, 2FA end to end (setup, login challenge, wrong code refused, right code signs in, gateway connect refused without step-up, passes with token, replay refused).
+Browser (Chrome): seller login with 2FA code form (wrong code inline error, right code signs in), seller pages dashboard, Khata (shows data), Sales channels, Webhooks & API, Search & discovery, Security, WhatsApp & SMS, COD protection, Wholesale, Orders, Inventory; storefront home, product, pre-order product (shows "Pre-order" button + date), bundle, cart, collection, login, messaging preferences: no page errors. Only console noise: React "Expected static flag was missing" on Orders/Inventory (old, known).
+
+NOT done: paid/online order (no gateway sandbox: Stripe/Safepay need keys), B2B company price path (needs admin-created company + catalog), real courier booking (mock tracking string only), webhooks/API tokens (plan gate: the Starter plan refused with 403 as designed), queues (fake Redis), SMTP/WhatsApp/SMS, other themes (only the default theme exists in the registry here), mobile widths, Safari/Firefox.
+Noted, not fixed: pre-order product page shows "Sold out" next to the quantity while the Pre-order button is active (wording); `common/preorder.util.ts` spreads items like bug 3 (works at reserve time, check when pre-order bundles ship).

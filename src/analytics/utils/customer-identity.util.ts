@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Model } from 'mongoose';
+import { Model, isValidObjectId } from 'mongoose';
 import { buyerEmail } from '../../common/buyer-email.util';
 
 /**
@@ -33,10 +33,12 @@ export async function resolveCustomerIdentities(
   const result = new Map<string, CustomerIdentity>();
   if (uniqueIds.length === 0) return result;
 
-  const users = await userModel.find({ _id: { $in: uniqueIds } }).select('name email contactEmail isGuest').lean();
+  // A non-ObjectId id (odd/legacy row) would throw a CastError and take the whole report down — it simply has no User.
+  const validIds = uniqueIds.filter((id) => typeof id === 'string' && isValidObjectId(id));
+  const users = await userModel.find({ _id: { $in: validIds } }).select('name email contactEmail isGuest').lean();
   const userMap = new Map(users.map((u: any) => [u._id.toString(), u]));
 
-  const unresolvedIds = uniqueIds.filter((id) => !userMap.has(id));
+  const unresolvedIds = uniqueIds.filter((id) => typeof id === 'string' && !userMap.has(id));
   const fallbackNameMap = new Map<string, string>();
   if (unresolvedIds.length > 0) {
     const fallbackRows = await orderModel.aggregate([

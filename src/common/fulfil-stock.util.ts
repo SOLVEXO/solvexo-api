@@ -1,3 +1,4 @@
+import { expandForStock } from './bundle.util';
 /* eslint-disable prettier/prettier */
 import { drainLocationStock } from './location-stock.util';
 
@@ -14,7 +15,7 @@ const FULFILLED_STATES = ['shipped', 'delivered', 'completed'];
 export async function fulfilStockForSellerOrders(productVariantModel: any, sellerOrders: any[], locationRepos?: { variantLocationStockModel: any }): Promise<void> {
   for (const so of sellerOrders ?? []) {
     if (FULFILLED_STATES.includes(so.status) || ['cancelled', 'refunded'].includes(so.status) || so.stockAlreadyDeducted) continue;
-    for (const item of so.items ?? []) {
+    for (const item of (so.items ?? []).flatMap((it: any) => expandForStock(it))) {
       if (item.type !== 'physical' || !item.variantId || !(item.quantity > 0)) continue;
       await productVariantModel.updateOne(
         { _id: item.variantId, unlimitedStock: { $ne: true } },

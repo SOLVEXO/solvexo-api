@@ -19,8 +19,11 @@ import { MarketsModule } from '../markets/markets.module';
 
 import { StorefrontAccessService } from '../storefront/storefront-access.service';
 
+import { SearchDiscoveryModule } from '../search-discovery/search-discovery.module';
+import { SellerTrustModule } from '../seller-trust/seller-trust.module';
+
 @Module({
-  imports: [AuthModule, RedisModule, AdminConfigModule, MarketingModule, UploadModule, StoreThemeModule, StorePagesModule, CollectionsModule, ExchangeRateModule, MarketsModule],
+  imports: [SearchDiscoveryModule, SellerTrustModule, AuthModule, RedisModule, AdminConfigModule, MarketingModule, UploadModule, StoreThemeModule, StorePagesModule, CollectionsModule, ExchangeRateModule, MarketsModule],
   controllers: [StoreController, CustomDomainsController, StoreTaxRegionsImportController],
   providers: [StoreService, StorefrontAccessService, CustomDomainsService, VercelDomainsService, DomainDnsGuideService],
   exports: [StoreService, StorefrontAccessService, CustomDomainsService],

@@ -305,6 +305,8 @@ import { DatabaseService } from './databaseservice';
       { name: schema.StockLot.name, schema: schema.StockLotSchema },
       { name: schema.StockUnit.name, schema: schema.StockUnitSchema },
       { name: schema.OrderPaymentRecord.name, schema: schema.OrderPaymentRecordSchema },
+      { name: schema.CourierBooking.name, schema: schema.CourierBookingSchema },
+      { name: schema.CustomerSegment.name, schema: schema.CustomerSegmentSchema },
       // Phase 5 — Product Tracking Foundation.
       { name: schema.ProductView.name, schema: schema.ProductViewSchema },
       { name: schema.StorefrontSession.name, schema: schema.StorefrontSessionSchema },

@@ -276,7 +276,7 @@ export class CategoriesService {
   async getCategoryTreeNested(categoryId?: string, storeId?: string) {
     const categoryModel = this.databaseService.repositories.categoryModel;
 
-    const countMap = await this.getActiveProductCountsByCategory();
+    const countMap = await this.getActiveProductCountsByCategory(storeId);
 
     // 🔹 CASE 1: agar id di hui hai
     if (categoryId) {
@@ -321,15 +321,17 @@ export class CategoriesService {
       .sort({ sortOrder: 1 })
       .lean();
 
+    const childMap = await this.attachChildrenForParents(
+      rootCategories.map((r: any) => String(r._id)),
+    );
     const result: any[] = [];
 
     for (const cat of rootCategories) {
       await this.ensureSlug(cat);
-      const children = await this.getChildrenRecursive(cat._id.toString());
 
       result.push({
         ...cat,
-        children,
+        children: childMap.get(String(cat._id)) ?? [],
       });
     }
 
@@ -344,13 +346,31 @@ export class CategoriesService {
 
   /** One aggregation over all buyer-visible products, grouped by category — the
    *  building block `attachProductCounts` uses instead of a per-node query. */
-  private async getActiveProductCountsByCategory(): Promise<Map<string, number>> {
+  private async getActiveProductCountsByCategory(storeId?: string): Promise<Map<string, number>> {
     const productModel = this.databaseService.repositories.productModel;
     const rows = await productModel.aggregate([
-      { $match: { status: 'active', isDelete: false } },
-      { $group: { _id: '$categoryId', count: { $sum: 1 } } },
+      // A store-scoped tree only has that store's own categories, so only
+      // that store's products can sit in them: never scan the whole platform.
+      { $match: { status: 'active', isDelete: false, ...(storeId ? { storeId } : {}) } },
+      {
+        $facet: {
+          main: [{ $group: { _id: '$categoryId', count: { $sum: 1 } } }],
+          sub: [
+            { $match: { subCategoryId: { $nin: [null, ''] } } },
+            { $group: { _id: '$subCategoryId', count: { $sum: 1 } } },
+          ],
+        },
+      },
     ]);
-    return new Map(rows.map((r: { _id: string; count: number }) => [r._id, r.count]));
+    // A product stores its main category in `categoryId` and (optionally) its
+    // subcategory in `subCategoryId`. A main category's count therefore already
+    // covers its whole subtree; a subcategory only has its `subCategoryId` count.
+    const map = new Map<string, number>();
+    const facet = rows[0] ?? { main: [], sub: [] };
+    for (const r of [...facet.main, ...facet.sub] as { _id: string; count: number }[]) {
+      if (r._id) map.set(String(r._id), (map.get(String(r._id)) ?? 0) + r.count);
+    }
+    return map;
   }
 
   /** Mutates each node (and its nested `children`) in place, setting
@@ -363,7 +383,9 @@ export class CategoriesService {
       const childrenCount = node.children?.length
         ? this.attachProductCounts(node.children, countMap)
         : 0;
-      node.productCount = ownCount + childrenCount;
+      // The own count of a main category already includes its subcategories'
+      // products (they carry both ids), so never add the children on top.
+      node.productCount = Math.max(ownCount, childrenCount);
       total += node.productCount;
     }
     return total;
@@ -374,18 +396,21 @@ export class CategoriesService {
   async getStoreCategoryTreeForSeller(userId: string, storeId: string) {
     await verifyStoreOwnershipStrict(this.databaseService.repositories.storeModel, storeId, userId);
     const categoryModel = this.databaseService.repositories.categoryModel;
-    const countMap = await this.getActiveProductCountsByCategory();
+    const countMap = await this.getActiveProductCountsByCategory(storeId);
 
     const roots = await categoryModel
       .find({ parentId: null, storeId, status: { $in: ['active', 'inactive'] }, isDelete: false })
       .sort({ sortOrder: 1 })
       .lean();
 
+    const childMap = await this.attachChildrenForParents(
+      roots.map((r: any) => String(r._id)),
+      true,
+    );
     const result: any[] = [];
     for (const cat of roots) {
       await this.ensureSlug(cat);
-      const children = await this.getChildrenRecursive(cat._id.toString(), true);
-      result.push({ ...cat, children });
+      result.push({ ...cat, children: childMap.get(String(cat._id)) ?? [] });
     }
     this.attachProductCounts(result, countMap);
 
@@ -393,28 +418,52 @@ export class CategoriesService {
   }
 
   private async getChildrenRecursive(parentId: string, includeInactive = false): Promise<any[]> {
+    return this.attachChildrenForParents([parentId], includeInactive).then((m) => m.get(parentId) ?? []);
+  }
+
+  /** Builds the descendants of many parents with ONE query per tree level
+   *  (not one per category — the old per-node recursion made big stores time
+   *  out). Returns parentId -> nested children, each level sorted by sortOrder. */
+  private async attachChildrenForParents(
+    parentIds: string[],
+    includeInactive = false,
+  ): Promise<Map<string, any[]>> {
     const categoryModel = this.databaseService.repositories.categoryModel;
+    const byParent = new Map<string, any[]>();
+    let level = parentIds;
+    const seen = new Set<string>(parentIds);
 
-    const children = await categoryModel.find({
-      parentId,
-      status: includeInactive ? { $in: ['active', 'inactive'] } : 'active',
-      isDelete: false,
-    }).sort({ sortOrder: 1 });
+    // Depth guard: a corrupt parent loop must never spin forever.
+    for (let depth = 0; depth < 10 && level.length; depth++) {
+      const rows: any[] = await categoryModel
+        .find({
+          parentId: { $in: level },
+          status: includeInactive ? { $in: ['active', 'inactive'] } : 'active',
+          isDelete: false,
+        })
+        .sort({ sortOrder: 1 })
+        .lean();
 
-    const result: any[] = [];
-
-    for (const child of children) {
-      const childObj = child.toObject();
-      await this.ensureSlug(childObj);
-      const subChildren = await this.getChildrenRecursive(childObj._id.toString(), includeInactive);
-
-      result.push({
-        ...childObj,
-        children: subChildren, // nested inside each child
-      });
+      const next: string[] = [];
+      for (const row of rows) {
+        const id = String(row._id);
+        if (seen.has(id)) continue; // cycle
+        seen.add(id);
+        await this.ensureSlug(row); // no-op once the slug is saved
+        row.children = [];
+        const list = byParent.get(row.parentId) ?? [];
+        list.push(row);
+        byParent.set(row.parentId, list);
+        next.push(id);
+      }
+      level = next;
     }
 
-    return result;
+    // Wire each node's own children (they were created empty above).
+    for (const list of byParent.values()) {
+      for (const node of list) node.children = byParent.get(String(node._id)) ?? [];
+    }
+    return byParent;
   }
 
   /** Lazily backfills a permanent, persisted slug for any pre-migration

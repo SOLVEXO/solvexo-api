@@ -19,6 +19,9 @@ import { GuestSessionService } from './guest-session.service';
 import { AuthVisualService } from '../common/auth-visual.service';
 import { AdminAuthVisualController } from './admin-auth-visual.controller';
 import { AdminTwoFactorService } from './admin-two-factor.service';
+import { MemberTwoFactorService } from './member-two-factor.service';
+import { MemberTwoFactorController, SellerTwoFactorLoginController } from './member-two-factor.controller';
+import { MemberTwoFactor, MemberTwoFactorSchema } from './member-two-factor.schema';
 import { AppleTokenService, AppleAuthClient, FetchAppleAuthClient } from './apple-token.service';
 import { AdminTwoFactorController, AdminTwoFactorLoginController } from './admin-two-factor.controller';
 
@@ -41,10 +44,10 @@ import { AdminTwoFactorController, AdminTwoFactorLoginController } from './admin
     }),
 
 
-    MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
+    MongooseModule.forFeature([{ name: User.name, schema: UserSchema }, { name: MemberTwoFactor.name, schema: MemberTwoFactorSchema }]),
   ],
-  controllers: [AuthController, AdminAuthVisualController, AdminTwoFactorLoginController, AdminTwoFactorController],
-  providers: [AuthService, AppleTokenService, { provide: AppleAuthClient, useClass: FetchAppleAuthClient }, GuestSessionService, JwtStrategy, JwtAuthGuard, PermissionsGuard, AuthVisualService, AdminSecurityService, AdminTwoFactorService],
-  exports: [JwtModule, AuthService, AppleTokenService, AuthVisualService, GuestSessionService, JwtAuthGuard, PermissionsGuard, AdminSecurityService, AdminTwoFactorService],
+  controllers: [AuthController, AdminAuthVisualController, AdminTwoFactorLoginController, AdminTwoFactorController, SellerTwoFactorLoginController, MemberTwoFactorController],
+  providers: [AuthService, AppleTokenService, { provide: AppleAuthClient, useClass: FetchAppleAuthClient }, GuestSessionService, JwtStrategy, JwtAuthGuard, PermissionsGuard, AuthVisualService, AdminSecurityService, AdminTwoFactorService, MemberTwoFactorService],
+  exports: [JwtModule, AuthService, AppleTokenService, AuthVisualService, GuestSessionService, JwtAuthGuard, PermissionsGuard, AdminSecurityService, AdminTwoFactorService, MemberTwoFactorService],
 })
 export class AuthModule {}

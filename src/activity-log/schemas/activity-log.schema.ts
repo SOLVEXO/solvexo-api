@@ -24,6 +24,14 @@ export const ACTIVITY_LOG_CATEGORIES = [
   'announcements',
   'moderation',
   'promotions',
+  // Written by newer modules whose entries were silently dropped before these were listed (the enum rejected them).
+  'b2b',
+  'khata',
+  'fulfillment',
+  'checkout_rules',
+  'webhooks',
+  'api_tokens',
+  'api_token',
 ] as const;
 
 export type ActivityLogCategory = (typeof ACTIVITY_LOG_CATEGORIES)[number];

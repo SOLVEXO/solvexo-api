@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Logger, Param, Patch, Post, Query, Req, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -32,6 +32,8 @@ import { CohortsQueryDto, SalesByQueryDto } from './dto/report-query.dto';
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 @Controller('api/seller/analytics')
 export class AnalyticsController {
+  private readonly logger = new Logger(AnalyticsController.name);
+
   constructor(
     private readonly analyticsService: AnalyticsService,
     private readonly reportsService: AnalyticsReportsService,
@@ -53,7 +55,14 @@ export class AnalyticsController {
     // Shopify's headline "Total sales" = net sales + shipping + taxes. The sales summary report already computes it
     // (store currency, same period), so the Overview reuses it instead of a second definition. Single-store only.
     if (!query.storeId) return overview;
-    const summary: any = await this.reportsService.getSalesSummary(sellerId, query.storeId, query);
+    // The extra headline figures must never take the whole Overview down: if the summary fails, the rest still shows.
+    let summary: any;
+    try {
+      summary = await this.reportsService.getSalesSummary(sellerId, query.storeId, query);
+    } catch (err: any) {
+      this.logger.error(`Overview sales summary failed for store ${query.storeId}: ${err?.message ?? err}`, err?.stack);
+      return overview;
+    }
     const { totals, previous, changePercent } = summary.data;
     overview.data.shipping = totals.shipping;
     overview.data.taxes = totals.taxes;

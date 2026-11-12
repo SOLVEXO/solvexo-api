@@ -1,3 +1,4 @@
+import { MemberTwoFactorService } from '../auth/member-two-factor.service';
 import {
   Controller,
   Get,
@@ -6,6 +7,7 @@ import {
   Body,
   Req,
   UseGuards,
+  Headers,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -23,7 +25,7 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 @Controller('api/users')
 @UseGuards(JwtAuthGuard)
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(private readonly usersService: UsersService, private readonly memberTwoFactor: MemberTwoFactorService) {}
 
   @Get('profile')
   @ApiOperation({ summary: 'Get user profile' })
@@ -50,7 +52,9 @@ export class UsersController {
   @Put('change-password')
   @ApiOperation({ summary: 'Change user password' })
   @ApiResponse({ status: 200, description: 'Password changed successfully' })
-  changePassword(@Req() req: any, @Body() dto: ChangePasswordDto) {
+  async changePassword(@Req() req: any, @Body() dto: ChangePasswordDto, @Headers('x-step-up') stepUp?: string) {
+    // A seller with two-factor must have just proved it (x-step-up token) to change the password.
+    if (req.user.role === 'seller') await this.memberTwoFactor.assertStepUp('seller', String(req.user.userId), stepUp);
     return this.usersService.changePassword(
       req.user.userId,
       req.user.role,

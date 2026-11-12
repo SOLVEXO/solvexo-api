@@ -214,6 +214,26 @@ describe('employee-token revocation (Redis)', () => {
     await expect(login(svc, s, 'manager', '1234', 'another-device')).rejects.toThrow(/Too many failed PIN attempts/);
   });
 
+  it('owner unlock: lifts a PIN lockout WITHOUT changing the PIN, is audited, belongs to the owner only, and the lock can come back', async () => {
+    const svc = makeService();
+    const s = await seedStore(h, { stock: 10, price: 100 });
+    await setPin(s, 'manager');
+    for (let i = 0; i < 5; i++) await expect(login(svc, s, 'manager', '0000')).rejects.toBeInstanceOf(BadRequestException);
+    await expect(login(svc, s, 'manager', '1234')).rejects.toThrow(/Too many failed PIN attempts/);
+    // another owner cannot unlock this store's employee
+    await expect(svc.unlockPin(new Types.ObjectId().toString(), s.storeId, s.managerId)).rejects.toBeInstanceOf(ForbiddenException);
+    const r = await svc.unlockPin(s.sellerId, s.storeId, s.managerId);
+    expect(r.data.wasLocked).toBe(true);
+    await expect(login(svc, s, 'manager', '1234')).resolves.toBeTruthy(); // the SAME pin works again
+    const audit = await h.repos.posAuditLogModel.find({ storeId: s.storeId, action: 'employee_pin_unlocked' }).lean();
+    expect(audit).toHaveLength(1);
+    // unlocking a person who is not locked is harmless and says so
+    expect((await svc.unlockPin(s.sellerId, s.storeId, s.managerId)).data.wasLocked).toBe(false);
+    // five more wrong PINs lock again (the counter really restarted)
+    for (let i = 0; i < 5; i++) await expect(login(svc, s, 'manager', '0000')).rejects.toBeInstanceOf(BadRequestException);
+    await expect(login(svc, s, 'manager', '1234')).rejects.toThrow(/Too many failed PIN attempts/);
+  });
+
   it('offline replay: a revocation counts only if it had already happened when the sale was made', async () => {
     const s = await seedStore(h);
     const jti = new Types.ObjectId().toString();

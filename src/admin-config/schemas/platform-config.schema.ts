@@ -167,6 +167,15 @@ export class EmailConfig {
 }
 export const EmailConfigSchema = SchemaFactory.createForClass(EmailConfig);
 
+// Seller trust & verification enforcement (see src/seller-trust/). Null
+// `enforcementStartedAt` = not enforced: no deadlines, nothing limited.
+@Schema({ _id: false })
+export class SellerTrustConfig {
+  @Prop({ type: Date, default: null }) enforcementStartedAt: Date | null;
+  @Prop({ type: Number, default: 30 }) graceDays: number;
+}
+export const SellerTrustConfigSchema = SchemaFactory.createForClass(SellerTrustConfig);
+
 // Singleton collection — exactly one document ever exists, fetched/updated via
 // upsert with an empty filter (see AdminConfigService), same convention used
 // for other platform-wide single-doc settings in this codebase.
@@ -201,6 +210,9 @@ export class PlatformConfig {
 
   @Prop({ type: FxConfigSchema, default: () => ({}) })
   fxConfig: FxConfig;
+
+  @Prop({ type: SellerTrustConfigSchema, default: () => ({}) })
+  sellerTrust: SellerTrustConfig;
 }
 
 export const PlatformConfigSchema = SchemaFactory.createForClass(PlatformConfig);

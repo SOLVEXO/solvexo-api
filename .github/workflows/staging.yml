@@ -1,24 +1,43 @@
 name: Deploy solvexo-api Staging
+
+# Same two paths as deploy.yml (see there and docs/deploy.md), for the staging branch.
 on:
   push:
     branches: [staging]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-solvexo-api-staging
+  cancel-in-progress: false
+
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
+  deploy-runner:
+    if: vars.DEPLOY_VIA == 'runner'
+    runs-on: [self-hosted, solvexo-vps]
+    timeout-minutes: 20
     steps:
-      - name: Deploy to VPS Staging
+      - uses: actions/checkout@v4
+      - name: Deploy staging on the VPS
+        run: RESET_HARD=1 bash scripts/deploy.sh staging solvexo-api-staging
+
+  deploy-ssh:
+    if: vars.DEPLOY_VIA != 'runner'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Deploy to VPS Staging over SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
+          timeout: 60s
+          command_timeout: 15m
           script: |
+            set -e
             cd /home/deploy/apps/solvexo-api
-            git fetch origin
+            git fetch origin staging
+            git checkout staging
             git reset --hard origin/staging
-            npm ci
-            npm run build
-            pm2 restart solvexo-api-staging || pm2 start dist/main.js --name "solvexo-api-staging"
-            pm2 save
-            echo "solvexo-api staging deployed at $(date)"
+            RESET_HARD=1 bash scripts/deploy.sh staging solvexo-api-staging

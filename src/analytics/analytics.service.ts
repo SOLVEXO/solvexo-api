@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { sellableStockByProduct } from './utils/product-stock.util';
-import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, Logger, NotFoundException } from '@nestjs/common';
 import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
@@ -49,6 +49,8 @@ const CACHE_TTL_SECONDS = 600; // 10 minutes
 
 @Injectable()
 export class AnalyticsService {
+  private readonly logger = new Logger(AnalyticsService.name);
+
   constructor(
     private readonly databaseService: DatabaseService,
     private readonly redis: RedisService,
@@ -215,14 +217,21 @@ export class AnalyticsService {
     const compare = query.compareToPreviousPeriod === true || query.compareToPreviousPeriod === 'true';
 
     return this.cached(this.key('overview', this.scopeLabel(sellerId, storeId), { r: rangeCacheKey(query, tz), currency, compare }), async () => {
+      // Revenue/orders are the core of the Overview; the buyer-mix figures are extras. If one of the extras fails
+      // (odd data), log it and fall back to 0 instead of failing the whole Overview (the dashboard cards read it).
+      const soft = <T>(label: string, p: Promise<T>, fallback: T) =>
+        p.catch((err: any) => {
+          this.logger.error(`Overview ${label} failed for store ${storeId}: ${err?.message ?? err}`, err?.stack);
+          return fallback;
+        });
       const [current, previous, repeatBuyerPct, prevRepeatBuyerPct] = await Promise.all([
         this.periodTotals(scope, from, to, rc),
         this.periodTotals(scope, previousFrom, previousTo, rc),
-        this.repeatBuyerPercent(scope, from, to),
-        this.repeatBuyerPercent(scope, previousFrom, previousTo),
+        soft('repeat-buyer %', this.repeatBuyerPercent(scope, from, to), 0),
+        soft('previous repeat-buyer %', this.repeatBuyerPercent(scope, previousFrom, previousTo), 0),
       ]);
 
-      const returningSet = await this.returningBuyerSet(scope, current.buyerIds, from);
+      const returningSet = await soft('returning buyers', this.returningBuyerSet(scope, current.buyerIds, from), new Set<string>());
       const newCustomersCount = current.uniqueBuyerCount - returningSet.size;
       const returningCustomersCount = returningSet.size;
 
@@ -657,7 +666,7 @@ export class AnalyticsService {
       const identityMap = await resolveCustomerIdentities(this.r.userModel, this.r.orderModel, topByLtv.map((c) => c.userId));
 
       const topCustomers = topByLtv.map((c) => {
-        const identity = identityMap.get(c.userId)!;
+        const identity = identityMap.get(c.userId) ?? { name: 'Deleted account', email: '' };
         return {
           userId: c.userId,
           name: identity.name,
@@ -1161,7 +1170,7 @@ export class AnalyticsService {
         return toCsv(
           ['Customer', 'Email', 'Total Orders', `Lifetime Value (${currency})`],
           allTime.map((c) => {
-            const identity = identityMap.get(c.userId)!;
+            const identity = identityMap.get(c.userId) ?? { name: 'Deleted account', email: '' };
             return [identity.name, identity.email, c.totalOrders, c.lifetimeValue.toFixed(2)];
           }),
         );

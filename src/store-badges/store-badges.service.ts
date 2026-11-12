@@ -4,7 +4,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 
-export type StoreBadgeCounts = Partial<Record<'returns' | 'disputes' | 'payment-proofs' | 'messages' | 'online-store-contact' | 'reviews' | 'inventory', number>>;
+export type StoreBadgeCounts = Partial<Record<'returns' | 'disputes' | 'payment-proofs' | 'payment-proofs-shown' | 'messages' | 'online-store-contact' | 'reviews' | 'inventory', number>>;
 
 const REVIEW_REPLY_WINDOW_DAYS = 14;
 
@@ -33,6 +33,14 @@ export class StoreBadgesService {
         disputes: { $elemMatch: { storeIds: storeId, status: { $in: ['needs_response', 'warning_needs_response'] } } },
       })],
       ['payment-proofs', can('orders.record_payment'), () => r.manualPaymentProofModel.countDocuments({ storeIds: storeId, status: 'pending' })],
+      // 1 only when this store actually uses proofs (it has some, or its Bank Transfer is connected): the sidebar hides Payment Proofs otherwise.
+      ['payment-proofs-shown', can('orders.record_payment'), async () => {
+        const [proofs, bank] = await Promise.all([
+          r.manualPaymentProofModel.countDocuments({ storeIds: storeId }),
+          r.storeIntegrationModel.countDocuments({ storeId, provider: 'bank_transfer', status: 'connected' }),
+        ]);
+        return proofs + bank > 0 ? 1 : 0;
+      }],
       ['messages', can('messaging.view', 'messaging.manage'), () => r.conversationModel.countDocuments({ storeId, deletedBySeller: false, isArchived: { $ne: true }, sellerUnread: { $gt: 0 } })],
       ['online-store-contact', can('onlinestore.content.manage'), () => r.storeContactMessageModel.countDocuments({ storeId, status: 'new' })],
       // Products with a variant that is out of stock or at/below its reorder point (the same rule as the Inventory screen).

@@ -1,7 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { withEffectiveReturnStatus } from './return-status.util';
+import { plain } from './plain.util';
 
-const INTERNAL_ORDER_FIELDS = ['fxSnapshots', 'platformSponsoredDiscountTotal', 'attributedBannerId', 'attributedStoreBannerId', 'attributionSource', 'overdueReminderSentAt', 'checkoutId', 'isDelete', 'ratePerUSD', 'timeline', 'note'];
+const INTERNAL_ORDER_FIELDS = ['codProtection', 'fxSnapshots', 'platformSponsoredDiscountTotal', 'attributedBannerId', 'attributedStoreBannerId', 'attributionSource', 'overdueReminderSentAt', 'checkoutId', 'isDelete', 'ratePerUSD', 'timeline', 'note'];
 const INTERNAL_SELLER_ORDER_FIELDS = ['platformSponsoredDiscountUSD', 'settlementCurrency', 'settlementAmount', 'settledViaConnect', 'stripeConnectedAccountId', 'stockAlreadyDeducted'];
 // Shipping-label purchase details are merchant-only (the label PDF URL must never reach a buyer).
 const INTERNAL_TRACKING_FIELDS = ['labelUrl', 'labelRateId', 'labelCost', 'labelCurrency', 'labelPurchasedAt'];
@@ -22,10 +23,10 @@ export function toBuyerReturnLabel(l: any): any {
 }
 
 export function toBuyerSafeOrder(order: any): any {
-  const safe: any = { ...order };
+  const safe: any = { ...plain(order) };
   for (const k of INTERNAL_ORDER_FIELDS) delete safe[k];
   safe.sellerOrders = (safe.sellerOrders ?? []).map((so: any) => {
-    const out: any = { ...so };
+    const out: any = { ...plain(so) };
     for (const k of INTERNAL_SELLER_ORDER_FIELDS) delete out[k];
     if (out.tracking && typeof out.tracking === 'object') {
       out.tracking = { ...out.tracking };
@@ -38,4 +39,15 @@ export function toBuyerSafeOrder(order: any): any {
     return out;
   });
   return safe;
+}
+
+/** Buyer-visible courier tracking timeline. Only status/description/location/time — never the courier name's internal
+ *  reference, raw status codes, COD/remittance info, RTO flag, booking ids or label links. */
+export function toBuyerCourierTracking(b: any): any {
+  return {
+    shipmentId: b?.shipmentId ?? null,
+    trackingNumber: b?.trackingNumber ?? null,
+    status: b?.courierStatus ?? null,
+    events: (b?.events ?? []).map((e: any) => ({ status: e.status, description: e.description ?? null, location: e.location ?? null, occurredAt: e.occurredAt })),
+  };
 }

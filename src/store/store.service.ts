@@ -1,10 +1,14 @@
 /* eslint-disable prettier/prettier */
+import { compileSegmentFilter, normalizeSegmentFilter, type CompiledSegment } from '../customer-segments/segment-filter.util';
 import {
   Injectable,
+  Optional,
   BadRequestException,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { SearchDiscoveryService } from '../search-discovery/search-discovery.service';
+import { cleanCheckoutBranding } from './checkout-branding.util';
 import { availableStock, AVAILABLE_STOCK_EXPR } from '@/common/stock-availability.util';
 import { importCustomersCsv } from './customer-bulk-import';
 import { isSupportedLanguage } from '@/common/supported-languages.const';
@@ -23,6 +27,11 @@ import {
   type VerificationStatus,
 } from './schemas/store.schema';
 import { getVerificationRequirements, isFieldSatisfied } from './verification-requirements.config';
+import { normalizeCnic, normalizeNtn, CNIC_FORMAT_MESSAGE, NTN_FORMAT_MESSAGE } from './verification-validators';
+import {
+  SOURCING_TYPES, REGULATED_CATEGORIES, PREMISES_TYPES, YEARS_SELLING, DISPATCH_TIMES, RETURN_POLICIES, MONTHLY_ORDERS,
+} from './schemas/store.schema';
+import { SellerTrustService } from '../seller-trust/seller-trust.service';
 import { resolveCountryFromIp } from '@/common/geo-locate.util';
 import { currencyForCountry } from '@/common/country-currency.const';
 import { UploadService } from '@/upload/upload.service';
@@ -75,6 +84,9 @@ const RESERVED_STORE_SLUGS = new Set([
   'forgot-password', 'verify-otp', 'new-password', 'seller', 'admin', 'store',
 ]);
 
+// Verification data is seller-editable only before review or after the admin sent it back.
+const EDITABLE_VERIFICATION_STATUSES: VerificationStatus[] = ['not_started', 'rejected', 'needs_info'];
+
 // The CNAME target every seller's domain points at — defined with the rest of the domain logic in custom-domains.service.ts.
 export { CUSTOM_DOMAIN_CNAME_TARGET } from './custom-domains.service';
 
@@ -98,6 +110,8 @@ export class StoreService {
     private readonly configService: ConfigService,
     private readonly exchangeRateService: ExchangeRateService,
     private readonly marketPricingService: MarketPricingService,
+    @Optional() private readonly searchDiscovery?: SearchDiscoveryService,
+    @Optional() private readonly sellerTrust?: SellerTrustService,
   ) {}
 
   /** Thin passthrough — AdminConfigService is already injected here for
@@ -275,6 +289,9 @@ export class StoreService {
     // home page seeded at creation time, not lazily on first public visit —
     // lazy-on-a-public-GET would let two simultaneous buyer visits race on
     // creating the same home page. Both calls are idempotent upserts.
+    // Seller trust: once enforcement has started a new store is limited until verified (no grace period).
+    await this.sellerTrust?.onStoreCreated(store._id.toString(), (store as any).createdAt ?? new Date());
+
     await this.storeThemeService.ensureDefaultTheme(store._id.toString());
     await this.storePagesService.ensureHomePage(store._id.toString());
 
@@ -326,9 +343,14 @@ export class StoreService {
   private evaluateVerification(store: any) {
     const v = store.verification ?? {};
     const level = store.verificationLevel ?? determineVerificationLevel(store.businessType ?? null);
-    const req = getVerificationRequirements(store.country ?? 'PK', store.businessType ?? null, level);
+    const req = getVerificationRequirements(store.country ?? 'PK', store.businessType ?? null, level, v.businessProfile ?? null);
 
     const missingFields = req.requiredFields.filter((path) => !isFieldSatisfied(v, path));
+    // PK identifiers saved before format validation existed count as missing until corrected.
+    if ((store.country ?? 'PK').toUpperCase() === 'PK') {
+      if (isFieldSatisfied(v, 'taxId') && !normalizeNtn(v.taxId) && !missingFields.includes('taxId')) missingFields.push('taxId');
+      if (isFieldSatisfied(v, 'cnicNumber') && !normalizeCnic(v.cnicNumber) && !missingFields.includes('cnicNumber')) missingFields.push('cnicNumber');
+    }
 
     const uploadedByType = new Map<string, VerificationDocument>((v.documents ?? []).map((d: VerificationDocument) => [d.type, d]));
     const allDocTypes = [...new Set([...req.requiredDocuments, ...req.optionalDocuments])];
@@ -359,6 +381,9 @@ export class StoreService {
     const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
     const v: any = store.verification ?? {};
     const evaluation = this.evaluateVerification(store);
+    const deadline = this.sellerTrust
+      ? await this.sellerTrust.deadlineFor(store as any)
+      : { dueAt: null, limited: false, enforcementStarted: false };
 
     return {
       success: true,
@@ -373,13 +398,21 @@ export class StoreService {
         businessAddress: v.businessAddress ?? null,
         idDocumentType: v.idDocumentType ?? null,
         authorizedContact: v.authorizedContact ?? null,
+        cnicNumber: v.cnicNumber ?? null,
+        strn: v.strn ?? null,
+        businessProfile: this.shapeBusinessProfile(v.businessProfile),
         documents: evaluation.documents,
+        requirements: evaluation.requirements,
         missingFields: evaluation.missingFields,
         missingDocuments: evaluation.missingDocuments,
         canSubmit: evaluation.canSubmit,
         history: v.history ?? [],
         storeStatus: store.status,
         rejectionReason: store.rejectionReason ?? null,
+        // Set while verificationStatus is 'needs_info' — the admin's question.
+        infoRequestMessage: store.verificationStatus === 'needs_info' ? ((store as any).infoRequestMessage ?? null) : null,
+        badges: store.badges ?? [],
+        deadline,
       },
     };
   }
@@ -450,10 +483,13 @@ export class StoreService {
     idDocumentType?: string;
     authorizedContact?: { name?: string; designation?: string; email?: string; phone?: string };
     documents?: { type: VerificationDocumentType; publicId: string; resourceType?: string; fileName: string }[];
+    cnicNumber?: string | null;
+    strn?: string | null;
+    businessProfile?: Record<string, unknown>;
   }) {
     const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
     const verificationStatus: VerificationStatus = store.verificationStatus ?? 'not_started';
-    if (!['not_started', 'rejected'].includes(verificationStatus)) {
+    if (!EDITABLE_VERIFICATION_STATUSES.includes(verificationStatus)) {
       throw new BadRequestException('Verification details can no longer be edited once submitted for review');
     }
 
@@ -480,9 +516,32 @@ export class StoreService {
     const current: any = (store.verification as any)?.toObject?.() ?? store.verification ?? {};
     const next: Record<string, unknown> = { ...current };
     const replacedDocuments: VerificationDocument[] = [];
+    // PK formats are validated (and normalized) against the country the store will have after this save.
+    const effectiveCountry = String(body.country ?? store.country ?? 'PK').trim().toUpperCase();
+    const isPk = effectiveCountry === 'PK';
+    const blank = (x: unknown) => x === null || (typeof x === 'string' && x.trim() === '');
     if (body.legalBusinessName !== undefined) next.legalBusinessName = body.legalBusinessName;
     if (body.registrationNumber !== undefined) next.registrationNumber = body.registrationNumber;
-    if (body.taxId !== undefined) next.taxId = body.taxId;
+    if (body.taxId !== undefined) {
+      if (blank(body.taxId)) next.taxId = null;
+      else if (isPk) {
+        const ntn = normalizeNtn(body.taxId);
+        if (!ntn) throw new BadRequestException(NTN_FORMAT_MESSAGE);
+        next.taxId = ntn;
+      } else next.taxId = String(body.taxId).trim().slice(0, 50);
+    }
+    if (body.cnicNumber !== undefined) {
+      if (blank(body.cnicNumber)) next.cnicNumber = null;
+      else if (isPk) {
+        const cnic = normalizeCnic(body.cnicNumber);
+        if (!cnic) throw new BadRequestException(CNIC_FORMAT_MESSAGE);
+        next.cnicNumber = cnic;
+      } else next.cnicNumber = String(body.cnicNumber).trim().slice(0, 50);
+    }
+    if (body.strn !== undefined) next.strn = blank(body.strn) ? null : String(body.strn).trim().slice(0, 30);
+    if (body.businessProfile !== undefined) {
+      next.businessProfile = { ...(current.businessProfile ?? {}), ...this.parseBusinessProfile(body.businessProfile) };
+    }
     if (body.businessAddress !== undefined) next.businessAddress = body.businessAddress;
     if (body.idDocumentType !== undefined) next.idDocumentType = body.idDocumentType;
     if (body.authorizedContact !== undefined) {
@@ -520,6 +579,7 @@ export class StoreService {
     await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, { $set: update });
     // seller verification documents only: delete the private file a re-upload replaced (best effort — a storage failure never fails the save)
     for (const old of replacedDocuments) await this.uploadService.deletePrivateFile(old.publicId, old.resourceType).catch(() => undefined);
+    await this.sellerTrust?.recomputeStore(storeId);
     return { success: true, message: 'Verification details saved' };
   }
 
@@ -533,7 +593,7 @@ export class StoreService {
   async submitVerification(sellerId: string, storeId: string) {
     const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
     const verificationStatus: VerificationStatus = store.verificationStatus ?? 'not_started';
-    if (!['not_started', 'rejected'].includes(verificationStatus)) {
+    if (!EDITABLE_VERIFICATION_STATUSES.includes(verificationStatus)) {
       throw new BadRequestException('This store has already been submitted for review');
     }
 
@@ -549,7 +609,7 @@ export class StoreService {
     const nextStatus: VerificationStatus = 'pending';
     assertValidVerificationTransition(verificationStatus, nextStatus);
 
-    const wasRejected = verificationStatus === 'rejected';
+    const wasRejected = verificationStatus === 'rejected' || verificationStatus === 'needs_info';
     const historyEntry = {
       action: wasRejected ? 'resubmitted' : 'submitted',
       note: null,
@@ -562,9 +622,13 @@ export class StoreService {
       $set: {
         verificationStatus: nextStatus,
         rejectionReason: null,
+        infoRequestMessage: null,
+        verificationSubmittedAt: new Date(),
+        'verification.submitted': true,
       },
       $push: { 'verification.history': historyEntry },
     });
+    await this.sellerTrust?.recomputeStore(storeId);
 
     this.notificationsService.notifyAdmins({
       type: NOTIFICATION_TYPES.ADMIN_VERIFICATION_SUBMITTED,
@@ -574,6 +638,63 @@ export class StoreService {
     }).catch(() => {});
 
     return { success: true, message: wasRejected ? 'Resubmitted for review' : 'Submitted for review' };
+  }
+
+  /** Validates the questionnaire part of a verification PATCH; only the keys sent are returned (partial update). */
+  private parseBusinessProfile(input: unknown): Record<string, unknown> {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new BadRequestException('businessProfile must be an object');
+    const b = input as Record<string, any>;
+    const out: Record<string, unknown> = {};
+    const oneOf = (key: string, allowed: readonly string[]) => {
+      if (b[key] === undefined) return;
+      if (b[key] === null || b[key] === '') { out[key] = null; return; }
+      if (!allowed.includes(b[key])) throw new BadRequestException(`businessProfile.${key} must be one of: ${allowed.join(', ')}`);
+      out[key] = b[key];
+    };
+    const bool = (key: string) => {
+      if (b[key] === undefined) return;
+      if (b[key] !== null && typeof b[key] !== 'boolean') throw new BadRequestException(`businessProfile.${key} must be true or false`);
+      out[key] = b[key];
+    };
+    const list = (key: string, max: number, maxLen: number, allowed?: readonly string[]) => {
+      if (b[key] === undefined) return;
+      const arr = b[key] === null ? [] : b[key];
+      if (!Array.isArray(arr) || arr.some((x) => typeof x !== 'string')) throw new BadRequestException(`businessProfile.${key} must be a list of text values`);
+      const clean = [...new Set(arr.map((x: string) => x.trim()).filter(Boolean))];
+      if (clean.length > max) throw new BadRequestException(`businessProfile.${key} can have at most ${max} entries`);
+      if (clean.some((x) => x.length > maxLen)) throw new BadRequestException(`Each businessProfile.${key} entry must be at most ${maxLen} characters`);
+      if (allowed && clean.some((x) => !allowed.includes(x))) throw new BadRequestException(`businessProfile.${key} values must be from: ${allowed.join(', ')}`);
+      out[key] = clean;
+    };
+    oneOf('sourcing', SOURCING_TYPES);
+    bool('sellsBrandedGoods');
+    list('regulatedCategories', REGULATED_CATEGORIES.length, 50, REGULATED_CATEGORIES);
+    oneOf('premises', PREMISES_TYPES);
+    oneOf('yearsSelling', YEARS_SELLING);
+    list('otherChannels', 5, 200);
+    list('couriers', 5, 100);
+    oneOf('dispatchTime', DISPATCH_TIMES);
+    oneOf('returnPolicy', RETURN_POLICIES);
+    oneOf('monthlyOrders', MONTHLY_ORDERS);
+    bool('bankAccountInOwnName');
+    return out;
+  }
+
+  /** Stable response shape for the questionnaire (every key present, null when unanswered). */
+  shapeBusinessProfile(p: any) {
+    return {
+      sourcing: p?.sourcing ?? null,
+      sellsBrandedGoods: p?.sellsBrandedGoods ?? null,
+      regulatedCategories: p?.regulatedCategories ?? [],
+      premises: p?.premises ?? null,
+      yearsSelling: p?.yearsSelling ?? null,
+      otherChannels: p?.otherChannels ?? [],
+      couriers: p?.couriers ?? [],
+      dispatchTime: p?.dispatchTime ?? null,
+      returnPolicy: p?.returnPolicy ?? null,
+      monthlyOrders: p?.monthlyOrders ?? null,
+      bankAccountInOwnName: p?.bankAccountInOwnName ?? null,
+    };
   }
 
   /** Admin-only variant of evaluateVerification — no seller-ownership check
@@ -1152,6 +1273,10 @@ export class StoreService {
 
     if (logo !== undefined) updateData.logo = logo;
     if (faviconUrl !== undefined) updateData.faviconUrl = faviconUrl;
+    if (body.checkoutBranding !== undefined) {
+      try { updateData.checkoutBranding = cleanCheckoutBranding(body.checkoutBranding); }
+      catch (e: any) { throw new BadRequestException(e?.message ?? 'Invalid checkout branding'); }
+    }
     if (description !== undefined) updateData.description = description;
     if (tagline !== undefined) updateData.tagline = tagline;
     if (contactEmail !== undefined) updateData.contactEmail = contactEmail;
@@ -1306,6 +1431,10 @@ export class StoreService {
     if (customerAccounts !== undefined) {
       if (customerAccounts !== 'optional' && customerAccounts !== 'required') throw new BadRequestException("customerAccounts must be 'optional' or 'required'");
       updateData.customerAccounts = customerAccounts;
+    }
+    if (body.wholesaleOnly !== undefined) {
+      if (typeof body.wholesaleOnly !== 'boolean') throw new BadRequestException('wholesaleOnly must be true or false');
+      updateData.wholesaleOnly = body.wholesaleOnly;
     }
     if (cookieBannerEnabled !== undefined) updateData.cookieBannerEnabled = !!cookieBannerEnabled;
     if (cookieBannerMessage !== undefined) updateData.cookieBannerMessage = cookieBannerMessage || null;
@@ -1468,6 +1597,7 @@ export class StoreService {
         slug: store.slug,
         logo: store.logo,
         faviconUrl: store.faviconUrl ?? null,
+        checkoutBranding: store.checkoutBranding ?? null,
         description: store.description,
         tagline: store.tagline ?? null,
         contactEmail: store.contactEmail ?? null,
@@ -1524,6 +1654,8 @@ export class StoreService {
         canonicalHost: store.primaryDomain ?? (store.slug ? `${store.slug}.solvexo.store` : null),
         // Shopify "Customer accounts": whether a visitor may check out as a guest.
         guestCheckoutEnabled: store.customerAccounts !== 'required',
+        // Only approved wholesale buyers may buy (the storefront hides prices and buy buttons from everyone else).
+        wholesaleOnly: !!store.wholesaleOnly,
         // Purely cosmetic — no effect on consent/enforcement, just how the
         // banner looks/where it sits (see `CookieConsentBanner.tsx`).
         cookieBannerPosition: store.cookieBannerPosition ?? 'bottom_bar',
@@ -1586,10 +1718,11 @@ export class StoreService {
     const { storeModel, productModel } = this.databaseService.repositories;
 
     const page = Math.max(1, parseInt(query.page) || 1);
-    const limit = Math.min(50, parseInt(query.limit) || 20);
+    const limit = Math.min(100, parseInt(query.limit) || 20);
     const skip = (page - 1) * limit;
 
-    const filter: any = { status: 'active', isDelete: false, privacyMode: { $nin: ['password', 'coming_soon'] } };
+    // marketplaceHidden: seller-trust limited stores are left out of cross-store discovery (their own storefront still works).
+    const filter: any = { status: 'active', isDelete: false, privacyMode: { $nin: ['password', 'coming_soon'] }, marketplaceHidden: { $ne: true } };
     if (query.categoryId && query.categoryId !== 'all') filter.categoryId = query.categoryId;
 
     const term = (query.q || '').trim();
@@ -1635,7 +1768,7 @@ export class StoreService {
 
   // ── 3c. Top stores — cached for the home-screen row ───────────────────────
   async getTopStores(limit: number) {
-    const cacheKey = `top-stores:v2:${limit}`;
+    const cacheKey = `top-stores:v3:${limit}`;
     const cached = await this.redisService.get(cacheKey);
     if (cached) {
       return { success: true, data: { stores: JSON.parse(cached) } };
@@ -1643,7 +1776,7 @@ export class StoreService {
 
     const { storeModel, productModel } = this.databaseService.repositories;
     const stores = await storeModel
-      .find({ status: 'active', isDelete: false, privacyMode: { $nin: ['password', 'coming_soon'] } })
+      .find({ status: 'active', isDelete: false, privacyMode: { $nin: ['password', 'coming_soon'] }, marketplaceHidden: { $ne: true } })
       .sort({ averageRating: -1, followersCount: -1 })
       .limit(limit)
       .lean();
@@ -1759,7 +1892,7 @@ export class StoreService {
     // unpaginated query. Clamped to the same 50 ceiling `OrdersService`'s
     // own seller-orders pagination already uses.
     const page  = Math.max(1, parseInt(query.page) || 1);
-    const limit = Math.min(50, parseInt(query.limit) || 12);
+    const limit = Math.min(100, parseInt(query.limit) || 12);
     const skip  = (page - 1) * limit;
 
     const filter: any = { storeId, isDelete: false, status: 'active' };
@@ -1777,7 +1910,7 @@ export class StoreService {
     if (query.tag && query.tag !== 'all') filter.tags = query.tag;
     if (query.search && String(query.search).trim()) {
       // Like Shopify: the term matches the title, vendor, product type and tags.
-      const searchRx = { $regex: String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+      const searchRx = { $regex: (await this.searchDiscovery?.regexSource(storeId, String(query.search))) ?? String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
       // ...and a variant SKU (SKUs live on the variants, so look the products up through them).
       const skuProductIds = await this.databaseService.repositories.productVariantModel.distinct('productId', { storeId, isDelete: false, sku: searchRx });
       filter.$and = [...(filter.$and ?? []), { $or: [{ name: searchRx }, { vendor: searchRx }, { productType: searchRx }, { tags: searchRx }, ...(skuProductIds.length ? [{ _id: { $in: skuProductIds.slice(0, 500) } }] : [])] }];
@@ -1789,6 +1922,11 @@ export class StoreService {
     // collections module.
     // A collection keeps the seller's own product order unless the buyer picked another sort.
     let collectionOrder: string[] | null = null;
+    // Products the seller pinned for this exact search come first (only when no other sort was chosen).
+    if (query.search && [undefined, null, '', 'newest', 'manual', 'default'].includes(query.sort)) {
+      const pins = await this.searchDiscovery?.pinned(storeId, String(query.search));
+      if (pins?.length) collectionOrder = pins;
+    }
     if (query.collectionId && query.collectionId !== 'all') {
       const ids = await this.collectionsService.resolveProductIds(storeId, query.collectionId);
       filter._id = { $in: ids.length ? ids : ['__none__'] };
@@ -2003,6 +2141,9 @@ export class StoreService {
         .lean();
     }
 
+    // A search that found nothing is counted for the seller's "no results" report (first page only, fire-and-forget).
+    if (total === 0 && query.search && (Number(query.page) || 1) === 1) void this.searchDiscovery?.recordMiss(storeId, String(query.search));
+
     // Cheapest active variant per product — powers the card price and, when
     // the buyer has an active subscription to this store, the member price.
     const productIds = products.map((p: any) => p._id.toString());
@@ -2183,7 +2324,7 @@ export class StoreService {
     storeId: string,
     customerIds: string[],
     query: any,
-    opts: { includeSubscribers?: boolean; knownEmails?: string[] } = {},
+    opts: { includeSubscribers?: boolean; knownEmails?: string[]; segment?: CompiledSegment } = {},
   ) {
     const { userModel, storeCustomerMetaModel, newsletterSubscriberModel } = this.databaseService.repositories;
 
@@ -2191,6 +2332,8 @@ export class StoreService {
       { $match: { $or: [{ userId: { $in: customerIds } }, { customerId: { $in: customerIds } }], isDelete: false, 'sellerOrders.storeId': storeId } },
       { $unwind: '$sellerOrders' },
       { $match: { 'sellerOrders.storeId': storeId } },
+      // Segments only: "last shipping country/city" needs the orders oldest-first so $last is the latest.
+      ...(opts.segment?.needs.has('location') ? [{ $sort: { createdAt: 1 } }] : []),
       {
         $group: {
           // one customer per email (Shopify) — see resolveCustomerId
@@ -2200,6 +2343,9 @@ export class StoreService {
           // BUYER's currency, so summing it mixed dollars, euros and rupees into one number.
           totalSpent: { $sum: SUB_ORDER_SPEND_EXPR },
           lastOrderAt: { $max: '$createdAt' },
+          ...(opts.segment?.needs.has('firstOrder') ? { firstOrderAt: { $min: '$createdAt' } } : {}),
+          ...(opts.segment?.needs.has('location') ? { shipCountry: { $last: '$shippingAddress.country' }, shipCity: { $last: '$shippingAddress.city' } } : {}),
+          ...(opts.segment?.needs.has('products') ? { prodArrays: { $push: '$sellerOrders.items.productId' } } : {}),
         },
       },
       {
@@ -2375,6 +2521,7 @@ export class StoreService {
         },
       },
       { $addFields: { marketingOptIn: { $eq: ['$marketingStatus', 'subscribed'] } } },
+      ...(opts.segment ? this.segmentStages(opts.segment, storeId) : []),
     ];
 
     const filter: Record<string, unknown> = {};
@@ -2404,8 +2551,112 @@ export class StoreService {
     if (query.view === 'archived') filter.isArchived = true;
     else if (query.view !== 'all') filter.isArchived = false;
 
-    pipeline.push({ $match: filter });
+    pipeline.push({ $match: opts.segment ? { $and: [filter, opts.segment.match] } : filter });
     return pipeline;
+  }
+
+  /** Extra computed fields a saved segment's conditions reference — only what the compiled filter `needs`. */
+  private segmentStages(segment: CompiledSegment, storeId: string): any[] {
+    const { storeCreditTransactionModel, loyaltyMemberModel } = this.databaseService.repositories;
+    const has = (n: string) => (segment.needs as Set<string>).has(n);
+    const stages: any[] = [{
+      $addFields: {
+        accountStatus: {
+          $switch: {
+            branches: [
+              { case: { $eq: ['$isBlocked', true] }, then: 'blocked' },
+              { case: { $eq: ['$isSubscriberOnly', true] }, then: 'guest' },
+              { case: { $eq: ['$user.isGuest', true] }, then: 'guest' },
+            ],
+            default: 'account',
+          },
+        },
+        avgOrderValue: { $cond: [{ $gt: ['$orderCount', 0] }, { $divide: ['$totalSpent', '$orderCount'] }, 0] },
+        ...(has('location') ? {
+          shipCountryLower: { $toLower: { $ifNull: ['$shipCountry', ''] } },
+          shipCityLower: { $toLower: { $ifNull: ['$shipCity', ''] } },
+        } : {}),
+        ...(has('products') ? {
+          purchasedProductIds: { $reduce: { input: { $ifNull: ['$prodArrays', []] }, initialValue: [], in: { $setUnion: ['$$value', { $ifNull: ['$$this', []] }] } } },
+        } : {}),
+      },
+    }];
+    if (has('storeCredit')) {
+      stages.push(
+        {
+          $lookup: {
+            from: storeCreditTransactionModel.collection.name,
+            let: { uid: '$_id' },
+            pipeline: [
+              { $match: { storeId, remaining: { $gt: 0 }, $expr: { $and: [{ $eq: ['$customerId', '$$uid'] }, { $or: [{ $eq: ['$expiresAt', null] }, { $gt: ['$expiresAt', '$$NOW'] }] }] } } },
+              { $group: { _id: null, balance: { $sum: '$remaining' } } },
+            ],
+            as: '_sc',
+          },
+        },
+        { $addFields: { storeCreditBalance: { $ifNull: [{ $arrayElemAt: ['$_sc.balance', 0] }, 0] } } },
+      );
+    }
+    if (has('loyalty')) {
+      stages.push(
+        {
+          $lookup: {
+            from: loyaltyMemberModel.collection.name,
+            let: { uid: '$_id' },
+            pipeline: [{ $match: { storeId, $expr: { $eq: ['$userId', '$$uid'] } } }, { $limit: 1 }, { $project: { currentTier: 1 } }],
+            as: '_lm',
+          },
+        },
+        { $addFields: { loyaltyTierLower: { $toLower: { $ifNull: [{ $arrayElemAt: ['$_lm.currentTier', 0] }, ''] } } } },
+      );
+    }
+    return stages;
+  }
+
+  /**
+   * Members of a saved/previewed segment — same pipeline (and so the same customers) as the Customers page, narrowed
+   * by the compiled filter at call time (never a stored snapshot). The CALLER must already have verified store
+   * ownership / permission. `mode`: 'list' (paged rows) | 'count' | 'ids' (id + email, capped).
+   */
+  async querySegmentMembers(
+    storeId: string,
+    segment: CompiledSegment,
+    opts: { mode: 'list' | 'count' | 'ids'; page?: number; limit?: number; search?: string; includeArchived?: boolean; onlyCustomerId?: string },
+  ): Promise<any> {
+    const { orderModel } = this.databaseService.repositories;
+    // `onlyCustomerId` (discount eligibility at checkout): start the pipeline from that one customer, not the whole store.
+    const customerIds = opts.onlyCustomerId ? [String(opts.onlyCustomerId)] : await this.storeCustomerIdsFromOrders(storeId);
+    const knownEmails = opts.onlyCustomerId ? [] : await this.storeCustomerEmails(storeId, customerIds);
+    const pipeline = this.buildStoreCustomersPipeline(
+      storeId, customerIds, { search: opts.search, view: opts.includeArchived ? 'all' : 'active' },
+      { includeSubscribers: !opts.onlyCustomerId, knownEmails, segment },
+    );
+    if (opts.mode === 'count') {
+      const [row] = await orderModel.aggregate([...pipeline, { $count: 'n' }]);
+      return row?.n ?? 0;
+    }
+    if (opts.mode === 'ids') {
+      return orderModel.aggregate([...pipeline, { $project: { _id: 1, email: 1 } }, { $limit: 50_000 }]);
+    }
+    const page = Math.max(1, opts.page ?? 1);
+    const limit = Math.min(100, Math.max(1, opts.limit ?? 20));
+    const [rows, [count]] = await Promise.all([
+      orderModel.aggregate([
+        ...pipeline,
+        { $sort: { lastOrderAt: -1, _id: 1 } },
+        { $skip: (page - 1) * limit },
+        { $limit: limit },
+        {
+          $project: {
+            _id: 1, name: 1, email: 1, phone: 1, createdAt: 1, orderCount: 1, totalSpent: 1, lastOrderAt: 1,
+            tags: 1, marketingStatus: 1, isSubscriberOnly: 1, accountStatus: 1,
+          },
+        },
+      ]),
+      orderModel.aggregate([...pipeline, { $count: 'n' }]),
+    ]);
+    const total = count?.n ?? 0;
+    return { customers: rows, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
   /** Real "this store actually knows this person" check — an order OR a
@@ -2536,7 +2787,14 @@ export class StoreService {
 
     const customerIds = await this.storeCustomerIdsFromOrders(storeId);
     const knownEmails = await this.storeCustomerEmails(storeId, customerIds);
-    const pipeline = this.buildStoreCustomersPipeline(storeId, customerIds, query, { includeSubscribers: true, knownEmails });
+    // `segmentId`: narrow the Customers list (and so its totals / bulk actions / export) to a saved segment of THIS store.
+    let segment: CompiledSegment | undefined;
+    if (typeof query.segmentId === 'string' && query.segmentId) {
+      const seg: any = await this.databaseService.repositories.customerSegmentModel.findOne({ _id: query.segmentId, storeId }).select('filter').lean();
+      if (!seg) throw new NotFoundException('Segment not found');
+      segment = compileSegmentFilter(normalizeSegmentFilter(seg.filter));
+    }
+    const pipeline = this.buildStoreCustomersPipeline(storeId, customerIds, query, { includeSubscribers: true, knownEmails, segment });
 
     const [customers, [totals]] = await Promise.all([
       orderModel.aggregate([

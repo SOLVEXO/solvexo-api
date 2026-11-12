@@ -1,4 +1,6 @@
+import { stockLinesForItem } from '../common/bundle.util';
 /* eslint-disable prettier/prettier */
+import { creditReceivable } from '../b2b/b2b-order.util';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { Types } from 'mongoose';
@@ -122,6 +124,14 @@ export class OrderReturnsService {
    * Shared by "mark received" and by exchanges that restock at creation.
    */
   async restockReturnedUnits(storeId: string, item: any, choice: 'restock' | 'damaged', note: string, adjustedBy: string, adjustedByName: string | null): Promise<boolean> {
+    // Bundle line: put each COMPONENT back (returned qty x component qty) — the bundle's own variant holds no stock.
+    if (Array.isArray(item.bundleComponents) && item.bundleComponents.length > 0) {
+      let moved = false;
+      for (const l of stockLinesForItem(item)) {
+        moved = (await this.restockReturnedUnits(storeId, { variantId: l.variantId, quantity: l.quantity }, choice, note, adjustedBy, adjustedByName)) || moved;
+      }
+      return moved;
+    }
     const variant: any = await this.r.productVariantModel.findOne({ _id: item.variantId, isDelete: false });
     if (!variant || variant.unlimitedStock) return false;
     const qty = item.quantity;
@@ -305,6 +315,11 @@ export class OrderReturnsService {
       await this.r.orderModel.updateOne({ _id: orderId }, { $set: undo }).catch(() => undefined);
       await releaseRefundCapacity(this.r.orderModel, orderId, soIndex, granted).catch(() => undefined);
     };
+
+    // Wholesale order on payment terms, still unpaid: the returned items come off what the company owes.
+    if (!order.isPaid && (order as any).b2b?.terms) {
+      await creditReceivable(this.r.orderModel, orderId, wanted, `Return of ${lines.length} item(s)`).catch((e: any) => console.error('B2B receivable credit failed (return):', e?.message));
+    }
 
     let refundProcessed = false;
     let refundNote = order.isPaid ? '' : 'The order was not paid, so there was nothing to refund.';

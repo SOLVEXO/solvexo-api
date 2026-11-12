@@ -36,6 +36,9 @@ export class MarketingService {
       throw new BadRequestException('Percentage discount cannot exceed 100');
     }
 
+    if (dto.customerSegmentId && !(await this.r.customerSegmentModel.exists({ _id: dto.customerSegmentId, storeId }))) {
+      throw new BadRequestException('Customer segment not found for this store');
+    }
     const coupon = await this.r.couponModel.create({
       storeId,
       sellerId,
@@ -45,6 +48,7 @@ export class MarketingService {
       minOrderAmount: dto.minOrderAmount ?? null,
       usageLimit: dto.usageLimit ?? null,
       posEnabled: dto.posEnabled === true,
+      customerSegmentId: dto.customerSegmentId ?? null,
       startsAt: dto.startsAt ? new Date(dto.startsAt) : null,
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : null,
     });
@@ -103,6 +107,12 @@ export class MarketingService {
     if (dto.minOrderAmount !== undefined) update.minOrderAmount = dto.minOrderAmount;
     if (dto.usageLimit !== undefined) update.usageLimit = dto.usageLimit;
     if (dto.posEnabled !== undefined) update.posEnabled = dto.posEnabled;
+    if (dto.customerSegmentId !== undefined) {
+      if (dto.customerSegmentId && !(await this.r.customerSegmentModel.exists({ _id: dto.customerSegmentId, storeId }))) {
+        throw new BadRequestException('Customer segment not found for this store');
+      }
+      update.customerSegmentId = dto.customerSegmentId || null;
+    }
     if (dto.startsAt !== undefined) update.startsAt = dto.startsAt ? new Date(dto.startsAt) : null;
     if (dto.expiresAt !== undefined) update.expiresAt = new Date(dto.expiresAt);
     if (dto.isActive !== undefined) update.isActive = dto.isActive;

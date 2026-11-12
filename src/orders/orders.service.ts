@@ -1,3 +1,8 @@
+import { assertPreorderShippable } from '../common/preorder.util';
+import { creditReceivable } from '../b2b/b2b-order.util';
+import { assertCodConfirmedForFulfilment } from '../cod-protection/cod-protection.service';
+import { expandForStock, stockLinesForItem } from '../common/bundle.util';
+import { plain as plainOf } from '../common/plain.util';
 import { Optional } from '@nestjs/common';
 import { ShippingProfilesService } from '@/shipping-zones/shipping-profiles.service';
 import {
@@ -26,6 +31,10 @@ import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { LoyaltyService } from '@/loyalty/loyalty.service';
 import { NotificationsService } from '@/notifications/notifications.service';
 import { ShippingRatesService } from '@/shipping-rates/shipping-rates.service';
+import { CourierService, courierErrorToHttp } from '@/integrations/couriers/courier.service';
+import { COURIER_CATALOG } from '@/integrations/couriers/courier-catalog';
+import type { BookedShipment, BookShipmentInput } from '@/integrations/couriers/courier.types';
+import { codForShipment, lineKeyFor, orderDueInOrderCurrency, roundCod } from '@/integrations/couriers/courier-booking.util';
 import type { CustomsLine } from '@/shipping-rates/customs.util';
 import { fulfilStockForSellerOrders } from '@/common/fulfil-stock.util';
 import { drainLocationStock, restoreLocationStock } from '@/common/location-stock.util';
@@ -54,6 +63,7 @@ import { buildDeliveredEmail, buildReadyForPickupEmail, buildReturnLabelEmail, b
  *  order-currency-denominated calculation only for orders placed before
  *  settlementAmount/settlementCurrency existed. */
 import { sellerTaxShare } from '../common/seller-tax-share.util';
+import { toBuyerCourierTracking } from '../common/buyer-safe-order.util';
 import { sellerCashBasis, sellerGiftCreditShare, sellerPayoutBasis, sellerPayoutCurrency, refundGiftCreditShare } from '../common/seller-payout-basis.util';
 import { computeOrderDocumentTotals } from '../order-documents/order-totals.util';
 
@@ -86,6 +96,8 @@ export class OrdersService {
     private readonly storeCreditService: StoreCreditService,
     // Optional: only used to ship labels from the product's shipping-profile origin location.
     @Optional() private readonly shippingProfilesService?: ShippingProfilesService,
+    // Optional so existing positional-constructor specs keep working; always provided by OrdersModule (IntegrationsModule exports it).
+    @Optional() private readonly courierService?: CourierService,
   ) {}
 
   /** Awards loyalty points for a completed order (the store's own loyalty program rate). */
@@ -193,6 +205,8 @@ export class OrdersService {
       currency: order.currency,
       shippingAddress: order.shippingAddress,
       fulfillmentMethod: order.fulfillmentMethod ?? 'ship',
+      localDelivery: order.localDelivery === true,
+      localDeliveryEta: order.localDeliveryEta ?? null,
       pickupLocation: order.pickupLocation ?? null,
       exchangeOf: order.exchangeOf ?? null,
       stores: (order.sellerOrders ?? [])
@@ -299,8 +313,21 @@ export class OrdersService {
 
     return {
       success: true,
-      data: toBuyerSafeOrder(enrichedOrder),
+      data: { ...toBuyerSafeOrder(enrichedOrder), courierTracking: await this.buyerCourierTracking(orderId, storeId) },
     };
+  }
+
+  /** Buyer-safe courier tracking timelines for an order (empty when none / not available). Never throws. */
+  private async buyerCourierTracking(orderId: string, storeId?: string): Promise<any[]> {
+    const model = this.databaseService.repositories.courierBookingModel;
+    if (!model) return [];
+    try {
+      const rows: any[] = await model
+        .find({ orderId, bookingStatus: 'booked', isActive: true, ...(storeId ? { storeId } : {}) }).sort({ createdAt: 1 }).lean();
+      return rows.map(toBuyerCourierTracking);
+    } catch {
+      return [];
+    }
   }
 
   /** Shopify order-status page: opens ONE order from a signed link, no login (how a guest tracks an order). */
@@ -314,7 +341,7 @@ export class OrdersService {
     const sellers = sellerIds.length ? await sellerModel.find({ _id: { $in: sellerIds } }).select('name').lean() : [];
     const nameById = new Map(sellers.map((x: any) => [String(x._id), x.name]));
     const enriched = { ...order, sellerOrders: (order.sellerOrders ?? []).map((so: any) => ({ ...so, sellerName: nameById.get(String(so.sellerId)) ?? null })) };
-    return { success: true, data: toBuyerSafeOrder(enriched) };
+    return { success: true, data: { ...toBuyerSafeOrder(enriched), courierTracking: await this.buyerCourierTracking(orderId) } };
   }
 
   /** A signed status-page link token for an order the caller owns. */
@@ -372,6 +399,10 @@ export class OrdersService {
     const subFilter: any = { storeId: { $in: storeIds } };
     if (query.type && query.type !== 'all') subFilter.fulfillmentType = String(query.type);
     if (query.status && query.status !== 'all') subFilter.status = String(query.status);
+    // "Pre-orders" view: sub-orders that contain at least one pre-order line.
+    if (query.preorder === 'true' || query.preorder === true) subFilter.items = { $elemMatch: { isPreorder: true } };
+    // "Local delivery" view: orders the store delivers itself.
+    if (query.localDelivery === 'true' || query.localDelivery === true) matchFilter.localDelivery = true;
     if (Object.keys(subFilter).length > 1) matchFilter.sellerOrders = { $elemMatch: subFilter };
 
     if (query.time && query.time !== 'all') {
@@ -439,6 +470,9 @@ export class OrdersService {
           // orders placed before this field existed.
           revenue: { $sum: { $cond: [{ $in: ['$so.status', ['completed', 'delivered']] }, { $ifNull: ['$so.settlementAmount', { $ifNull: ['$so.subtotal', 0] }] }, 0] } },
           pending: { $sum: { $cond: [{ $in: ['$so.status', ['pending', 'processing']] }, 1, 0] }, },
+          // Handed over (shipped / delivered / completed) but the money is not recorded yet — typically COD or a bank
+          // transfer the seller still has to mark as paid.
+          unpaidDelivered: { $sum: { $cond: [{ $and: [{ $ne: ['$isPaid', true] }, { $in: ['$so.status', ['shipped', 'delivered', 'completed']] }] }, 1, 0] } },
         },
       },
     ]);
@@ -504,6 +538,7 @@ export class OrdersService {
           totalOrders,
           revenue: totalRevenue,
           pending: pendingCount,
+          unpaidDelivered: statRow?.unpaidDelivered ?? 0,
           avgOrder: parseFloat(avgOrder.toFixed(2)),
         },
         pagination: {
@@ -573,6 +608,8 @@ export class OrdersService {
         paidAt: order.paidAt,
         shippingAddress: order.shippingAddress ?? null,
         fulfillmentMethod: (order as any).fulfillmentMethod ?? 'ship',
+        localDelivery: (order as any).localDelivery === true,
+        localDeliveryEta: (order as any).localDeliveryEta ?? null,
         pickupLocation: (order as any).pickupLocation ?? null,
         // Set when this order is the replacement order of an exchange (link back to the original).
         exchangeOf: (order as any).exchangeOf ?? null,
@@ -593,6 +630,9 @@ export class OrdersService {
         timeline: [...((order as any).timeline ?? [])].sort((a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)),
         note: (order as any).note ?? '',
         customerNote: (order as any).customerNote ?? '',
+        // Merchant-only: COD protection verdict (risk score, reasons, confirmation) and the wholesale company / PO / receivable.
+        codProtection: (order as any).codProtection ?? null,
+        b2b: (order as any).b2b ?? null,
       },
     };
   }
@@ -1160,6 +1200,316 @@ export class OrdersService {
     }
   }
 
+  // ── Pakistani courier booking (integrations/couriers) ───────────────────────────────────────────────────────────
+
+  private requireCourier(): CourierService {
+    if (!this.courierService) throw new BadRequestException('Courier booking is not available');
+    return this.courierService;
+  }
+
+  /** What the courier must collect for THIS booking, in the store's currency (0 when already paid). */
+  private async courierCodAmount(order: any, ctx: any, storeId: string, storeCurrency: string): Promise<number> {
+    const { orderPaymentRecordModel } = this.databaseService.repositories;
+    let recorded = 0;
+    if (order.paymentStatus === 'partially_paid') {
+      const rows: any[] = await orderPaymentRecordModel.find({ orderId: String(order._id) }).select('amount').lean();
+      recorded = rows.reduce((s, r) => s + (r.amount ?? 0), 0);
+    }
+    // The authoritative cash figure is the one the invoice/order screen already print: this sub-order's total minus the part
+    // paid with a gift card / store credit (`payable`) — never the gross total, or the courier would over-collect.
+    const payable = computeOrderDocumentTotals(order, ctx.sellerOrder).payable;
+    const dueOrderCcy = orderDueInOrderCurrency({
+      isPaid: !!order.isPaid, paymentStatus: order.paymentStatus, totalAmount: payable, recordedPayments: recorded,
+    });
+    if (dueOrderCcy <= 0) return 0;
+    const orderCcy: string = order.currency || storeCurrency;
+    const dueStore = orderCcy === storeCurrency ? dueOrderCcy : await this.exchangeRateService.convert(dueOrderCcy, orderCcy, storeCurrency);
+    const due = roundCod(dueStore, storeCurrency);
+    const items: any[] = (ctx.sellerOrder.items ?? []).filter((i: any) => i.status !== 'cancelled' && i.status !== 'refunded');
+    const value = (i: any, q: number) => (Number(i?.price) || 0) * q;
+    const allValue = items.reduce((s, i) => s + value(i, i.quantity ?? 1), 0);
+    const selectedValue = ctx.partial
+      ? ctx.partial.lines.reduce((s: number, l: any) => s + value(ctx.sellerOrder.items[l.itemIndex], l.quantity), 0)
+      : allValue;
+    return codForShipment({
+      due, selectedValue, allValue, alreadyAssigned: await this.requireCourier().codAlreadyAssigned(storeId, String(order._id)),
+      isFinal: ctx.partial ? ctx.partial.allShipped : true, currency: storeCurrency,
+    });
+  }
+
+  /** After a cancelled courier booking, swaps the new courier tracking onto the SAME (undelivered) shipment. */
+  private async replaceShipmentTracking(orderId: string, storeId: string, sellerId: string, shipmentId: string, tracking: any, notify: boolean) {
+    const { orderModel } = this.databaseService.repositories;
+    const order: any = await orderModel.findOne({ _id: orderId, isDelete: false });
+    if (!order) throw new NotFoundException('Order not found');
+    const soIndex = order.sellerOrders.findIndex((so: any) => so.storeId === storeId && so.sellerId === sellerId);
+    if (soIndex === -1) throw new ForbiddenException('Unauthorized');
+    const shipments: any[] = order.sellerOrders[soIndex].shipments ?? [];
+    const shIdx = shipments.findIndex((s: any) => String(s._id) === shipmentId);
+    if (shIdx === -1) throw new NotFoundException('The shipment of the cancelled booking no longer exists');
+    if (shipments[shIdx].deliveredAt) throw new BadRequestException('That shipment is already delivered.');
+    const base = `sellerOrders.${soIndex}`;
+    const set: Record<string, any> = { [`${base}.shipments.${shIdx}.tracking`]: tracking };
+    if (shIdx === shipments.length - 1) set[`${base}.tracking`] = tracking; // legacy mirror = latest shipment
+    const res = await orderModel.updateOne({ _id: orderId, [`${base}.shipments.${shIdx}._id`]: shipments[shIdx]._id, [`${base}.shipments.${shIdx}.deliveredAt`]: null }, { $set: set });
+    if (!res.matchedCount) throw new ConflictException('This order was just updated — refresh and try again.');
+    if (notify) {
+      this.notificationsService.notify({
+        recipientId: order.userId, recipientRole: 'user', storeId, type: NOTIFICATION_TYPES.ORDER_SHIPPED,
+        title: 'Tracking updated', body: `Order #${order.orderNumber ?? orderId} tracking: ${[tracking.carrier, tracking.trackingNumber].filter(Boolean).join(' ')}.`, data: { orderId },
+      }).catch(() => {});
+    }
+  }
+
+  private async shipmentIdForTracking(orderId: string, storeId: string, trackingNumber: string): Promise<string | null> {
+    const order: any = await this.databaseService.repositories.orderModel.findOne({ _id: orderId }).select('sellerOrders').lean();
+    const so = order?.sellerOrders?.find((s: any) => s.storeId === storeId);
+    const sh = (so?.shipments ?? []).find((s: any) => s?.tracking?.trackingNumber === trackingNumber);
+    return sh ? String(sh._id) : null;
+  }
+
+  /**
+   * Books one order (or a subset of its lines) with a Pakistani courier AND fulfils it through the existing shipment
+   * path (stock, status, shipped email/WhatsApp, timeline, partial shipments) using the courier's tracking as trusted
+   * tracking — the same shape purchaseShippingLabel uses.
+   *
+   * Idempotent per (order, sub-order, lines): a repeat call returns the existing booking; a booking that reached the
+   * courier but whose fulfil step failed ("paid but fulfil failed") keeps its tracking on the booking/timeline and is
+   * resumed by calling this again — the courier is NOT called a second time. After a CANCELLED booking, calling it
+   * again books anew and swaps the tracking onto the same shipment.
+   *
+   * Money: the courier is told to collect the order's authoritative total in the store currency, or 0 if already paid.
+   * Nothing here touches ledger/balance/fees/payout.
+   */
+  async bookCourierShipment(
+    sellerId: string,
+    orderId: string,
+    storeId: string,
+    ip?: string,
+    userAgent?: string,
+    opts: { provider?: string; items?: { itemId: string; quantity: number }[]; weightKg?: number; pieces?: number; notifyCustomer?: boolean } = {},
+  ) {
+    const courier = this.requireCourier();
+    const { orderModel, storeModel, courierBookingModel } = this.databaseService.repositories;
+    if (!isValidObjectId(orderId)) throw new BadRequestException('Invalid order id');
+    await courier.assertBookingAllowed(storeId);
+
+    const lineKey = lineKeyFor(opts.items);
+    const active: any = await courierBookingModel.findOne({ storeId, orderId, lineKey, isActive: true });
+    if (active?.bookingStatus === 'booked') {
+      return { success: true, message: 'Already booked with the courier', data: { booking: courier.toSellerView(active.toObject()), alreadyBooked: true } };
+    }
+    if (active?.bookingStatus === 'pending') throw new ConflictException('A courier booking for this order is already in progress.');
+    const resume = active?.bookingStatus === 'fulfil_failed' ? active : null;
+    const rebookOf: any = !active
+      ? await courierBookingModel.findOne({ storeId, orderId, lineKey, bookingStatus: 'cancelled', shipmentId: { $ne: null } }).sort({ createdAt: -1 }).lean()
+      : null;
+
+    const settings = await courier.getSettings(storeId);
+    const providerKey = resume?.provider ?? opts.provider ?? settings.defaultProvider;
+    if (!providerKey) throw new BadRequestException('Choose a courier to book with');
+    if (!settings.pickup) throw new BadRequestException('Set your pickup address in Courier settings before booking');
+    const conn = await courier.resolveConnection(storeId, providerKey);
+
+    const ctxItems = rebookOf ? undefined : resume ? (resume.lineKey === 'all' ? undefined : resume.items) : opts.items;
+    const ctx = await this.prepareLabelContext(sellerId, orderId, storeId, ctxItems);
+    const order: any = await orderModel.findOne({ _id: orderId, isDelete: false }).lean();
+    if (order.fulfillmentMethod === 'pickup') throw new BadRequestException('This is a pickup order — mark it ready for pickup instead of shipping it.');
+    if (!ctx.partial && !rebookOf && !isAllowedSellerOrderTransition(ctx.sellerOrder.status, 'shipped')) {
+      throw new BadRequestException(`Cannot book a courier for an order that is "${ctx.sellerOrder.status}".`);
+    }
+    const store: any = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('baseCurrency').lean();
+    const storeCurrency: string = store?.baseCurrency || order.currency || 'PKR';
+    const d = ctx.destination;
+    if (!d.phone) throw new BadRequestException('The buyer has no phone number on this order — a courier needs one.');
+
+    let booking: any = resume;
+    let trackingNumber: string | null = resume?.trackingNumber ?? null;
+    let booked: BookedShipment | null = null;
+    if (!resume) {
+      const weightKg = opts.weightKg ?? rebookOf?.weightKg ?? (ctx.totalWeightKg > 0 ? ctx.totalWeightKg : settings.defaultWeightKg);
+      const pieces = opts.pieces ?? rebookOf?.pieces ?? 1;
+      const isPaidNow = !!order.isPaid || order.paymentStatus === 'paid';
+      const codAmount = rebookOf ? (isPaidNow ? 0 : rebookOf.codAmount ?? 0) : await this.courierCodAmount(order, ctx, storeId, storeCurrency);
+      const n = await courier.countForOrder(storeId, orderId);
+      const orderNo = String(order.orderNumber ?? orderId);
+      const claimed = await courier.claim({
+        storeId, sellerId, orderId, provider: conn.key, mode: conn.mode, lineKey,
+        items: (opts.items ?? []).map((i) => ({ itemId: i.itemId, quantity: i.quantity })),
+        referenceNumber: n === 0 ? orderNo : `${orderNo}-${n + 1}`, weightKg, pieces, codAmount, currency: storeCurrency,
+      });
+      if (!claimed.created) {
+        if (claimed.booking.bookingStatus === 'booked') return { success: true, message: 'Already booked with the courier', data: { booking: courier.toSellerView(claimed.booking.toObject()), alreadyBooked: true } };
+        throw new ConflictException('A courier booking for this order is already in progress.');
+      }
+      booking = claimed.booking;
+
+      const lines = ctx.partial ? ctx.partial.lines.map((l: any) => ctx.sellerOrder.items[l.itemIndex]?.name) : (ctx.sellerOrder.items ?? []).map((i: any) => i.name);
+      const input: BookShipmentInput = {
+        referenceNumber: booking.referenceNumber,
+        consignee: { name: d.name, phone: d.phone, address: [d.street1, d.street2].filter(Boolean).join(', '), city: d.city },
+        pickup: settings.pickup as any,
+        returnAddress: (settings.returnAddress as any) ?? undefined,
+        weightKg, pieces, codAmount, currency: storeCurrency,
+        description: lines.filter(Boolean).join(', ').slice(0, 200) || 'Order',
+      };
+      try {
+        booked = await courier.bookAtCourier(conn, input);
+      } catch (err: any) {
+        await courier.markFailed(String(booking._id), err?.message ?? 'Booking failed');
+        throw err;
+      }
+      booking = await courier.markBooked(String(booking._id), booked, {});
+      trackingNumber = booked.trackingNumber;
+    }
+
+    const label = COURIER_CATALOG[conn.key].label;
+    const tracking = {
+      carrier: label, trackingNumber: trackingNumber as string, trackingUrl: booking?.trackingUrl ?? null,
+      labelUrl: booking?.labelUrl ?? null, labelRateId: null, labelCost: null, labelCurrency: null, labelPurchasedAt: new Date(),
+    };
+    await this.pushTimeline(
+      orderId, 'status',
+      `Booked with ${label} — tracking ${trackingNumber}${booking?.codAmount ? ` · COD ${booking.codAmount} ${booking.currency ?? ''}`.trimEnd() : ' · no COD (prepaid)'}${rebookOf ? ' (re-booked after cancellation)' : ''}`,
+      sellerId, 'seller',
+    );
+
+    try {
+      if (rebookOf) {
+        await this.replaceShipmentTracking(orderId, storeId, sellerId, rebookOf.shipmentId, tracking, opts.notifyCustomer !== false);
+      } else if (ctx.partial) {
+        await this.fulfilItems(sellerId, storeId, orderId, { items: (resume?.items?.length ? resume.items : opts.items)!, notifyCustomer: opts.notifyCustomer } as FulfilOrderDto, ip, userAgent, tracking);
+      } else {
+        await this.updateSellerOrderStatus(sellerId, { orderId, storeId, status: 'shipped' }, ip, userAgent, tracking);
+      }
+    } catch (err: any) {
+      // The courier booking exists — never lose its tracking. Keep it on the booking (resumable) and on the merchant timeline.
+      await courier.markFulfilFailed(String(booking._id), err?.message ?? 'Fulfil failed');
+      await this.pushTimeline(orderId, 'status', `Courier booking ${label} ${trackingNumber} was created but the order could not be marked shipped — open the order and retry the booking to finish it.`, sellerId, 'seller');
+      if (!ctx.partial && !rebookOf) {
+        await orderModel.updateOne({ _id: orderId, [`sellerOrders.${ctx.sellerOrderIndex}.storeId`]: storeId }, { $set: { [`sellerOrders.${ctx.sellerOrderIndex}.tracking`]: tracking } });
+      }
+      throw err;
+    }
+
+    const shipmentId = rebookOf?.shipmentId ?? (await this.shipmentIdForTracking(orderId, storeId, trackingNumber as string));
+    await courier.markFulfilled(String(booking._id), shipmentId);
+    this.activityLogService.log({
+      storeId, category: 'orders', action: 'courier_booked',
+      description: `Order #${order.orderNumber ?? orderId} booked with ${label} (tracking ${trackingNumber})`,
+      actorId: sellerId, actorRole: 'seller', targetId: orderId, targetType: 'order', ip, userAgent,
+      metadata: { provider: conn.key, mode: conn.mode, codAmount: booking?.codAmount ?? 0, lineKey },
+    });
+    const fresh: any = await courierBookingModel.findById(booking._id).lean();
+    return { success: true, message: `Booked with ${label}`, data: { booking: courier.toSellerView(fresh), alreadyBooked: false } };
+  }
+
+  /** One courier, many orders. Each order goes through bookCourierShipment (own idempotency/claim); a bad order never stops the rest. */
+  async bulkBookCourierShipments(
+    sellerId: string, storeId: string, orderIds: string[], ip?: string, userAgent?: string,
+    opts: { provider?: string; notifyCustomer?: boolean } = {},
+  ) {
+    const courier = this.requireCourier();
+    const ids = [...new Set(orderIds)].slice(0, 50);
+    await courier.assertBookingAllowed(storeId);
+    const settings = await courier.getSettings(storeId);
+    const providerKey = opts.provider ?? settings.defaultProvider;
+    if (!providerKey) throw new BadRequestException('Choose a courier to book with');
+    await courier.resolveConnection(storeId, providerKey); // fail fast for the whole batch if the courier is unusable
+    const results: Array<{ orderId: string; ok: boolean; trackingNumber?: string | null; bookingId?: string; alreadyBooked?: boolean; error?: string }> = [];
+    for (const orderId of ids) {
+      try {
+        const r: any = await this.bookCourierShipment(sellerId, orderId, storeId, ip, userAgent, { provider: providerKey, notifyCustomer: opts.notifyCustomer });
+        results.push({ orderId, ok: true, trackingNumber: r.data.booking.trackingNumber, bookingId: r.data.booking.id, alreadyBooked: r.data.alreadyBooked });
+      } catch (err: any) {
+        const msg = err?.response?.message ?? err?.message ?? 'Booking failed';
+        results.push({ orderId, ok: false, error: Array.isArray(msg) ? msg.join(', ') : String(msg) });
+      }
+    }
+    const succeeded = results.filter((r) => r.ok).length;
+    this.activityLogService.log({
+      storeId, category: 'orders', action: 'courier_bulk_booked', description: `Bulk courier booking: ${succeeded}/${results.length} booked with ${providerKey}`,
+      actorId: sellerId, actorRole: 'seller', targetId: storeId, targetType: 'store', ip, userAgent, metadata: { provider: providerKey, total: results.length, succeeded },
+    });
+    return {
+      success: true,
+      message: `${succeeded} of ${results.length} booked`,
+      data: { provider: providerKey, total: results.length, succeeded, failed: results.length - succeeded, results, bookingIds: results.filter((r) => r.bookingId).map((r) => r.bookingId) },
+    };
+  }
+
+  /** Cancels a courier booking at the courier (only while the courier has not picked it up) and records it on the order. */
+  async cancelCourierBooking(sellerId: string, storeId: string, orderId: string, bookingId: string, ip?: string, userAgent?: string) {
+    const courier = this.requireCourier();
+    const { orderModel } = this.databaseService.repositories;
+    if (!isValidObjectId(orderId) || !isValidObjectId(bookingId)) throw new BadRequestException('Invalid id');
+    const order: any = await orderModel.findOne({ _id: orderId, isDelete: false }).select('orderNumber sellerOrders').lean();
+    if (!order) throw new NotFoundException('Order not found');
+    if (!order.sellerOrders?.some((so: any) => so.storeId === storeId && so.sellerId === sellerId)) throw new ForbiddenException('Unauthorized');
+    const booking: any = await courier.findOwned(storeId, bookingId);
+    if (booking.orderId !== orderId) throw new NotFoundException('Courier booking not found');
+    if (!booking.isActive || !['booked', 'fulfil_failed'].includes(booking.bookingStatus) || !booking.trackingNumber) {
+      throw new BadRequestException('This booking is not active.');
+    }
+    if (booking.courierStatus && booking.courierStatus !== 'booked') {
+      throw new BadRequestException(`The courier already has this parcel (${booking.courierStatus.replace(/_/g, ' ')}) — it can no longer be cancelled from here.`);
+    }
+    const conn = await courier.resolveConnection(storeId, booking.provider);
+    await courier.cancelAtCourier(conn, booking.trackingNumber);
+    await courier.markCancelled(String(booking._id));
+    await this.pushTimeline(orderId, 'status', `Courier booking cancelled (${COURIER_CATALOG[conn.key].label} ${booking.trackingNumber}) — book again to ship it`, sellerId, 'seller');
+    this.activityLogService.log({
+      storeId, category: 'orders', action: 'courier_cancelled', description: `Order #${order.orderNumber ?? orderId} courier booking ${booking.trackingNumber} cancelled`,
+      actorId: sellerId, actorRole: 'seller', targetId: orderId, targetType: 'order', ip, userAgent, metadata: { provider: booking.provider },
+    });
+    return { success: true, message: 'Courier booking cancelled', data: { bookingId } };
+  }
+
+  async listCourierBookingsForOrder(sellerId: string, storeId: string, orderId: string) {
+    const courier = this.requireCourier();
+    if (!isValidObjectId(orderId)) throw new BadRequestException('Invalid order id');
+    const order: any = await this.databaseService.repositories.orderModel.findOne({ _id: orderId, isDelete: false }).select('sellerOrders').lean();
+    if (!order) throw new NotFoundException('Order not found');
+    if (!order.sellerOrders?.some((so: any) => so.storeId === storeId && so.sellerId === sellerId)) throw new ForbiddenException('Unauthorized');
+    return { success: true, data: await courier.listForOrder(storeId, orderId) };
+  }
+
+  /** Bookable couriers for the order screen + the store's courier defaults. Requires store ownership. */
+  async courierBookingOptions(sellerId: string, storeId: string) {
+    const courier = this.requireCourier();
+    await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean().then((s) => { if (!s) throw new ForbiddenException('Store not found or unauthorized'); });
+    return { success: true, data: { providers: await courier.listBookableProviders(storeId), settings: await courier.getSettings(storeId) } };
+  }
+
+  /** Pre-booking check: does this courier serve `city`? Never throws for "not served" — returns ok:false with the reason. */
+  async courierValidateCity(sellerId: string, storeId: string, provider: string, city: string) {
+    const courier = this.requireCourier();
+    const s = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
+    if (!s) throw new ForbiddenException('Store not found or unauthorized');
+    if (!city || !city.trim()) throw new BadRequestException('city is required');
+    const conn = await courier.resolveConnection(storeId, provider);
+    try {
+      const hit = await conn.provider.validateCity(conn.ctx, city);
+      return { success: true, data: { ok: true, city: hit.name } };
+    } catch (err: any) {
+      if (err?.code === 'city_not_serviceable') return { success: true, data: { ok: false, message: err.message } };
+      return courierErrorToHttp(err);
+    }
+  }
+
+  async courierDocuments(sellerId: string, storeId: string, bookingIds: string[], kind: 'airway_bill' | 'load_sheet') {
+    const courier = this.requireCourier();
+    const s = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
+    if (!s) throw new ForbiddenException('Store not found or unauthorized');
+    const ids = bookingIds.filter((i) => isValidObjectId(i));
+    const out = await courier.getDocuments(storeId, ids, kind);
+    this.activityLogService.log({
+      storeId, category: 'orders', action: kind === 'airway_bill' ? 'courier_airway_bill_printed' : 'courier_load_sheet_printed',
+      description: `${kind === 'airway_bill' ? 'Airway bills' : 'Load sheet'} downloaded for ${ids.length} booking(s)`, actorId: sellerId, actorRole: 'seller', targetId: storeId, targetType: 'store',
+    });
+    return out;
+  }
+
   /** Real FIFO/FEFO consumption for a lot-tracked variant (see StockLot
    *  schema) — drains the OLDEST active lot(s) first (earliest
    *  `expiryDate` when any active lot has one set, i.e. FEFO; otherwise
@@ -1228,6 +1578,14 @@ export class OrdersService {
     );
     if (sellerOrderIndex === -1) throw new ForbiddenException('Unauthorized');
 
+    // COD protection: nothing ships while the customer has not confirmed a cash-on-delivery order that asked for it.
+    assertCodConfirmedForFulfilment(order as any);
+
+    // Wholesale deposit (seller-set): the required deposit must be recorded before the order leaves the shop.
+    if (['shipped', 'delivered', 'completed'].includes(status) && (order as any).b2b?.terms && ((order as any).b2b.depositRequired ?? 0) > ((order as any).b2b.paidTotal ?? 0) + 0.004) {
+      throw new BadRequestException('Record the required deposit for this wholesale order before shipping it.');
+    }
+
     // Real safety net for Store.paymentCaptureMethod === 'manual' orders —
     // mirrors Shopify's own "Automatically when order is fulfilled" capture
     // option. `recordSale` below only ever fires once a sellerOrder reaches
@@ -1277,6 +1635,21 @@ export class OrdersService {
 
     // saare items same status — except cancelled/refunded lines, which are final
     const soItems = order.sellerOrders[sellerOrderIndex].items;
+    // Pre-order guard: shipping a pre-order line before its stock has arrived needs an explicit, audited override.
+    if (status === 'shipped' && !isPickup) {
+      const g = await assertPreorderShippable(
+        this.databaseService.repositories.productVariantModel,
+        unshippedLines(soItems, priorShipments).map((l: any) => ({ item: soItems[l.itemIndex], quantity: l.quantity })),
+        body.overridePreorder === true,
+      );
+      if (g.overridden) {
+        this.activityLogService.log({
+        storeId, category: 'orders', action: 'preorder_fulfil_override',
+        description: `Order #${orderId} — shipped pre-order item(s) before stock arrived: ${g.names.join(', ')}`,
+        actorId: sellerId, actorRole: 'seller', targetId: orderId, targetType: 'order', ip, userAgent,
+      });
+      }
+    }
     soItems.forEach((item: any, itemIndex: number) => {
       if (item.status === 'cancelled' || item.status === 'refunded') return;
       updateData[`${soBase}.items.${itemIndex}.status`] = status;
@@ -1516,18 +1889,25 @@ export class OrdersService {
   private async deductShippedStock(so: any, soIndex: number, lines: FulfilLine[]): Promise<Record<string, any>> {
     const { productVariantModel } = this.databaseService.repositories;
     const cogsUpdate: Record<string, any> = {};
-    for (const line of lines) {
+    // Bundles: one line per component (qty x component qty); a normal line stays as it is.
+    const expanded: any[] = lines.flatMap((l) => {
+      const it = so.items[l.itemIndex];
+      // `{ ...it }` of a hydrated sub-document loses its schema getters (bundleComponents), so a bundle shipped without its components' stock moving: go through a plain object.
+      const flat = plainOf(it);
+      return flat?.bundleComponents?.length ? stockLinesForItem({ ...flat, quantity: l.quantity }).map((sl) => ({ itemIndex: l.itemIndex, quantity: sl.quantity, variantId: sl.variantId })) : [l as any];
+    });
+    for (const line of expanded) {
       const item = so.items[line.itemIndex];
       if (!item || item.type !== 'physical' || !item.variantId) continue;
       const variant = await productVariantModel
-        .findOne({ _id: item.variantId })
+        .findOne({ _id: line.variantId ?? item.variantId })
         .select('unlimitedStock stock committedStock trackLots')
         .lean();
       if (!variant || (variant as any).unlimitedStock) continue;
       // One atomic, relative update (the old read-then-$set overwrote any receipt/adjustment that landed in between),
       // then the same movement on the per-location rows.
       await productVariantModel.updateOne(
-        { _id: item.variantId },
+        { _id: line.variantId ?? item.variantId },
         [{
           $set: {
             stock: { $max: [0, { $subtract: ['$stock', line.quantity] }] },
@@ -1536,15 +1916,15 @@ export class OrdersService {
         }],
         { updatePipeline: true } as any,
       );
-      await drainLocationStock(this.databaseService.repositories, String(item.variantId), line.quantity);
+      await drainLocationStock(this.databaseService.repositories, String(line.variantId ?? item.variantId), line.quantity);
 
       // Real FIFO/FEFO cost-of-goods-sold — only for a lot-tracked variant (see StockLot schema /
       // consumeLotsFifo). This is the ACTUAL moment the unit leaves the building.
       if ((variant as any).trackLots) {
-        const cogs = await this.consumeLotsFifo(item.variantId, line.quantity);
+        const cogs = await this.consumeLotsFifo(line.variantId ?? item.variantId, line.quantity);
         if (cogs != null) {
           cogsUpdate[`sellerOrders.${soIndex}.items.${line.itemIndex}.costOfGoodsSold`] =
-            Math.round(((Number(item.costOfGoodsSold) || 0) + cogs) * 100) / 100;
+            Math.round((((cogsUpdate[`sellerOrders.${soIndex}.items.${line.itemIndex}.costOfGoodsSold`] as number) ?? (Number(item.costOfGoodsSold) || 0)) + cogs) * 100) / 100;
         }
       }
     }
@@ -1577,9 +1957,28 @@ export class OrdersService {
     if (!OrdersService.FULFILLABLE_STATUSES.includes(current)) {
       throw new BadRequestException(`Cannot fulfil an order that is "${current}".`);
     }
+    assertCodConfirmedForFulfilment(order);
+    // Wholesale deposit (seller-set): the required deposit must be recorded before anything ships, partial shipments included.
+    if (order.b2b?.terms && (order.b2b.depositRequired ?? 0) > (order.b2b.paidTotal ?? 0) + 0.004) {
+      throw new BadRequestException('Record the required deposit for this wholesale order before shipping it.');
+    }
     const priorShipments: any[] = so.shipments ?? [];
     const check = validateFulfilRequest(so.items, priorShipments, dto.items);
     if (!check.ok) throw new BadRequestException(check.error);
+    {
+      const g = await assertPreorderShippable(
+        this.databaseService.repositories.productVariantModel,
+        check.lines.map((l) => ({ item: so.items[l.itemIndex], quantity: l.quantity })),
+        dto.overridePreorder === true,
+      );
+      if (g.overridden) {
+        this.activityLogService.log({
+        storeId, category: 'orders', action: 'preorder_fulfil_override',
+        description: `Order #${orderId} — shipped pre-order item(s) before stock arrived: ${g.names.join(', ')}`,
+        actorId: sellerId, actorRole: 'seller', targetId: orderId, targetType: 'order', ip, userAgent,
+      });
+      }
+    }
 
     // Same safety net as the whole-order path: an authorized-only card payment is captured when the seller commits to ship.
     if (order.paymentStatus === 'authorized') {
@@ -2144,6 +2543,7 @@ export class OrdersService {
     const store = await storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
     if (!store) throw new ForbiddenException('Store not found or unauthorized');
 
+    if (!isValidObjectId(orderId)) throw new NotFoundException('Order not found');
     const order = await orderModel.findOne({ _id: orderId, isDelete: false });
     if (!order) throw new NotFoundException('Order not found');
 
@@ -2687,6 +3087,12 @@ export class OrdersService {
       );
     }
 
+    // Wholesale order on payment terms, still unpaid: cancelled items come off what the company owes.
+    if (!order.isPaid && (order as any).b2b?.terms) {
+      const cancelledValue = targetItems.reduce((s, { item }) => s + (item.totalPrice ?? 0) + (item.taxUSD ?? 0), 0);
+      await creditReceivable(orderModel, orderId, cancelledValue, `Cancelled ${targetItems.length} item(s)`).catch((e: any) => console.error('B2B receivable credit failed (cancel):', e?.message));
+    }
+
     // Shopify: cancelling an EXCHANGE order (every line) reopens the return it resolved on the original order.
     if (order.exchangeOf?.orderId) {
       const stillOpen = order.sellerOrders.some((so: any, si: number) => so.items.some((it: any, ii: number) =>
@@ -2699,7 +3105,8 @@ export class OrdersService {
     // physical items — release the reservation (never a real `stock` restore here): `BLOCKED` above already
     // guarantees these items were still 'pending'/'processing', i.e. only ever reserved via `committedStock`
     // at checkout, never shipped/decremented from real `stock` — see ProductVariant.committedStock's doc comment.
-    for (const { item, soIndex: tSoIndex } of targetItems as any[]) {
+    for (const { item: rawItem, soIndex: tSoIndex } of targetItems as any[]) {
+      for (const item of expandForStock(rawItem)) {
       if (item.type === 'physical' && item.variantId) {
         if (order.sellerOrders[tSoIndex]?.stockAlreadyDeducted) {
           // Draft-order sales already took the units out of on-hand stock when they were completed (no reservation exists),
@@ -2714,6 +3121,15 @@ export class OrdersService {
           [{ $set: { committedStock: { $max: [0, { $subtract: ['$committedStock', item.quantity] }] } } }],
           { updatePipeline: true } as any,
         );
+        if (rawItem.isPreorder) {
+          // Free the pre-order slot (the limit counts units still on open orders).
+          await productVariantModel.updateOne(
+            { _id: item.variantId, preorder: { $ne: null } },
+            [{ $set: { 'preorder.sold': { $max: [0, { $subtract: [{ $ifNull: ['$preorder.sold', 0] }, item.quantity] }] } } }],
+            { updatePipeline: true } as any,
+          );
+        }
+      }
       }
     }
 

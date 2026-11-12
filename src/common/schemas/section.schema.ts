@@ -31,6 +31,7 @@ export const SECTION_TYPES = [
   // is currently browsing. Exists only inside a store's singleton Collection
   // Template (see `collection-template/`), pre-seeded there and nowhere else.
   'collection_product_grid',
+  'category_product_grid',
   // Theme-exclusive sections (frontend `sectionSchemaRegistry`'s
   // `exclusiveToTheme`) — only ever offered in their owning theme's Section
   // Library, but validated identically to every other section type here

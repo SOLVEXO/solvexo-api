@@ -1,3 +1,4 @@
+import { MerchandisingModule } from '../merchandising/merchandising.module';
 /* eslint-disable prettier/prettier */
 import { MembershipsModule } from '../memberships/memberships.module';
 import { Module } from '@nestjs/common';
@@ -26,9 +27,10 @@ import { AuthModule } from '../auth/auth.module';
 import { StoreModule } from '../store/store.module';
 import { StorePagesModule } from '../store-pages/store-pages.module';
 import { GiftCardsModule } from '../gift-cards/gift-cards.module';
+import { SellerTrustModule } from '../seller-trust/seller-trust.module';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), SubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, AnalyticsModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule, AdminAnnouncementsModule, AuthModule, StoreModule, StorePagesModule, GiftCardsModule, MembershipsModule],
+  imports: [ScheduleModule.forRoot(), MerchandisingModule, SubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, AnalyticsModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule, AdminAnnouncementsModule, AuthModule, StoreModule, StorePagesModule, GiftCardsModule, MembershipsModule, SellerTrustModule],
   providers: [SchedulerService],
 })
 export class SchedulerModule {}

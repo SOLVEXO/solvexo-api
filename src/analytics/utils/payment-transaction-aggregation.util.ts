@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { num } from './order-aggregation.util';
 /**
  * Phase 8 — Payments tab real-schema audit.
  *
@@ -53,8 +54,8 @@ export function ratePerUSDFromSnapshotsExpr() {
       },
       in: {
         $cond: [
-          { $and: [{ $ne: ['$$match', null] }, { $gt: ['$$match.ratePerUSD', 0] }] },
-          '$$match.ratePerUSD',
+          { $and: [{ $ne: ['$$match', null] }, { $gt: [num('$$match.ratePerUSD'), 0] }] },
+          num('$$match.ratePerUSD'),
           null,
         ],
       },
@@ -70,7 +71,7 @@ export function amountUSDExpr() {
   return {
     $let: {
       vars: { rate: ratePerUSDFromSnapshotsExpr() },
-      in: { $cond: [{ $ne: ['$$rate', null] }, { $divide: ['$amount', '$$rate'] }, null] },
+      in: { $cond: [{ $ne: ['$$rate', null] }, { $divide: [num('$amount'), '$$rate'] }, null] },
     },
   };
 }

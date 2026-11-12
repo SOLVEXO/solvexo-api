@@ -11,6 +11,7 @@ import { StripeOwnPaymentProvider } from './providers/stripe-own.provider';
 import { StripeStandardPaymentProvider } from './providers/stripe-standard.provider';
 import { PayPalPaymentProvider } from './providers/paypal.provider';
 import { RazorpayPaymentProvider } from './providers/razorpay.provider';
+import { QisstpayPaymentProvider } from './providers/qisstpay.provider';
 import { PaystackPaymentProvider } from './providers/paystack.provider';
 import { FlutterwavePaymentProvider } from './providers/flutterwave.provider';
 import { MolliePaymentProvider } from './providers/mollie.provider';
@@ -39,13 +40,14 @@ export class PaymentProviderRegistry {
     flutterwaveProvider: FlutterwavePaymentProvider,
     mollieProvider: MolliePaymentProvider,
     stripeStandardProvider: StripeStandardPaymentProvider,
+    qisstpayProvider: QisstpayPaymentProvider,
   ) {
     this.providers.set(safepayProvider.providerKey, safepayProvider);
     this.providers.set(stripeProvider.providerKey, stripeProvider);
     this.providers.set(jazzcashProvider.providerKey, jazzcashProvider);
     this.providers.set(payfastProvider.providerKey, payfastProvider);
     this.providers.set(easypaisaProvider.providerKey, easypaisaProvider);
-    for (const p of [stripeOwnProvider, paypalProvider, razorpayProvider, paystackProvider, flutterwaveProvider, mollieProvider, stripeStandardProvider]) {
+    for (const p of [stripeOwnProvider, paypalProvider, razorpayProvider, paystackProvider, flutterwaveProvider, mollieProvider, stripeStandardProvider, qisstpayProvider]) {
       this.providers.set(p.providerKey, p);
     }
   }

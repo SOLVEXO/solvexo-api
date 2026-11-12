@@ -12,6 +12,21 @@ export class CheckoutItem {
   @Prop({ type: String, required: true })
   variantId: string;
 
+  // Product bundles (common/bundle.util.ts): snapshot of the components at purchase time (per ONE bundle).
+  @Prop({ type: [{ _id: false, productId: String, variantId: String, quantity: Number, name: { type: String, default: null } }], default: [] })
+  bundleComponents: { productId: string; variantId: string; quantity: number; name?: string | null }[];
+
+  // Pre-order (variant `preorder`): this unit was sold as a pre-order; the expected date/message are snapshots.
+  @Prop({ type: Boolean, default: false })
+  isPreorder: boolean;
+
+  @Prop({ type: Date, default: null })
+  preorderExpectedDate: Date | null;
+
+  @Prop({ type: String, default: null })
+  preorderMessage: string | null;
+
+
   @Prop({ type: String, required: true })
   sellerId: string;
 
@@ -233,6 +248,21 @@ export class Checkout {
   @Prop({ type: String, default: null })
   shippingZoneId: string | null;
 
+  // Set when the chosen delivery is a store's own local delivery (not a carrier). Copied onto the order.
+  @Prop({ type: Boolean, default: false })
+  localDelivery: boolean;
+
+  // Total taken off by the store's own checkout rules (already inside the item totals); labels shown to the buyer.
+  @Prop({ type: Number, default: 0 })
+  ruleDiscountTotal: number;
+
+  @Prop({ type: [String], default: [] })
+  ruleDiscountLabels: string[];
+
+  // Delivery window text of the chosen local-delivery zone (e.g. "Same day, 2-4 pm"), snapshotted.
+  @Prop({ type: String, default: null, maxlength: 120 })
+  localDeliveryEta: string | null;
+
   // One selected rate per shipping-profile group (Shopify). `shippingZoneId` above mirrors the first entry for
   // legacy readers. Empty on checkouts that never picked a flat zone.
   @Prop({
@@ -256,7 +286,7 @@ export class Checkout {
   @Prop({ type: String, default: null })
   liveShippingService: string | null;
 
-  @Prop({ type: String, enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer', 'store_credit', 'manual'], default: null })
+  @Prop({ type: String, enum: ['cash_on_delivery', 'stripe', 'manual_bank_transfer', 'store_credit', 'manual', 'b2b_terms'], default: null })
   paymentType: string | null;
 
   @Prop({ type: String, default: null })
@@ -396,6 +426,14 @@ export class Checkout {
     default: 'pending',
   })
   status: string;
+
+  /** Set atomically while an order is being created from this checkout (PaymentService.createOrder) so two parallel placements cannot both create one. Stale after 2 minutes. */
+  @Prop({ type: Date, default: null })
+  orderPlacementClaimedAt?: Date | null;
+
+  /** Wholesale buyer snapshot taken at checkout creation (company, PO number, allowed payment methods, terms, tax exemption). Null = retail. */
+  @Prop({ type: Object, default: null })
+  b2b?: Record<string, any> | null;
 
   @Prop({ type: Date, default: null })
   expiredAt: Date | null;

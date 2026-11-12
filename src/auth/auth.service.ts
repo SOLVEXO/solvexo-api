@@ -1,5 +1,6 @@
 import { AdminSecurityService } from './admin-security.service';
 import { AdminTwoFactorService } from './admin-two-factor.service';
+import { MemberTwoFactorService } from './member-two-factor.service';
 import { buildStaffProfile } from '../common/staff-profile.util';
 import {
   Injectable,
@@ -33,7 +34,7 @@ import { hashJti } from './portal-cookie.util';
 
 @Injectable()
 export class AuthService {
-  private googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID); // 👈 Google Client
+  private googleClient = new OAuth2Client(); // verifies Google ID tokens; audiences come from GOOGLE_CLIENT_ID
   constructor(
     private databaseService: DatabaseService,
     private readonly otpService: OtpService,
@@ -48,6 +49,7 @@ export class AuthService {
     @Optional() private readonly adminTwoFactor?: AdminTwoFactorService,
     // Sign in with Apple token lifecycle (5G.1) — optional so specs that build AuthService positionally keep working.
     @Optional() private readonly appleTokens?: AppleTokenService,
+    @Optional() private readonly memberTwoFactor?: MemberTwoFactorService,
   ) {}
 
   /** Tells the platform admins a new seller joined (in-app + email per their preferences). Never throws. */
@@ -348,6 +350,15 @@ export class AuthService {
         };
       }
 
+      // Sellers with two-factor on also get a challenge first (completeSellerTwoFactorLogin finishes it).
+      if (role === 'seller' && this.memberTwoFactor && (await this.memberTwoFactor.isEnabled('seller', String(existingUser._id)))) {
+        return {
+          message: 'Enter the code from your authenticator app',
+          success: true,
+          data: { twoFactorRequired: true, challengeToken: this.memberTwoFactor.signChallenge('seller', String(existingUser._id), { tokenVersion: existingUser.tokenVersion ?? 0 }) },
+        };
+      }
+
       if (role === 'seller') {
         this.logSellerSecurityEvent(
           existingUser._id.toString(),
@@ -382,6 +393,26 @@ export class AuthService {
       throw new UnauthorizedException("That code didn't match. Use the newest code from your app, or a recovery code.");
     }
     const session: any = await this.issueLoginSession(admin, 'admin', ip, userAgent);
+    session.data.twoFactor = { usedRecoveryCode: result.usedRecoveryCode, recoveryCodesLeft: result.recoveryCodesLeft };
+    return session;
+  }
+
+  /** Second login step for a seller with two-factor on. Wrong codes count toward a 15-minute lock; a used code cannot be replayed. */
+  async completeSellerTwoFactorLogin(challengeToken: string, code: string, ip?: string, userAgent?: string) {
+    if (!this.memberTwoFactor) throw new UnauthorizedException('Two-factor sign-in is unavailable');
+    const c = this.memberTwoFactor.verifyChallenge(challengeToken);
+    if (c.kind !== 'seller') throw new UnauthorizedException('Your sign-in step expired. Enter your email and password again.');
+    const seller: any = await this.databaseService.repositories.sellerModel.findById(c.memberId);
+    if (!seller || seller.isDelete || seller.status === 'deleted' || seller.status === 'suspended' || (seller.tokenVersion ?? 0) !== c.tokenVersion) {
+      throw new UnauthorizedException('Your sign-in step expired. Enter your email and password again.');
+    }
+    const result = await this.memberTwoFactor.verifyCode('seller', c.memberId, code);
+    if (!result.ok) {
+      this.logSellerSecurityEvent(c.memberId, 'security', 'two_factor_failed', `Wrong two-factor code from ${ip ?? 'unknown IP'}`, ip, userAgent, true);
+      throw new UnauthorizedException("That code didn't match. Use the newest code from your app, or a recovery code.");
+    }
+    this.logSellerSecurityEvent(c.memberId, 'security', 'login_success', `Login (two-factor) from ${ip ?? 'unknown IP'}`, ip, userAgent, false);
+    const session: any = await this.issueLoginSession(seller, 'seller', ip, userAgent);
     session.data.twoFactor = { usedRecoveryCode: result.usedRecoveryCode, recoveryCodesLeft: result.recoveryCodesLeft };
     return session;
   }
@@ -463,9 +494,12 @@ export class AuthService {
     }
 
     if (authProvider === 'google') {
+      // GOOGLE_CLIENT_ID may be a comma-separated list, so a new web client can be rolled out while apps that
+      // still sign in with the old one keep working.
+      const audiences = (process.env.GOOGLE_CLIENT_ID ?? '').split(',').map((a) => a.trim()).filter(Boolean);
       const ticket = await this.googleClient.verifyIdToken({
         idToken: token,
-        audience: process.env.GOOGLE_CLIENT_ID,
+        audience: audiences.length === 1 ? audiences[0] : audiences,
       });
       const payload = ticket.getPayload();
       if (!payload || payload.sub !== socialId) {
@@ -617,6 +651,12 @@ export class AuthService {
       const meta: { aud?: string } = {};
       const verifiedEmail = await this.verifySocialToken(dto.authProvider, dto.socialId, dto.token, meta);
       const result: any = await this.finishSocialLogin(dto, verifiedEmail);
+      // A seller with two-factor on must still pass the code step: hand back the challenge, not the session that was just created.
+      const sellerId = result?.data?.user?.id;
+      if (dto.role === 'seller' && sellerId && this.memberTwoFactor && (await this.memberTwoFactor.isEnabled('seller', String(sellerId)))) {
+        const seller: any = await this.databaseService.repositories.sellerModel.findById(sellerId).select('tokenVersion').lean();
+        return { message: 'Enter the code from your authenticator app', success: true, data: { twoFactorRequired: true, challengeToken: this.memberTwoFactor.signChallenge('seller', String(sellerId), { tokenVersion: seller?.tokenVersion ?? 0 }) } };
+      }
       // Apple: keep the Apple refresh token (encrypted) so the account's deletion can revoke it. Never fails the login.
       if (dto.authProvider === 'apple' && dto.role === 'seller' && dto.authorizationCode && this.appleTokens) {
         await this.appleTokens.storeFromAuthorizationCode(String(result?.data?.user?.id), dto.authorizationCode, meta.aud);
@@ -682,6 +722,8 @@ export class AuthService {
       const matchers: any[] = [{ providerId: socialId, authProvider, ...storeScope }];
       if (verifiedEmail) matchers.unshift({ email: verifiedEmail, ...storeScope });
       let account = await accountModel.findOne({ $or: matchers });
+      // Lets the web app count a Google sign-up as a new account in Solvexo's own website analytics.
+      const isNewUser = !account;
 
       let emailIsPlaceholder = false;
       if (!account) {
@@ -773,6 +815,7 @@ export class AuthService {
         message: 'Social login successful',
         success: true,
         data: {
+          isNewUser,
           user: {
             id: account._id,
             name: account.name,

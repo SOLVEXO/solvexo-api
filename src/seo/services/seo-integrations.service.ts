@@ -10,6 +10,12 @@ import { BingWebmasterProvider } from '../providers/bing-webmaster.provider';
 import { ISeoSearchProvider, SeoCoverageResult, SeoPerformanceRow } from '../providers/seo-search-provider.interface';
 import { SeoIntegrationProvider } from '../schemas/seo-integration.schema';
 
+/** "123456789" or "properties/123456789" → "properties/123456789" (null when it isn't a GA4 property id). */
+export function normalizeGa4Property(raw: unknown): string | null {
+  const m = /^(?:properties\/)?(\d{4,20})$/.exec(String(raw ?? '').trim());
+  return m ? `properties/${m[1]}` : null;
+}
+
 export interface SeoIntegrationScope {
   scope: 'platform' | 'store';
   storeId: string | null;
@@ -164,6 +170,32 @@ export class SeoIntegrationsService {
       await integration.save();
       throw err;
     }
+  }
+
+  /** Solvexo's own GA4 connection (Super Admin → SEO → Integrations), for the visitor dashboard. */
+  async platformGa4Status(): Promise<{ connected: boolean; status: string | null; propertyId: string | null; lastError: string | null }> {
+    const row: any = await this.model.findOne({ scope: 'platform', storeId: null, provider: 'ga4' }).select('status config lastError').lean();
+    const propertyId = normalizeGa4Property(row?.config?.siteIdentifier);
+    const connected = !!row && row.status !== 'disconnected' && !!propertyId;
+    return { connected, status: row?.status ?? null, propertyId, lastError: row?.lastError ?? null };
+  }
+
+  /** A fresh access token for the platform GA4 property, or null when it isn't connected. */
+  async platformGa4Access(): Promise<{ accessToken: string; propertyId: string } | null> {
+    const integration = await this.model.findOne({ scope: 'platform', storeId: null, provider: 'ga4' });
+    const propertyId = normalizeGa4Property(integration?.config?.siteIdentifier);
+    if (!integration || integration.status === 'disconnected' || !propertyId) return null;
+    try {
+      return { accessToken: await this.getValidAccessToken(integration, this.getProvider('ga4')), propertyId };
+    } catch (err: any) {
+      await this.markPlatformGa4NeedsReauth(err?.message ?? 'Token refresh failed');
+      throw err;
+    }
+  }
+
+  /** Google refused the platform GA4 token (revoked or expired): the admin must reconnect. */
+  async markPlatformGa4NeedsReauth(message: string): Promise<void> {
+    await this.model.updateOne({ scope: 'platform', storeId: null, provider: 'ga4' }, { $set: { status: 'needs_reauth', lastError: message } });
   }
 
   private async getValidAccessToken(integration: any, impl: ISeoSearchProvider): Promise<string> {

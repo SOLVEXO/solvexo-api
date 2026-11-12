@@ -1,4 +1,6 @@
 /* eslint-disable prettier/prettier */
+import { MerchandisingService } from '@/merchandising/merchandising.service';
+import { SellerTrustService } from '@/seller-trust/seller-trust.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { MEMBERSHIP_BILLING_JOB, QUEUE_NAMES } from '../queues/queue.constants';
@@ -42,6 +44,7 @@ import { AdminAnnouncementsService } from '@/admin-announcements/admin-announcem
 import { AuthVisualService } from '@/common/auth-visual.service';
 import { ScheduledReportsService } from '@/analytics/scheduled-reports.service';
 import { GiftCardsService } from '@/gift-cards/gift-cards.service';
+import { CourierTrackingSyncService } from '@/orders/courier-tracking-sync.service';
 
 @Injectable()
 export class SchedulerService {
@@ -84,7 +87,30 @@ export class SchedulerService {
     private readonly stuckGatewayPaymentsService: StuckGatewayPaymentsService,
     private readonly scheduledReportsService: ScheduledReportsService,
     private readonly giftCardsService: GiftCardsService,
+    private readonly courierTrackingSyncService: CourierTrackingSyncService,
+    private readonly merchandisingService: MerchandisingService,
+    private readonly sellerTrustService: SellerTrustService,
   ) {}
+
+  // Seller trust — daily: recompute every store's verification deadline,
+  // marketplace visibility and risk level (refund rate / reports / order-value
+  // spikes need fresh order data). 03:17 UTC, before the 10:00 payout batch.
+  @Cron('17 3 * * *')
+  async recomputeSellerTrust() {
+    await this.runLocked('seller-trust-recompute', 60 * 60_000, async () => {
+      const r = await this.sellerTrustService.recomputeAll();
+      this.logger.log(`Seller trust: ${r.stores} store(s) — ${r.high} high / ${r.medium} medium risk, ${r.hidden} limited`);
+    });
+  }
+
+  // Seller trust — hourly, cheap: hides a store from marketplace discovery
+  // within the hour of its verification deadline passing (set-based update).
+  @Cron('41 * * * *')
+  async syncSellerTrustVisibility() {
+    await this.runLocked('seller-trust-visibility', 10 * 60_000, async () => {
+      await this.sellerTrustService.syncMarketplaceHidden();
+    });
+  }
 
   /**
    * Every cron job in this service is wrapped in a Redis distributed lock.
@@ -196,6 +222,25 @@ export class SchedulerService {
       if (result.recovered > 0 || result.alerted > 0) {
         this.logger.log(`Stuck gateway payments: ${result.recovered} recovered, ${result.alerted} seller alert(s) of ${result.checked} checked`);
       }
+    });
+  }
+
+  /** Every 30 minutes — a pre-order whose expected date passed AND which is back in stock turns itself off (idempotent). */
+  @Cron('*/30 * * * *')
+  async expirePreorders() {
+    await this.runLocked('preorder-expiry', 25 * 60_000, async () => {
+      const r = await this.merchandisingService.expirePreorders();
+      if (r.expired > 0) this.logger.log(`Pre-order expiry: ${r.expired} of ${r.checked} switched off`);
+    });
+  }
+
+  /** Every 10 minutes — pulls courier tracking for live bookings (per-booking 15 min spacing + failure back-off inside),
+   *  applies delivered / RTO through the existing order code. See CourierTrackingSyncService. No-op with no live bookings. */
+  @Cron('*/10 * * * *')
+  async syncCourierTracking() {
+    await this.runLocked('courier-tracking-sync', 9 * 60_000, async () => {
+      const r = await this.courierTrackingSyncService.syncDueBookings();
+      if (r.checked > 0) this.logger.log(`Courier tracking sync: ${r.checked} checked, ${r.updated} updated, ${r.failed} failed`);
     });
   }
 

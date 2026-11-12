@@ -44,7 +44,8 @@ describe('section-settings.validator', () => {
   describe('Shopify-parity library sections', () => {
     it('multicolumn / logo_list / marquee / image_banner accept valid settings and reject bad ones', () => {
       expect(() => validateSectionSettings('multicolumn', { columns: 3, textAlign: 'center', imageRatio: 'square' })).not.toThrow();
-      expect(() => validateSectionSettings('multicolumn', { columns: 5 })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('multicolumn', { columns: 5 })).not.toThrow();
+      expect(() => validateSectionSettings('multicolumn', { columns: 9 })).toThrow(BadRequestException);
       expect(() => validateSectionSettings('logo_list', { logoHeight: 48, grayscale: true })).not.toThrow();
       expect(() => validateSectionSettings('logo_list', { logoHeight: 10 })).toThrow(BadRequestException);
       expect(() => validateSectionSettings('marquee', { speed: 'fast', direction: 'right' })).not.toThrow();
@@ -88,14 +89,17 @@ describe('section-settings.validator', () => {
     expect(() => validateSectionSettings('related_products', { source: 'manual', productIds: Array.from({ length: 25 }, (_, i) => `p${i}`) })).toThrow(BadRequestException);
     expect(() => validateSectionSettings('related_products', { source: 'manual', productIds: [1, 2] })).toThrow(BadRequestException);
     expect(() => validateSectionSettings('related_products', { limit: 1 })).toThrow(BadRequestException);
-    expect(() => validateSectionSettings('related_products', { columns: 5 })).toThrow(BadRequestException);
+    expect(() => validateSectionSettings('related_products', { columns: 5 })).not.toThrow();
+    expect(() => validateSectionSettings('related_products', { columns: 0 })).toThrow(BadRequestException);
   });
 
   it('validates configurable grid columns and filter visibility', () => {
     expect(() => validateSectionSettings('featured_products', { source: 'bestsellers', columns: 4 })).not.toThrow();
     expect(() => validateSectionSettings('featured_category_grid', { categoryIds: ['c1'], columns: 2 })).not.toThrow();
     expect(() => validateSectionSettings('product_catalog', { columns: 3, showFilters: false })).not.toThrow();
-    expect(() => validateSectionSettings('featured_products', { source: 'bestsellers', columns: 5 })).toThrow();
+    // Columns is a free number box: any whole number from 1 to 8
+    for (const ok of [1, 5, 6, 8]) expect(() => validateSectionSettings('featured_products', { source: 'bestsellers', columns: ok })).not.toThrow();
+    for (const bad of [0, 9, 2.5, '4']) expect(() => validateSectionSettings('featured_products', { source: 'bestsellers', columns: bad })).toThrow();
     expect(() => validateSectionSettings('product_catalog', { showFilters: 'no' })).toThrow();
   });
   describe('validateSectionSettings — behavior preserved through the typed-cast refactor', () => {
@@ -222,6 +226,36 @@ describe('section-settings.validator', () => {
       expect(() => validateSectionSettings('newsletter', { eyebrow: 'x'.repeat(61) })).toThrow(BadRequestException);
       expect(() => validateSectionSettings('newsletter', { buttonLabel: 5 })).toThrow(BadRequestException);
       expect(() => validateSectionSettings('newsletter', { showEyebrow: 'no' })).toThrow(BadRequestException);
+    });
+
+    it('rich text bodies (multirow row, image with text, column, paragraph): long editor HTML ok, unsafe markup refused', () => {
+      const html = '<h2>Our story</h2>' + '<p>Paragraph text.</p>'.repeat(200);
+      expect(html.length).toBeGreaterThan(1000);
+      for (const type of ['multirow_row', 'multicolumn_column'] as const) {
+        expect(() => validateBlockSettings(type, { body: html })).not.toThrow();
+        expect(() => validateBlockSettings(type, { body: 'x'.repeat(20001) })).toThrow(BadRequestException);
+        expect(() => validateBlockSettings(type, { body: '<p onclick="x()">hi</p>' })).toThrow(BadRequestException);
+        expect(() => validateBlockSettings(type, { body: '<script>alert(1)</script>' })).toThrow(BadRequestException);
+        expect(() => validateBlockSettings(type, { body: '<a href="javascript:alert(1)">x</a>' })).toThrow(BadRequestException);
+      }
+      expect(() => validateBlockSettings('image_text_pair', { imageUrl: 'https://a.com/i.jpg', body: html })).not.toThrow();
+      expect(() => validateBlockSettings('paragraph', { text: html })).not.toThrow();
+      expect(() => validateBlockSettings('paragraph', { text: '<iframe src="https://x"></iframe>' })).toThrow(BadRequestException);
+      // plain text that merely mentions the word is fine
+      expect(() => validateBlockSettings('paragraph', { text: 'Learn javascript: it is fun' })).not.toThrow();
+    });
+
+    it('category_product_grid (the Category page grid): same settings as the collection grid, columns 1 to 8', () => {
+      expect(() => validateSectionSettings('category_product_grid', { defaultSort: 'price_asc', columns: 6, showFilters: false })).not.toThrow();
+      expect(() => validateSectionSettings('category_product_grid', { columns: 9 })).toThrow(BadRequestException);
+      expect(() => validateSectionSettings('category_product_grid', { defaultSort: 'random' })).toThrow(BadRequestException);
+    });
+
+    it('hero: custom height, image fit and max width', () => {
+      expect(() => validateSectionSettings('hero', { heightPreset: 'custom', customHeight: 600, mobileHeightPreset: 'custom', mobileCustomHeight: 380, imageFit: 'whole', maxWidth: 1200 })).not.toThrow();
+      for (const bad of [{ customHeight: 100 }, { customHeight: 1500 }, { customHeight: 600.5 }, { mobileCustomHeight: '400' }, { maxWidth: 100 }, { maxWidth: 3000 }, { imageFit: 'stretch' }, { heightPreset: 'huge' }]) {
+        expect(() => validateSectionSettings('hero', bad as never)).toThrow(BadRequestException);
+      }
     });
 
     it('video: accepts any https:// link, rejects non-https schemes', () => {

@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, IsEnum, IsNumber, IsOptional, IsDateString, IsBoolean, IsArray, Min } from 'class-validator';
+import { IsMongoId } from 'class-validator';
 
 export class UpdateAutomaticDiscountDto {
   @ApiProperty({ required: false })
@@ -74,4 +75,9 @@ export class UpdateAutomaticDiscountDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @ApiProperty({ required: false, description: 'Saved customer segment id — only its members get this discount (null = everyone)' })
+  @IsOptional()
+  @IsMongoId()
+  customerSegmentId?: string | null;
 }

@@ -13,6 +13,7 @@ import { StripeOwnPaymentProvider } from './providers/stripe-own.provider';
 import { StripeStandardPaymentProvider } from './providers/stripe-standard.provider';
 import { PayPalPaymentProvider } from './providers/paypal.provider';
 import { RazorpayPaymentProvider } from './providers/razorpay.provider';
+import { QisstpayPaymentProvider } from './providers/qisstpay.provider';
 import { PaystackPaymentProvider } from './providers/paystack.provider';
 import { FlutterwavePaymentProvider } from './providers/flutterwave.provider';
 import { MolliePaymentProvider } from './providers/mollie.provider';
@@ -27,6 +28,18 @@ import { PaymentWebhooksController } from './webhooks/payment-webhooks.controlle
 import { WhatsAppWebhookController } from './webhooks/whatsapp-webhook.controller';
 import { SellerIntegrationsController } from './seller-integrations.controller';
 import { BuyerCheckoutPaymentsController } from './buyer-checkout-payments.controller';
+import { COURIER_PROVIDERS, CourierProviderRegistry } from './couriers/courier-provider.registry';
+import { PostexCourierProvider } from './couriers/providers/postex.provider';
+import { LeopardsCourierProvider } from './couriers/providers/leopards.provider';
+import { TcsCourierProvider } from './couriers/providers/tcs.provider';
+import { TraxCourierProvider } from './couriers/providers/trax.provider';
+import { MnpCourierProvider } from './couriers/providers/mnp.provider';
+import { BlueexCourierProvider } from './couriers/providers/blueex.provider';
+import { CallcourierCourierProvider } from './couriers/providers/callcourier.provider';
+import { SwyftCourierProvider } from './couriers/providers/swyft.provider';
+import { DaewooFastexCourierProvider } from './couriers/providers/daewoo_fastex.provider';
+import { CourierService } from './couriers/courier.service';
+import { CourierWebhooksController } from './couriers/courier-webhooks.controller';
 import { TaxService } from '../tax/tax.service';
 import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
 
@@ -39,6 +52,7 @@ import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
     PaymentWebhooksController,
     WhatsAppWebhookController,
     SellerIntegrationsController,
+    CourierWebhooksController,
     BuyerCheckoutPaymentsController,
   ],
   providers: [
@@ -50,12 +64,24 @@ import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
     StripeStandardPaymentProvider,
     PayPalPaymentProvider,
     RazorpayPaymentProvider,
+    QisstpayPaymentProvider,
     PaystackPaymentProvider,
     FlutterwavePaymentProvider,
     MolliePaymentProvider,
     StripePaymentProvider,
     WhatsAppCloudProvider,
     PaymentProviderRegistry,
+    // Couriers: adding one = a new adapter class + one entry in this list (see docs/courier-module.md).
+    {
+      provide: COURIER_PROVIDERS,
+      useFactory: () => [
+        new PostexCourierProvider(), new LeopardsCourierProvider(), new TcsCourierProvider(), new TraxCourierProvider(),
+        new MnpCourierProvider(), new BlueexCourierProvider(), new CallcourierCourierProvider(), new SwyftCourierProvider(),
+        new DaewooFastexCourierProvider(),
+      ],
+    },
+    CourierProviderRegistry,
+    CourierService,
     IntegrationWebhookEventService,
     WhatsAppSenderService,
     StoreIntegrationsService,
@@ -64,6 +90,6 @@ import { ShippingRatesService } from '../shipping-rates/shipping-rates.service';
     TaxService,
     ShippingRatesService,
   ],
-  exports: [PaymentProviderRegistry, StuckGatewayPaymentsService, IntegrationWebhookEventService, WhatsAppCloudProvider, WhatsAppSenderService, TaxService, ShippingRatesService],
+  exports: [PaymentProviderRegistry, CourierProviderRegistry, CourierService, StuckGatewayPaymentsService, IntegrationWebhookEventService, WhatsAppCloudProvider, WhatsAppSenderService, TaxService, ShippingRatesService],
 })
 export class IntegrationsModule {}

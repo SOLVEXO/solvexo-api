@@ -54,7 +54,7 @@ export class EmailCampaignsController {
   @RequirePermission('marketing.manage')
   @Post(':storeId/audience-preview')
   previewAudienceWithSegment(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AudiencePreviewDto) {
-    return this.emailCampaignsService.previewAudience(actingSellerId(req.user), storeId, dto.audience, dto.segment ?? null);
+    return this.emailCampaignsService.previewAudience(actingSellerId(req.user), storeId, dto.audience, dto.segment ?? null, dto.segmentId ?? null);
   }
 
   @ApiBearerAuth()

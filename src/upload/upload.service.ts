@@ -31,6 +31,39 @@ export class UploadService {
     await cloudinary.uploader.destroy(publicId, { resource_type: resourceType as any });
   }
 
+  // ── DIRECT (browser → Cloudinary) image upload ──
+  // The API only signs the request and later verifies the result; the image bytes
+  // never pass through this server (which made uploads slow / drop mid-way).
+  static readonly DIRECT_IMAGE_FORMATS = 'jpg,jpeg,png,webp,gif,avif';
+
+  signDirectImageUpload(folder: string) {
+    const timestamp = Math.round(Date.now() / 1000);
+    const params = { allowed_formats: UploadService.DIRECT_IMAGE_FORMATS, folder, timestamp };
+    const signature = cloudinary.utils.api_sign_request(params, this.configService.get<string>('CLOUDINARY_API_SECRET') as string);
+    return {
+      cloudName: this.configService.get<string>('CLOUDINARY_CLOUD_NAME'),
+      apiKey: this.configService.get<string>('CLOUDINARY_API_KEY'),
+      timestamp, folder, allowedFormats: params.allowed_formats, signature,
+    };
+  }
+
+  /** Reads the real asset from Cloudinary (never trusts client-reported values). */
+  async getDirectUploadedImage(publicId: string, folderPrefix: string) {
+    if (!publicId || !publicId.startsWith(folderPrefix) || publicId.includes('..')) {
+      throw new BadRequestException('Invalid upload reference');
+    }
+    try {
+      const r: any = await cloudinary.api.resource(publicId, { resource_type: 'image' });
+      return {
+        url: r.secure_url as string, publicId: r.public_id as string, resourceType: 'image',
+        width: r.width as number | undefined, height: r.height as number | undefined,
+        bytes: r.bytes as number | undefined, format: r.format as string | undefined,
+      };
+    } catch {
+      throw new BadRequestException('Upload not found. Please try again.');
+    }
+  }
+
   // ── PUBLIC upload ──
   // `options` lets a caller that needs Cloudinary-side resize/optimization (e.g.
   // promotional creatives, which used to go through a separate CloudinaryStorage

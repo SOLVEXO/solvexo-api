@@ -215,20 +215,24 @@ export class StoreBlogService {
    *  pre-multi-blog `/blog` behavior); pass it to list a specific named
    *  blog's posts instead (storefront route `/blogs/:blogSlug`). */
   async listPublic(storeId: string, blogSlug?: string, page = 1, limit = 10) {
-    const blog = blogSlug
-      ? await this.blogModel.findOne({ storeId, slug: blogSlug, isDelete: false }).lean()
-      : await this.ensureDefaultBlog(storeId);
-    if (!blog) throw new NotFoundException('Blog not found');
+    // No blog named = every blog of the store (a seller never has to know which blog a post sits in).
+    const allBlogs = await this.blogModel.find({ storeId, isDelete: false }).sort({ createdAt: 1 }).select('title slug').lean();
+    if (!allBlogs.length) await this.ensureDefaultBlog(storeId);
+    const blogs = allBlogs.length ? allBlogs : await this.blogModel.find({ storeId, isDelete: false }).select('title slug').lean();
+    const chosen = blogSlug ? blogs.find(b => b.slug === blogSlug) : null;
+    if (blogSlug && !chosen) throw new NotFoundException('Blog not found');
+    const blog = chosen ?? { title: blogs.length === 1 ? blogs[0].title : 'Blog', slug: blogs.length === 1 ? blogs[0].slug : 'blog' };
 
     const skip = (page - 1) * limit;
-    const filter = { storeId, blogId: blog._id.toString(), status: 'published', isDelete: false };
+    const filter: Record<string, unknown> = { storeId, status: 'published', isDelete: false };
+    if (chosen) filter.blogId = chosen._id.toString();
     const [posts, total] = await Promise.all([
       this.blogPostModel.find(filter)
         .sort({ publishedAt: -1 }).skip(skip).limit(limit)
         .select('title slug coverImage excerpt tags publishedAt authorName translations').lean(),
       this.blogPostModel.countDocuments(filter),
     ]);
-    return { success: true, data: { blog: { title: blog.title, slug: blog.slug }, posts, pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } } };
+    return { success: true, data: { blog: { title: blog.title, slug: blog.slug }, blogs: blogs.map(b => ({ title: b.title, slug: b.slug })), posts, pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) } } };
   }
 
   async getPublicBySlug(storeId: string, slug: string, locale?: string) {

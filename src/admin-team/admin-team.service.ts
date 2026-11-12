@@ -1,3 +1,4 @@
+import { superadminAppUrl } from '@/common/app-urls.util';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
@@ -175,7 +176,7 @@ export class AdminTeamService implements OnModuleInit {
     return { success: true, data: this.view(admin.toObject(), role.name), emailSent: sent, ...(isSuper(actor) ? { inviteUrl: this.inviteUrl(token) } : {}) };
   }
 
-  private inviteUrl(token: string) { return `${(process.env.FRONTEND_URL || '').replace(/\/$/, '')}/admin-invite/${token}`; }
+  private inviteUrl(token: string) { return `${superadminAppUrl()}/admin-invite/${token}`; }
 
   private async sendInvite(name: string, email: string, token: string, roleName: string): Promise<boolean> {
     const url = this.inviteUrl(token);
@@ -298,7 +299,7 @@ export class AdminTeamService implements OnModuleInit {
     const token = randomBytes(32).toString('hex');
     admin.resetTokenHash = sha256(token); admin.resetTokenExpiresAt = new Date(Date.now() + RESET_EXPIRY_MINUTES * 60000);
     await admin.save();
-    const url = `${(process.env.FRONTEND_URL || '').replace(/\/$/, '')}/admin-reset-password/${token}`;
+    const url = `${superadminAppUrl()}/admin-reset-password/${token}`;
     const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;"><h2>Reset your admin password</h2><p>Hi ${escapeHtml(admin.name || '')}, use the button below to choose a new password.</p>
       <p><a href="${url}" style="display:inline-block;background:#D97757;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Choose a new password</a></p>
       <p style="color:#888;font-size:12px;">This link expires in ${RESET_EXPIRY_MINUTES} minutes. If you didn't ask for it, ignore this email.</p></div>`;

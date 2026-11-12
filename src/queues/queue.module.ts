@@ -132,6 +132,17 @@ import { QUEUE_NAMES } from './queue.constants';
         },
       },
       {
+        // Marketing sends (WhatsApp / SMS): one job per batch of already-claimed messages. A retry never double-sends: a message is
+        // claimed (queued -> sending) before it goes out and a message stuck in `sending` is failed, never retried blindly.
+        name: QUEUE_NAMES.MESSAGING_SEND,
+        defaultJobOptions: { attempts: 3, backoff: { type: 'exponential', delay: 20_000 }, removeOnComplete: { count: 2000 }, removeOnFail: { count: 2000 } },
+      },
+      {
+        // Fulfilment requests to a 3PL: one job per request, 4 attempts with exponential backoff (a redelivered job is a no-op).
+        name: QUEUE_NAMES.FULFILLMENT_SEND,
+        defaultJobOptions: { attempts: 4, backoff: { type: 'exponential', delay: 60_000 }, removeOnComplete: { count: 2000 }, removeOnFail: { count: 2000 } },
+      },
+      {
         // A theme ZIP import survives a deploy/restart mid-job: the job only carries the small
         // `{jobId}` key (the ZIP bytes live in Mongo, see ThemeImportJob.archive), so Redis/BullMQ
         // can hand it to a fresh worker process after a restart instead of the job simply vanishing

@@ -213,6 +213,8 @@ export class SalesAgentService {
         enabled,
         agentName: s.aiAgentName || 'Sana',
         greeting: this.greeting(s),
+        // Solvexo's own WhatsApp Business number, once connected in Sales → WhatsApp (public: it is the sales line).
+        whatsappNumber: s.waPhoneNumberId && s.waAccessTokenEnc ? s.waDisplayNumber ?? null : null,
       },
     };
   }

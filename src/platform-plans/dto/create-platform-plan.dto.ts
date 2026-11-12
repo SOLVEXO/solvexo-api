@@ -64,6 +64,14 @@ export class CreatePlatformPlanDto {
   @IsOptional() @Type(() => Number) @IsNumber() @Min(1)
   introDurationCycles?: number;
 
+  @ApiProperty({ required: false, nullable: true, description: '"Was" monthly price shown crossed out on the pricing page. Display only; null removes it. Must be higher than monthlyPriceUSD.' })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0)
+  compareAtMonthlyPriceUSD?: number | null;
+
+  @ApiProperty({ required: false, nullable: true, description: '"Was" yearly price shown crossed out on the pricing page. Display only; null removes it. Must be higher than yearlyPriceUSD.' })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0)
+  compareAtYearlyPriceUSD?: number | null;
+
   @ApiProperty({ required: false, default: 3, description: 'Days a locked/trial-ended store on this plan stays browsable before its storefront is hidden from buyers. Checkout is blocked immediately regardless of this — see expireGracePeriods().' })
   @IsOptional() @Type(() => Number) @IsNumber() @Min(0)
   gracePeriodDays?: number;

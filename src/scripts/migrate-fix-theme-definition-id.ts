@@ -41,7 +41,7 @@ import 'dotenv/config';
 import mongoose from 'mongoose';
 
 const DEFAULT_THEME_DEFINITION_ID = 'theme-03-fashion';
-const VALID_THEME_DEFINITION_IDS = new Set(['theme-03-fashion']);
+const VALID_THEME_DEFINITION_IDS = new Set(['theme-03-fashion', 'theme-04-tech', 'theme-05-ledup']);
 
 function isInvalid(value: unknown): boolean {
   // A wrong non-null string (the original catalog-id-collision bug this
