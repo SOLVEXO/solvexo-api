@@ -90,6 +90,11 @@ export class AdminSellerTrustService {
     if (dto.graceDays !== undefined) patch.graceDays = dto.graceDays;
 
     const next = await this.adminConfig.updateSellerTrustSettings(patch, meta);
+    // "now" always re-syncs, even when enforcement was already started: if an earlier attempt saved the start
+    // date but failed while stamping deadlines, pressing Start again finishes the job (syncDeadlines is idempotent).
+    if (Object.keys(patch).length === 0 && dto.enforcementStartedAt === 'now' && current.enforcementStartedAt) {
+      await this.sellerTrust.syncDeadlines();
+    }
     if (Object.keys(patch).length) {
       await this.sellerTrust.syncDeadlines();
       // Risk levels depend on "deadline passed" — refresh them in the background (also done by the daily cron).

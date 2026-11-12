@@ -101,6 +101,12 @@ describe('AdminSellerTrustService', () => {
       expect(adminConfig.updateSellerTrustSettings.mock.calls[0][0]).toEqual({});
     });
 
+    it('"now" again still re-syncs deadlines (finishes an earlier start that failed half-way)', async () => {
+      const { service, sellerTrust } = build({ settings: { enforcementStartedAt: new Date('2026-11-01'), graceDays: 30 } });
+      await service.updateSettings({ enforcementStartedAt: 'now' }, meta);
+      expect(sellerTrust.syncDeadlines).toHaveBeenCalledTimes(1);
+    });
+
     it('null stops enforcement', async () => {
       const { service, adminConfig, sellerTrust } = build({ settings: { enforcementStartedAt: new Date('2026-11-01'), graceDays: 30 } });
       await service.updateSettings({ enforcementStartedAt: null, graceDays: 14 }, meta);
