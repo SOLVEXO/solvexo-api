@@ -200,7 +200,7 @@ export class PosInventoryService {
   /** Expired / expiring lots of the store (counts) — Home and the overview. */
   async expiringSummary(storeId: string) {
     const now = new Date(); const lots = this.r.stockLotModel;
-    const base = { storeId, status: 'active', quantityRemaining: { $gt: 0 }, expiryDate: { $type: 'date' } };
+    const base = { storeId, status: 'active' as const, quantityRemaining: { $gt: 0 }, expiryDate: { $type: 'date' } };
     const [expired, in7, in30] = await Promise.all([
       lots.countDocuments({ ...base, expiryDate: { $lt: now } }),
       lots.countDocuments({ ...base, expiryDate: { $gte: now, $lte: new Date(now.getTime() + 7 * 86400_000) } }),

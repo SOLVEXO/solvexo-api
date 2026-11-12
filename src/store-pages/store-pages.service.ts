@@ -82,7 +82,7 @@ export class StorePagesService {
     if (!this.storeThemeModel) return undefined;
     const query = installedThemeId
       ? { _id: installedThemeId, storeId }
-      : { storeId, status: 'active' };
+      : { storeId, status: 'active' as const };
     const theme = await this.storeThemeModel.findOne(query).select('_id themeDefinitionId').lean();
     if (!theme && installedThemeId) throw new NotFoundException('Installed theme not found');
     return theme?._id ? String(theme._id) : undefined;

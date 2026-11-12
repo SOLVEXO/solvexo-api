@@ -132,7 +132,7 @@ export class SeoMonitoringService implements OnModuleInit, OnModuleDestroy {
           scope, storeId, provider,
           indexedCount: coverage.indexedCount,
           excludedCount: coverage.excludedCount,
-          errors: coverage.errors,
+          errors: coverage.errors as any,
           snapshotDate: to,
         });
         synced++;
@@ -176,7 +176,7 @@ export class SeoMonitoringService implements OnModuleInit, OnModuleDestroy {
         if (integration.provider !== 'ga4') {
           await this.db.repositories.seoIndexSnapshotModel.create({
             scope: integration.scope, storeId: integration.storeId, provider: integration.provider,
-            indexedCount: coverage.indexedCount, excludedCount: coverage.excludedCount, errors: coverage.errors,
+            indexedCount: coverage.indexedCount, excludedCount: coverage.excludedCount, errors: coverage.errors as any,
             snapshotDate: to,
           });
         }

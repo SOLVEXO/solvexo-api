@@ -194,7 +194,7 @@ export class StaffService {
       inviteToken,
       inviteTokenExpiresAt: new Date(Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000),
       inviteSentAt: new Date(),
-      role: dto.role ?? 'staff',
+      role: (dto.role ?? 'staff') as 'manager' | 'staff',
       roleId: dto.roleId ?? null,
       locationId: dto.locationId ?? null,
       status: 'active',
