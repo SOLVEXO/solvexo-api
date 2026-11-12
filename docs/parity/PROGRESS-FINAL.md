@@ -4,7 +4,7 @@ Read FINAL.md first. MASTER2.md is superseded by FINAL.md. Q0-Q9 were already do
 
 | phase | status | commit | not-verified |
 |---|---|---|---|
-| N Navigation / information architecture | IN PROGRESS: N1+N2 done (navConfig LAYOUT map, NAV-MAP.md, tsc clean; Customers hub tabs + Security link in Account page open); N3 done (view tabs + server filter, row menu removed, Edit order in header; bulk mark-paid/tag/archive/export NOT built); N4 done (palette already built from NAV; account pages added); N5 test written (navConfig.test.ts, 5/6 passed once, route regex fixed after; now 6/6 pass; the earlier vitest failure was a drive-letter case problem (run from D:/ not d:/)) + browser check at 375px/desktop NOT done; was N4 Ctrl+K, N5 tests open | web N1 commit | browser 375px + desktop | browser 375px + desktop |
+| N Navigation / information architecture | CODE DONE (only sidebar browser check open): N1+N2 done (navConfig LAYOUT map, NAV-MAP.md, tsc clean; Customers hub tabs + Security link in Account page open); N3 done (view tabs + server filter, row menu removed, Edit order in header; bulk mark-paid/tag/archive/export NOT built); N4 done (palette already built from NAV; account pages added); N5 test written (navConfig.test.ts, 5/6 passed once, route regex fixed after; now 6/6 pass; the earlier vitest failure was a drive-letter case problem (run from D:/ not d:/)) + browser check at 375px/desktop NOT done; was N4 Ctrl+K, N5 tests open | web N1 commit | browser 375px + desktop | browser 375px + desktop |
 | Q0 Housekeeping | done under MASTER2 (scheduler-job tests open) | see PROGRESS2.md | browser, Redis pub/sub, scheduler locks |
 | Q1 B2B | done under MASTER2 | see PROGRESS2.md | browser, real SMTP |
 | Q2 Small gaps | done under MASTER2 | see PROGRESS2.md | wallets on real Stripe |
@@ -14,4 +14,4 @@ Read FINAL.md first. MASTER2.md is superseded by FINAL.md. Q0-Q9 were already do
 | Q6 A/B experiments | done under MASTER2 | see PROGRESS2.md | real traffic, first-paint flicker |
 | Q7 App platform | done under MASTER2 | see PROGRESS2.md | real app, iframe, token expiry |
 | Q8 Social creatives | done under MASTER2 | see PROGRESS2.md | real-browser canvas, CORS export |
-| Q9 Final audit | done under MASTER2; re-run after phase N | see PROGRESS2.md | Atlas explain(), live services |
+| Q9 Final audit | done under MASTER2; route-auth scan re-run after N: 2/2 pass (mini-jest) | see PROGRESS2.md | Atlas explain(), live services |
