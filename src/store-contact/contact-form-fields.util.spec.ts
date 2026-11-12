@@ -27,7 +27,7 @@ describe('contact form field definitions', () => {
     const many = Array.from({ length: 32 }, (_, i) => ({ id: `id${i}`, type: 'text', label: `L${i}` }));
     expect(() => validateContactFieldDefs(many)).toThrow();
     expect(() => validateContactFieldDefs([...base(), { id: 'f-name', type: 'text', label: 'Again' }])).toThrow();
-    expect(() => validateContactFieldDefs([...base(), { id: 'zz1', type: 'file', label: 'Upload' }])).toThrow();
+    expect(() => validateContactFieldDefs([...base(), { id: 'zz1', type: 'video', label: 'Upload' }])).toThrow();
     expect(() => validateContactFieldDefs([...base(), { id: 'zz2', type: 'text', label: '   ' }])).toThrow();
   });
 
@@ -188,5 +188,29 @@ describe('phase 1: new field types, conditions and form settings', () => {
     expect(() => validateSectionSettings('contact_form', { fields: [mail], notifyEmails: 'not-an-email' })).toThrow();
     expect(() => validateSectionSettings('contact_form', { fields: [mail], notifyEmails: 'a@b.co,b@b.co,c@b.co,d@b.co,e@b.co,f@b.co' })).toThrow();
     expect(() => validateSectionSettings('contact_form', { fields: [mail], formName: 'x'.repeat(61) })).toThrow();
+  });
+});
+
+describe('phase 2: file, consent signup and CAPTCHA settings', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { validateSectionSettings } = require('../common/store-content/section-settings.validator');
+  const mail: ContactFormField = { id: 'm1', type: 'email', label: 'Email', required: true };
+  it('accepts a file field and checks its limits', () => {
+    expect(() => validateContactFieldDefs([mail, { id: 'f1', type: 'file', label: 'Receipt', fileKinds: 'documents', maxSizeMb: 5 }])).not.toThrow();
+    expect(() => validateContactFieldDefs([mail, { id: 'f1', type: 'file', label: 'Receipt', maxSizeMb: 50 }])).toThrow();
+    expect(() => validateContactFieldDefs([mail, { id: 'f1', type: 'file', label: 'Receipt', fileKinds: 'videos' as any }])).toThrow();
+  });
+  it('lets only a consent box sign visitors up for marketing', () => {
+    expect(() => validateContactFieldDefs([mail, { id: 'k1', type: 'consent', label: 'Send me offers', subscribes: true }])).not.toThrow();
+    expect(() => validateContactFieldDefs([mail, { id: 'k1', type: 'text', label: 'Offers', subscribes: true }])).toThrow();
+  });
+  it('a file answer must be an upload id', () => {
+    const defs: ContactFormField[] = [mail, { id: 'f1', type: 'file', label: 'Receipt' }];
+    expect(validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'f1', value: 'a'.repeat(24) }]).clean).toHaveLength(2);
+    expect(() => validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'f1', value: '../../etc/passwd' }])).toThrow();
+  });
+  it('checks the CAPTCHA switch', () => {
+    expect(() => validateSectionSettings('contact_form', { fields: [mail], captcha: true })).not.toThrow();
+    expect(() => validateSectionSettings('contact_form', { fields: [mail], captcha: 'yes' })).toThrow();
   });
 });

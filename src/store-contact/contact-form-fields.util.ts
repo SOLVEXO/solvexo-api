@@ -12,7 +12,7 @@ import { BadRequestException } from '@nestjs/common';
  */
 export const CONTACT_FIELD_TYPES = [
   'name', 'text', 'email', 'phone', 'textarea', 'number', 'date', 'time', 'url',
-  'dropdown', 'radio', 'checkbox', 'consent', 'rating', 'country', 'hidden', 'heading', 'paragraph',
+  'dropdown', 'radio', 'checkbox', 'consent', 'rating', 'country', 'hidden', 'heading', 'paragraph', 'file',
 ] as const;
 export type ContactFieldType = (typeof CONTACT_FIELD_TYPES)[number];
 
@@ -41,7 +41,21 @@ export interface ContactFormField {
   errorMessage?: string;
   /** Show this field only when an EARLIER field's answer matches. */
   showIf?: ContactCondition;
+  /** file: which kinds of file are accepted, and the size limit in MB (at most 10). */
+  fileKinds?: 'images' | 'documents' | 'both';
+  maxSizeMb?: number;
+  /** consent: when ticked and the visitor gave an email, add them to the store's email marketing list. */
+  subscribes?: boolean;
 }
+
+/** The file extensions a form's file field accepts (images and common documents only: no svg, html or programs). */
+export const FILE_EXTENSIONS: Record<'images' | 'documents' | 'both', string[]> = {
+  images: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
+  documents: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'csv'],
+  both: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'csv'],
+};
+export const MAX_FILE_MB = 10;
+export const UPLOAD_ID_RE = /^[a-f0-9]{24}$/i;
 
 export const MAX_CONTACT_FIELDS = 31;
 const OPTION_TYPES: ContactFieldType[] = ['dropdown', 'radio', 'checkbox'];
@@ -105,6 +119,10 @@ export function validateContactFieldDefs(input: unknown): void {
     }
     if (f.min !== undefined && f.max !== undefined && (f.min as number) > (f.max as number)) return bad(`"${f.label}": the minimum is above the maximum`);
     if (STATIC_TYPES.includes(type) && f.required) return bad(`"${f.label}" only shows text, so it cannot be required`);
+    if (f.fileKinds !== undefined && !['images', 'documents', 'both'].includes(f.fileKinds as string)) return bad(`${p}.fileKinds must be images, documents or both`);
+    if (f.maxSizeMb !== undefined && !wholeNumber(f.maxSizeMb, 1, MAX_FILE_MB)) return bad(`${p}.maxSizeMb must be a whole number from 1 to ${MAX_FILE_MB}`);
+    if (f.subscribes !== undefined && typeof f.subscribes !== 'boolean') return bad(`${p}.subscribes must be true or false`);
+    if (f.subscribes === true && type !== 'consent') return bad(`"${f.label}": only a consent tick box can sign visitors up for email marketing`);
 
     if (f.options !== undefined) {
       if (!Array.isArray(f.options) || f.options.length > 20) return bad(`${p}.options can have up to 20 choices`);
@@ -169,6 +187,7 @@ export function validateContactFormSettings(settings: Record<string, any>): void
     for (const e of raw) if (!EMAIL_RE.test(e) || e.length > 120) bad(`"${e}" is not a valid email address`);
   }
   if (settings.autoReplyEnabled !== undefined && typeof settings.autoReplyEnabled !== 'boolean') bad('settings.autoReplyEnabled must be true or false');
+  if (settings.captcha !== undefined && typeof settings.captcha !== 'boolean') bad('settings.captcha must be true or false');
 }
 
 export interface CleanAnswer { id: string; label: string; type: ContactFieldType; value: string }
@@ -282,6 +301,7 @@ export function validateContactAnswers(defs: ContactFormField[], answers: unknow
         break;
       }
       case 'hidden': if (value.length > 300) value = value.slice(0, 300); break;
+      case 'file': if (!UPLOAD_ID_RE.test(value)) fail('Attach the file again'); break;
       case 'dropdown':
       case 'radio': if (!def.options?.includes(value)) bad(`"${value}" is not a choice of ${def.label}`); break;
       default: break;

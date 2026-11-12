@@ -1,5 +1,8 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Cron } from '@nestjs/schedule';
+import { Model } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '../notifications/notification.types';
@@ -10,7 +13,17 @@ import { EmailService } from '../otp/services/email.service';
 import { notificationEmailShell } from '../notifications/templates/notification-email.template';
 import { textToParagraphs } from '../notifications/customer-email-template.util';
 import { sellerAppUrl } from '../common/app-urls.util';
-import { ContactFormField, parseNotifyEmails, resolveContactFields, validateContactAnswers } from './contact-form-fields.util';
+import { decryptCredential, encryptCredential } from '../common/credential-encryption.util';
+import { UploadService } from '../upload/upload.service';
+import { assertFileSignature } from '../upload/upload-file-validation';
+import { RedisService } from '../redis/redis.service';
+import { MerchantWebhooksService } from '../merchant-api/merchant-webhooks.service';
+import { NewsletterService } from '../newsletter/newsletter.service';
+import { FormUpload, FormUploadDocument } from './schemas/form-upload.schema';
+import { StoreFormSettings, StoreFormSettingsDocument } from './schemas/store-form-settings.schema';
+import { detectSpam } from './form-spam.util';
+import { testTurnstileSecret, verifyTurnstile } from './turnstile.util';
+import { ContactFormField, FILE_EXTENSIONS, MAX_FILE_MB, parseNotifyEmails, resolveContactFields, validateContactAnswers } from './contact-form-fields.util';
 import { MAX_EXPORT_ROWS, buildAutoReply, buildSellerNotification, contactMessagesToCsv } from './contact-form-mail.util';
 
 const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -25,6 +38,12 @@ export class StoreContactService {
     private readonly databaseService: DatabaseService,
     private readonly notificationsService: NotificationsService,
     private readonly emailService: EmailService,
+    @Optional() @InjectModel(FormUpload.name) private readonly uploads?: Model<FormUploadDocument>,
+    @Optional() @InjectModel(StoreFormSettings.name) private readonly formSettings?: Model<StoreFormSettingsDocument>,
+    @Optional() private readonly uploadService?: UploadService,
+    @Optional() private readonly webhooks?: MerchantWebhooksService,
+    @Optional() private readonly newsletter?: NewsletterService,
+    @Optional() private readonly redis?: RedisService,
   ) {}
 
   private static readonly replyTimes = new Map<string, number[]>();
@@ -34,28 +53,35 @@ export class StoreContactService {
 
   // ── Public ───────────────────────────────────────────────────────────────
 
-  async submit(storeId: string, dto: CreateContactMessageDto) {
-    // Honeypot: a filled hidden field means a bot — pretend it worked, store nothing.
-    if (dto.website && dto.website.trim()) return { success: true, message: 'Thanks — your message was sent.' };
-
+  async submit(storeId: string, dto: CreateContactMessageDto, ip?: string) {
+    const OK = { success: true, message: 'Thanks — your message was sent.' };
     const store: any = await this.storeModel.findOne({ _id: storeId, isDelete: false }).select('name sellerId status').lean();
     if (!store) throw new NotFoundException('Store not found');
 
     // A flood into one store's inbox (bots that fill the honeypot-free fields) stops here.
-    const recent = await this.model.countDocuments({ storeId, createdAt: { $gte: new Date(Date.now() - 3_600_000) } });
-    if (recent >= MAX_VISITOR_MESSAGES_PER_HOUR) return { success: true, message: 'Thanks — your message was sent.' };
+    const recent = await this.model.countDocuments({ storeId, status: { $ne: 'spam' }, createdAt: { $gte: new Date(Date.now() - 3_600_000) } });
+    if (recent >= MAX_VISITOR_MESSAGES_PER_HOUR) return OK;
+
+    // Honeypot: a filled hidden field means a bot. It is kept in the Spam tab (a few per day) instead of being thrown away silently.
+    if (dto.website && dto.website.trim()) {
+      await this.keepSpam(storeId, dto, 'honeypot');
+      return OK;
+    }
 
     let name = '', email = '', phone = '', message = '';
-    let fields: { id: string; label: string; type: string; value: string }[] = [];
+    let fields: { id: string; label: string; type: string; value: string; fileId?: string }[] = [];
     let formSettings: Record<string, any> = {};
+    let defs: ContactFormField[] = [];
     if (dto.sectionId) {
       // The seller's own field list decides what is accepted, never what the visitor's browser claims.
       const form = await this.findForm(storeId, dto.sectionId);
       if (!form) throw new BadRequestException('This form is no longer available. Please reload the page and try again.');
       formSettings = form.settings;
+      defs = form.fields;
       const r = validateContactAnswers(form.fields, dto.answers);
       ({ name, email, phone, message } = r);
       fields = r.clean;
+      await this.checkCaptcha(storeId, formSettings, dto.captchaToken, ip);
     } else {
       // Older storefront builds send the fixed Name / Email / Phone / Message form.
       name = String(dto.name ?? '').trim(); email = String(dto.email ?? '').trim(); phone = String(dto.phone ?? '').trim(); message = String(dto.message ?? '').trim();
@@ -64,8 +90,21 @@ export class StoreContactService {
       if (!message) throw new BadRequestException('Please write a message');
     }
 
+    const claimed = await this.claimUploads(storeId, fields);
+    const spam = detectSpam(fields.filter(f => f.type !== 'file').map(f => f.value).concat(message), undefined);
     const formName = String(formSettings.formName ?? '').trim().slice(0, 60);
-    const doc = await this.model.create({ storeId, name, email, phone: phone || null, message, fields, formName, sectionId: dto.sectionId ?? '' });
+    let doc: any;
+    try {
+      doc = await this.model.create({
+        storeId, name, email, phone: phone || null, message, fields, formName, sectionId: dto.sectionId ?? '',
+        ...(spam ? { status: 'spam', spamReason: spam } : {}),
+      });
+    } catch (e) {
+      await this.releaseUploads(claimed);
+      throw e;
+    }
+    await this.finishUploads(claimed, String(doc._id), spam ? new Date(Date.now() + 30 * 86_400_000) : null);
+    if (spam) return OK; // no bell, no emails, no automatic reply, no webhook for spam
 
     // Tell the owner (in-app bell + email, per their notification preferences). Never fails the visitor's request.
     const who = name || email || phone || 'a visitor';
@@ -83,7 +122,155 @@ export class StoreContactService {
     // Emails after the visitor's answer is safely stored: a mail problem never fails the visitor's request.
     this.sendFormEmails(storeId, store, doc, formSettings, { who, formName, fields, name, email, message, phone }).catch(() => undefined);
 
-    return { success: true, message: 'Thanks — your message was sent.' };
+    // The seller's own systems (Zapier, Make, a CRM) hear about it through the store's webhooks (Webhooks & API).
+    this.webhooks?.emit(storeId, 'form.submitted', {
+      message_id: String(doc._id), form_name: formName, name, email, phone,
+      message, fields: fields.map(f => ({ label: f.label, type: f.type, value: f.value })), submitted_at: new Date().toISOString(),
+    }, `form.submitted:${doc._id}`).catch(() => undefined);
+
+    // A ticked consent box that is wired to email marketing signs the visitor up (the newsletter keeps the consent record and the double opt-in rules).
+    if (email && defs.some(d => d.subscribes && d.type === 'consent' && fields.some(f => f.id === d.id))) {
+      this.newsletter?.subscribe(email, { storeId, source: 'contact_form' }).catch(() => undefined);
+    }
+    return OK;
+  }
+
+  /** Spam kept for the seller to check (capped per store per day, so a bot cannot fill the database either). */
+  private async keepSpam(storeId: string, dto: CreateContactMessageDto, reason: string) {
+    try {
+      const today = await this.model.countDocuments({ storeId, status: 'spam', createdAt: { $gte: new Date(Date.now() - 86_400_000) } });
+      if (today >= 100) return;
+      const answers = Array.isArray(dto.answers) ? dto.answers.slice(0, 10) : [];
+      await this.model.create({
+        storeId, status: 'spam', spamReason: reason, sectionId: dto.sectionId ?? '',
+        name: String(dto.name ?? '').slice(0, 80), email: String(dto.email ?? '').slice(0, 120), message: String(dto.message ?? '').slice(0, 600),
+        fields: answers.map((a: any) => ({ id: String(a?.fieldId ?? '').slice(0, 40), label: String(a?.fieldId ?? '').slice(0, 60), type: 'text', value: String(Array.isArray(a?.value) ? a.value.join(', ') : a?.value ?? '').slice(0, 300) })),
+      });
+    } catch { /* spam is best effort */ }
+  }
+
+  /** The form's CAPTCHA, when the seller switched it on and connected their Cloudflare Turnstile keys. */
+  private async checkCaptcha(storeId: string, settings: Record<string, any>, token: string | undefined, ip?: string) {
+    if (settings.captcha !== true || !this.formSettings) return;
+    const row: any = await this.formSettings.findOne({ storeId }).select('turnstileSiteKey +turnstileSecretEnc').lean();
+    if (!row?.turnstileSiteKey || !row?.turnstileSecretEnc) return; // switched on but no keys yet: the form keeps working
+    let secret = '';
+    try { secret = decryptCredential(row.turnstileSecretEnc, 'INTEGRATIONS'); } catch { return; }
+    const r = await verifyTurnstile(secret, token, ip);
+    if (r.ok) return;
+    if (r.reason === 'unreachable') throw new BadRequestException('We could not check that you are human right now. Please try again in a moment.');
+    throw new BadRequestException('Please confirm you are not a robot, then send the form again.');
+  }
+
+  // ── Files a visitor attaches ─────────────────────────────────────────────
+
+  /** Stores one file in PRIVATE storage and hands back an id; the file only joins a message when the form is sent. */
+  async upload(storeId: string, body: { sectionId?: string; fieldId?: string }, file: any) {
+    if (!this.uploads || !this.uploadService) throw new BadRequestException('Uploads are not available');
+    if (!file?.buffer) throw new BadRequestException('Choose a file first');
+    if (!body.sectionId || !body.fieldId) throw new BadRequestException('This form is no longer available. Please reload the page.');
+    const form = await this.findForm(storeId, String(body.sectionId));
+    if (!form) throw new BadRequestException('This form is no longer available. Please reload the page.');
+    const def = form.fields.find(f => f.id === body.fieldId && f.type === 'file');
+    if (!def) throw new BadRequestException('This field does not take a file.');
+    const name = String(file.originalname ?? 'file').replace(/[\\/\u0000-\u001f]/g, '_').slice(0, 120);
+    const ext = (name.split('.').pop() ?? '').toLowerCase();
+    const allowed = FILE_EXTENSIONS[def.fileKinds ?? 'both'];
+    if (!allowed.includes(ext)) throw new BadRequestException(`This type of file is not accepted. Use: ${allowed.join(', ')}`);
+    const maxMb = Math.min(def.maxSizeMb ?? MAX_FILE_MB, MAX_FILE_MB);
+    if (file.size > maxMb * 1024 * 1024) throw new BadRequestException(`The file is larger than ${maxMb} MB`);
+    assertFileSignature({ originalname: name, mimetype: file.mimetype, buffer: file.buffer, size: file.size }); // the bytes must really be that type
+    const waiting = await this.uploads.countDocuments({ storeId, claimedBy: null, createdAt: { $gte: new Date(Date.now() - 86_400_000) } });
+    if (waiting >= 50) throw new BadRequestException('Too many files are waiting for this store. Please try again later.');
+    const up = await this.uploadService.uploadPrivateFile({ ...file, originalname: name }, `private/form-uploads/${storeId}`);
+    const doc: any = await this.uploads.create({ storeId, publicId: up.publicId, resourceType: up.resourceType, fileName: name, size: up.fileSize, mimeType: up.mimeType });
+    return { success: true, data: { uploadId: String(doc._id), name, size: doc.size } };
+  }
+
+  /** Marks the files named in the answers as taken by THIS send, and swaps the id for a readable value. Throws when one expired or was used. */
+  private async claimUploads(storeId: string, fields: { id: string; label: string; type: string; value: string; fileId?: string }[]): Promise<string[]> {
+    const claimed: string[] = [];
+    for (const f of fields) {
+      if (f.type !== 'file') continue;
+      const up: any = this.uploads ? await this.uploads.findOneAndUpdate({ _id: f.value, storeId, claimedBy: null }, { $set: { claimedBy: 'pending' } }, { new: true }).lean() : null;
+      if (!up) {
+        await this.releaseUploads(claimed);
+        throw new BadRequestException('A file you attached has expired. Please attach it again.');
+      }
+      claimed.push(String(up._id));
+      f.fileId = String(up._id);
+      f.value = `${up.fileName} (${up.size < 1024 * 1024 ? `${Math.max(1, Math.round(up.size / 1024))} KB` : `${(up.size / 1024 / 1024).toFixed(1)} MB`})`;
+    }
+    return claimed;
+  }
+
+  private async releaseUploads(ids: string[]) {
+    if (ids.length && this.uploads) await this.uploads.updateMany({ _id: { $in: ids }, claimedBy: 'pending' }, { $set: { claimedBy: null } }).catch(() => undefined);
+  }
+
+  private async finishUploads(ids: string[], messageId: string, expiresAt: Date | null) {
+    if (ids.length && this.uploads) await this.uploads.updateMany({ _id: { $in: ids } }, { $set: { claimedBy: messageId, expiresAt } }).catch(() => undefined);
+  }
+
+  /** A 2-minute link to one attached file, for the store owner (and staff who may read the inbox) only. */
+  async fileLink(storeId: string, sellerId: string, messageId: string, fileId: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const msg: any = await this.model.findOne({ _id: messageId, storeId }).select('fields').lean();
+    if (!msg || !(msg.fields ?? []).some((f: any) => f.fileId === fileId)) throw new NotFoundException('File not found');
+    const up: any = await this.uploads?.findOne({ _id: fileId, storeId }).lean();
+    if (!up || !this.uploadService) throw new NotFoundException('The file was removed');
+    return { success: true, data: { url: this.uploadService.generateExpiringPrivateUrl(up.publicId, up.resourceType, 120, { fileName: up.fileName }), fileName: up.fileName } };
+  }
+
+  /** Nightly: files nobody sent within a day, and the files of spam that has expired. */
+  @Cron('40 3 * * *')
+  async nightlyCleanup() {
+    if (!this.redis || !this.uploads) return;
+    await this.redis.withLock('cron-lock:contact-uploads', 300_000, async () => { await this.cleanupUploads(); });
+  }
+
+  async cleanupUploads(now = new Date()) {
+    if (!this.uploads || !this.uploadService) return 0;
+    const old = new Date(now.getTime() - 86_400_000);
+    const rows: any[] = await this.uploads.find({ $or: [{ claimedBy: { $in: [null, 'pending'] }, createdAt: { $lt: old } }, { expiresAt: { $lt: now } }] }).limit(200).lean();
+    for (const u of rows) {
+      await this.uploadService.deletePrivateFile(u.publicId, u.resourceType).catch(() => undefined);
+    }
+    if (rows.length) await this.uploads.deleteMany({ _id: { $in: rows.map(r => r._id) } });
+    return rows.length;
+  }
+
+  // ── CAPTCHA settings (the seller's own Cloudflare Turnstile keys) ────────
+
+  /** Is a Turnstile site key set for this store? Public: the visitor's browser needs the site key to draw the widget. */
+  async publicConfig(storeId: string) {
+    const row: any = await this.formSettings?.findOne({ storeId }).select('turnstileSiteKey').lean();
+    return { success: true, data: { captcha: row?.turnstileSiteKey ? { provider: 'turnstile', siteKey: row.turnstileSiteKey } : null } };
+  }
+
+  async getSpamSettings(storeId: string, sellerId: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const row: any = await this.formSettings?.findOne({ storeId }).select('turnstileSiteKey +turnstileSecretEnc').lean();
+    return { success: true, data: { turnstile: { configured: !!(row?.turnstileSiteKey && row?.turnstileSecretEnc), siteKey: row?.turnstileSiteKey ?? '' } } };
+  }
+
+  async saveSpamSettings(storeId: string, sellerId: string, body: { siteKey?: string; secretKey?: string }) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const siteKey = String(body.siteKey ?? '').trim();
+    const secretKey = String(body.secretKey ?? '').trim();
+    if (!/^[0-9A-Za-z_-]{10,80}$/.test(siteKey)) throw new BadRequestException('Paste the Site Key from your Cloudflare Turnstile widget');
+    if (secretKey.length < 10 || secretKey.length > 120) throw new BadRequestException('Paste the Secret Key from your Cloudflare Turnstile widget');
+    const check = await testTurnstileSecret(secretKey);
+    if (check === 'bad_secret') throw new BadRequestException('Cloudflare did not accept this Secret Key. Check it and try again.');
+    if (check === 'unreachable') throw new BadRequestException('We could not reach Cloudflare to check the keys. Try again in a moment.');
+    await this.formSettings!.updateOne({ storeId }, { $set: { turnstileSiteKey: siteKey, turnstileSecretEnc: encryptCredential(secretKey, 'INTEGRATIONS') } }, { upsert: true });
+    return { success: true, data: { turnstile: { configured: true, siteKey } } };
+  }
+
+  async clearSpamSettings(storeId: string, sellerId: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    await this.formSettings?.updateOne({ storeId }, { $set: { turnstileSiteKey: null, turnstileSecretEnc: null } });
+    return { success: true, data: { turnstile: { configured: false, siteKey: '' } } };
   }
 
   /** Email with every answer to the addresses the seller listed, and the automatic reply to the visitor (once a day per address). */
@@ -136,7 +323,8 @@ export class StoreContactService {
   /** The filter shared by the inbox list and the CSV export: status, one form, and a text search. */
   private buildFilter(storeId: string, query: { status?: string; form?: string; q?: string }) {
     const filter: Record<string, any> = { storeId };
-    if (query.status === 'new' || query.status === 'read' || query.status === 'archived') filter.status = query.status;
+    if (query.status === 'new' || query.status === 'read' || query.status === 'archived' || query.status === 'spam') filter.status = query.status;
+    else filter.status = { $ne: 'spam' }; // spam only shows in its own tab
     if (query.form === '__unnamed') filter.formName = '';
     else if (typeof query.form === 'string' && query.form.trim()) filter.formName = query.form.trim().slice(0, 60);
     const q = typeof query.q === 'string' ? query.q.trim().slice(0, 80) : '';
@@ -151,7 +339,7 @@ export class StoreContactService {
   async forms(storeId: string, sellerId: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const rows: any[] = await this.model.aggregate([
-      { $match: { storeId } },
+      { $match: { storeId, status: { $ne: 'spam' } } },
       { $group: { _id: '$formName', total: { $sum: 1 }, unread: { $sum: { $cond: [{ $eq: ['$status', 'new'] }, 1, 0] } } } },
       { $sort: { total: -1 } },
       { $limit: 50 },
@@ -171,18 +359,21 @@ export class StoreContactService {
     const limit = Math.min(50, Math.max(1, Number(query.limit) || 20));
     const page = Math.max(1, Number(query.page) || 1);
     const filter = this.buildFilter(storeId, query);
-    const [data, total, unread] = await Promise.all([
+    const [data, total, unread, spam] = await Promise.all([
       this.model.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       this.model.countDocuments(filter),
       this.model.countDocuments({ storeId, status: 'new' }),
+      this.model.countDocuments({ storeId, status: 'spam' }),
     ]);
-    return { success: true, data, pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) }, unread };
+    return { success: true, data, pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) }, unread, spam };
   }
 
   async setStatus(storeId: string, sellerId: string, id: string, status: ContactMessageStatus) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
-    const updated = await this.model.findOneAndUpdate({ _id: id, storeId }, { $set: { status } }, { new: true }).lean();
+    const updated = await this.model.findOneAndUpdate({ _id: id, storeId }, { $set: { status, ...(status === 'spam' ? {} : { spamReason: null }) } }, { new: true }).lean();
     if (!updated) throw new NotFoundException('Message not found');
+    // Spam is deleted after 30 days, and so are its files; a message rescued from spam keeps them.
+    await this.uploads?.updateMany({ claimedBy: String(id) }, { $set: { expiresAt: status === 'spam' ? new Date(Date.now() + 30 * 86_400_000) : null } }).catch(() => undefined);
     return { success: true, data: updated };
   }
 
@@ -218,6 +409,9 @@ export class StoreContactService {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const res = await this.model.deleteOne({ _id: id, storeId });
     if (!res.deletedCount) throw new NotFoundException('Message not found');
+    const files: any[] = (await this.uploads?.find({ storeId, claimedBy: String(id) }).lean()) ?? [];
+    for (const u of files) await this.uploadService?.deletePrivateFile(u.publicId, u.resourceType).catch(() => undefined);
+    if (files.length) await this.uploads!.deleteMany({ _id: { $in: files.map(f => f._id) } });
     return { success: true, message: 'Message deleted' };
   }
 }

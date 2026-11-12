@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Header, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, Param, Patch, Post, Put, Query, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -42,6 +44,30 @@ export class StoreContactController {
     return this.service.exportCsv(storeId, actingSellerId(req.user), { status, form, q });
   }
 
+  /** A 2-minute link to one file a visitor attached. */
+  @Get(':storeId/:id/file/:fileId')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  fileLink(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Param('fileId') fileId: string) {
+    return this.service.fileLink(storeId, actingSellerId(req.user), id, fileId);
+  }
+
+  /** The CAPTCHA keys of the store's forms (the secret is never sent back). */
+  @Get(':storeId/spam-protection')
+  spamSettings(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.service.getSpamSettings(storeId, actingSellerId(req.user));
+  }
+
+  @Put(':storeId/spam-protection')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  saveSpamSettings(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { siteKey?: string; secretKey?: string }) {
+    return this.service.saveSpamSettings(storeId, actingSellerId(req.user), body);
+  }
+
+  @Delete(':storeId/spam-protection')
+  clearSpamSettings(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.service.clearSpamSettings(storeId, actingSellerId(req.user));
+  }
+
   @Patch(':storeId/:id')
   setStatus(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Body() dto: UpdateContactMessageDto) {
     return this.service.setStatus(storeId, actingSellerId(req.user), id, dto.status);
@@ -67,9 +93,24 @@ export class StoreContactController {
 export class PublicStoreContactController {
   constructor(private readonly service: StoreContactService) {}
 
+  /** Which CAPTCHA (if any) the store's forms use: only the public site key. */
+  @Get(':storeId/config')
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  config(@Param('storeId') storeId: string) {
+    return this.service.publicConfig(storeId);
+  }
+
+  /** A visitor attaches a file to a form field (private storage; checked against the seller's field). */
+  @Post(':storeId/upload')
+  @Throttle({ default: { limit: 8, ttl: 60_000 } })
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } }))
+  upload(@Param('storeId') storeId: string, @UploadedFile() file: any, @Body() body: { sectionId?: string; fieldId?: string }) {
+    return this.service.upload(storeId, body, file);
+  }
+
   @Post(':storeId')
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  submit(@Param('storeId') storeId: string, @Body() dto: CreateContactMessageDto) {
-    return this.service.submit(storeId, dto);
+  submit(@Param('storeId') storeId: string, @Body() dto: CreateContactMessageDto, @Req() req: any) {
+    return this.service.submit(storeId, dto, req.ip);
   }
 }

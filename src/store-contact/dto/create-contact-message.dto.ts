@@ -24,6 +24,10 @@ export class CreateContactMessageDto {
   @ApiProperty({ required: false }) @IsOptional() @IsArray() @ArrayMaxSize(31)
   answers?: { fieldId: string; value: unknown }[];
 
+  /** The Cloudflare Turnstile answer, when the form is protected by a CAPTCHA. */
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(2048)
+  captchaToken?: string;
+
   /** Honeypot — real visitors never see or fill this; bots do. */
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(200)
   website?: string;

@@ -1,4 +1,10 @@
 import { Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { UploadModule } from '../upload/upload.module';
+import { MerchantApiModule } from '../merchant-api/merchant-api.module';
+import { NewsletterModule } from '../newsletter/newsletter.module';
+import { FormUpload, FormUploadSchema } from './schemas/form-upload.schema';
+import { StoreFormSettings, StoreFormSettingsSchema } from './schemas/store-form-settings.schema';
 import { AuthModule } from '../auth/auth.module';
 import { RedisModule } from '../redis/redis.module';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -7,7 +13,10 @@ import { StoreContactService } from './store-contact.service';
 import { EmailService } from '../otp/services/email.service';
 
 @Module({
-  imports: [AuthModule, RedisModule, NotificationsModule],
+  imports: [
+    AuthModule, RedisModule, NotificationsModule, UploadModule, MerchantApiModule, NewsletterModule,
+    MongooseModule.forFeature([{ name: FormUpload.name, schema: FormUploadSchema }, { name: StoreFormSettings.name, schema: StoreFormSettingsSchema }]),
+  ],
   controllers: [StoreContactController, PublicStoreContactController],
   providers: [StoreContactService, EmailService],
   exports: [StoreContactService],
