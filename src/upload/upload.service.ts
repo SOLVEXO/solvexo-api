@@ -75,6 +75,12 @@ export class UploadService {
   ): Promise<{ url: string; publicId: string; resourceType: string; width?: number; height?: number }> {
     const resourceType = this.getResourceType(file.mimetype);
     const folder = options?.folder ?? (resourceType === 'raw' ? 'uploads/documents' : `uploads/${resourceType}s`);
+    // DEV ONLY (G5.7 real-backend flows): the isolated dev stack has no storage credentials. With DEV_UPLOAD_STUB=true and NODE_ENV not production the
+    // file is not sent anywhere; a stable placeholder URL comes back so the flows can exercise the routes. Ignored in production (the env check).
+    if (process.env.DEV_UPLOAD_STUB === 'true' && process.env.NODE_ENV !== 'production') {
+      const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      return { url: `https://dev-upload.invalid/${folder}/${id}`, publicId: `${folder}/${id}`, resourceType };
+    }
     const transformation =
       options?.maxDimension && resourceType === 'image'
         ? [{ width: options.maxDimension, height: options.maxDimension, crop: 'limit' }, { quality: 'auto' }, { fetch_format: 'auto' }]
