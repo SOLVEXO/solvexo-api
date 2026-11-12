@@ -82,6 +82,7 @@ import { AdminConfigModule } from './admin-config/admin-config.module';
 import { AdminAnnouncementsModule } from './admin-announcements/admin-announcements.module';
 import { AdminMarketplaceModule } from './admin-marketplace/admin-marketplace.module';
 import { AdminSellerTrustModule } from './admin-seller-trust/admin-seller-trust.module';
+import { SecurityModule } from './security/security.module';
 import { AdminModerationModule } from './admin-moderation/admin-moderation.module';
 import { AdminUsersModule } from './admin-users/admin-users.module';
 import { AdminClientsModule } from './admin-clients/admin-clients.module';
@@ -233,6 +234,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     AdminAnnouncementsModule,
     AdminMarketplaceModule,
     AdminSellerTrustModule,
+    SecurityModule,
     AdminModerationModule,
     AdminUsersModule,
     AdminClientsModule,
