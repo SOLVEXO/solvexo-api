@@ -12,14 +12,19 @@ const pagePath = (u: unknown): string => {
   try { const p = new URL(u); return `${p.host}${p.pathname}`.slice(0, 120); } catch { return ''; }
 };
 
+type Raw = Record<string, unknown>;
+const isObj = (v: unknown): v is Raw => !!v && typeof v === 'object';
+const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+
 /** Accepts the legacy `report-uri` shape ({"csp-report":{…}}) and the Reporting API shape ([{type:"csp-violation", body:{…}}]). */
 export function parseCspReports(body: unknown): CspViolation[] {
-  const items: any[] = Array.isArray(body) ? body.map((r: any) => r?.body).filter(Boolean)
-    : body && typeof body === 'object' && (body as any)['csp-report'] ? [(body as any)['csp-report']] : [];
-  return items.slice(0, 20).map((r: any) => ({
-    directive: String(r['effective-directive'] ?? r.effectiveDirective ?? r['violated-directive'] ?? '').split(' ')[0].slice(0, 40),
+  const items: Raw[] = Array.isArray(body)
+    ? body.map((r: unknown) => (isObj(r) ? r.body : undefined)).filter(isObj)
+    : isObj(body) && isObj(body['csp-report']) ? [body['csp-report']] : [];
+  return items.slice(0, 20).map((r) => ({
+    directive: (str(r['effective-directive']) || str(r.effectiveDirective) || str(r['violated-directive'])).split(' ')[0].slice(0, 40),
     blocked: host(r['blocked-uri'] ?? r.blockedURL),
     page: pagePath(r['document-uri'] ?? r.documentURL),
-    disposition: String(r.disposition ?? 'report').slice(0, 10),
+    disposition: (str(r.disposition) || 'report').slice(0, 10),
   })).filter((v) => v.directive);
 }
