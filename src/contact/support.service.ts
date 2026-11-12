@@ -100,7 +100,7 @@ export class SupportService {
     await verifyStoreOwnershipOrForbidden(this.storeModel, storeId, sellerId);
     const limit = Math.min(MAX_LIMIT, Math.max(1, Math.floor(Number(opts.limit)) || 10));
     const page = Math.max(1, Math.floor(Number(opts.page)) || 1);
-    const filter = { storeId, source: 'seller' };
+    const filter = { storeId, source: 'seller' as const };
     const [rows, total, tier] = await Promise.all([
       this.contactModel
         .find(filter)

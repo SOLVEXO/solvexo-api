@@ -184,7 +184,7 @@ export class SellingPlansService {
     else if (action === 'resume') { from = ['paused']; update = { $set: { status: 'active', pausedReason: null, stockFailures: 0, dunningStage: 0, nextBillingAt: new Date(Math.max(now.getTime(), new Date(cur.nextBillingAt).getTime())) } }; }
     else if (action === 'cancel') { from = ['active', 'paused']; update = { $set: { status: 'cancelled', cancelledAt: now, pausedReason: null } }; }
     else throw new BadRequestException('Unknown action');
-    const c: any = await this.contracts.findOneAndUpdate({ _id: cur._id, status: { $in: from }, ...(action === 'skip' || action === 'resume' ? { nextBillingAt: cur.nextBillingAt } : {}) }, update, { new: true }).lean();
+    const c: any = await this.contracts.findOneAndUpdate({ _id: cur._id, status: { $in: from as any }, ...(action === 'skip' || action === 'resume' ? { nextBillingAt: cur.nextBillingAt } : {}) }, update, { new: true }).lean();
     if (!c) throw new ConflictException(`This subscription cannot be ${action === 'skip' ? 'skipped' : action + 'd'} right now`);
     return c;
   }

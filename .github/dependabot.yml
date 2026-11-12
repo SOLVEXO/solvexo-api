@@ -1,0 +1,27 @@
+# Security and maintenance updates for npm dependencies and GitHub Actions.
+# Dependabot opens PRs; nothing is merged automatically. Security fixes are raised as soon as an advisory is
+# published (independent of this schedule); routine version updates are grouped weekly to keep PR noise low.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Asia/Karachi
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Major upgrades are planned by hand (they can change behaviour).
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

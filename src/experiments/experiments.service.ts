@@ -75,7 +75,7 @@ export class ExperimentsService {
       if ((await this.exps.countDocuments({ storeId, status: 'running' })) >= MAX_RUNNING) throw new ConflictException(`At most ${MAX_RUNNING} experiments can run at once.`);
       const clash = await this.exps.exists({ storeId, status: 'running', _id: { $ne: cur._id }, ...(cur.kind === 'section' ? { sectionId: cur.sectionId } : { kind: 'theme_settings' }) });
       if (clash) throw new ConflictException(cur.kind === 'section' ? 'Another experiment is already running on this section.' : 'Another theme experiment is already running.');
-      const e: any = await this.exps.findOneAndUpdate({ _id: cur._id, storeId, status: { $in: from } }, { $set: { status: 'running', ...(action === 'start' ? { startedAt: now } : {}) } }, { new: true }).lean();
+      const e: any = await this.exps.findOneAndUpdate({ _id: cur._id, storeId, status: { $in: from as any } }, { $set: { status: 'running', ...(action === 'start' ? { startedAt: now } : {}) } }, { new: true }).lean();
       if (!e) throw new ConflictException('The experiment changed in the meantime.');
       await this.audit(storeId, actor, `experiment_${action}`, `Experiment "${e.name}" ${action === 'start' ? 'started' : 'resumed'}`, id);
       return e;

@@ -67,7 +67,7 @@ export class ContentVersioningService {
 
   /** Copies draft field(s) into their live counterparts. `extraSet` is for fields that aren't a draft→live copy but should land in the same atomic write (e.g. `lastPublishedAt: '$$NOW'`, `status: 'published'`). */
   async publishDraft<T = any>(
-    model: Model<T>,
+    model: Model<any>,
     filter: Record<string, unknown>,
     fieldMap: FieldExpressionMap,
     extraSet: Record<string, unknown> = {},
@@ -91,7 +91,7 @@ export class ContentVersioningService {
    *  Mongo document write. A publish can therefore never succeed without its
    *  corresponding recovery point (or report a false failure after going live). */
   async publishDraftWithVersion<T = any>(
-    model: Model<T>,
+    model: Model<any>,
     filter: Record<string, unknown>,
     fieldMap: FieldExpressionMap,
     extraSet: Record<string, unknown>,
@@ -119,7 +119,7 @@ export class ContentVersioningService {
 
   /** Mirror-direction copy — live field(s) back into their draft counterparts (the "discard unsaved changes" action). */
   async revertDraft<T = any>(
-    model: Model<T>,
+    model: Model<any>,
     filter: Record<string, unknown>,
     fieldMap: FieldExpressionMap,
   ): Promise<T | null> {
@@ -161,7 +161,7 @@ export class ContentVersioningService {
 
   /** Appends a new version snapshot, capped at the most recent `cap` (oldest dropped via `$slice`). Call this right after a successful publish, with a snapshot built from the just-published (live) fields. */
   async appendVersion<T = any>(
-    model: Model<T>,
+    model: Model<any>,
     filter: Record<string, unknown>,
     snapshot: Record<string, unknown>,
     cap = 20,
@@ -190,7 +190,7 @@ export class ContentVersioningService {
    *  version's own fields into `draft.*` (or root `draft` fields) — the
    *  caller decides the shape since it varies per content type. */
   async restoreVersionToDraft<T = any>(
-    model: Model<T>,
+    model: Model<any>,
     filter: Record<string, unknown>,
     draftFieldMap: Record<string, unknown>,
   ): Promise<T | null> {

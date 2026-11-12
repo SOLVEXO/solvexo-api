@@ -1306,6 +1306,8 @@ export const STOREFRONT_EN: Record<string, any> = {
   "update_password": "Update password",
   "uploading_file": "Uploading file",
   "use_this_code_in_the_promo_field_at": "Use this code in the promo field at checkout.",
+  "verified_business": "Verified business",
+  "verified_business_hint": "Business identity checked by Solvexo",
   "verify_code": "Verify code",
   "verify_email": "Verify email",
   "verify_identity": "Verify identity",

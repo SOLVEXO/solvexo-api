@@ -371,7 +371,7 @@ export class FbrDiService {
   }
 
   private async createRecord(doc: Partial<FbrInvoiceRecord>): Promise<boolean> {
-    try { await this.recordsFor(String(doc.issuer)).create(doc); return true; } catch (e: any) {
+    try { await this.recordsFor(String(doc.issuer)).create(doc as any); return true; } catch (e: any) {
       if (e?.code === 11000) return false; // already recorded by a parallel run
       throw e;
     }
