@@ -26,6 +26,9 @@ export class PosPermissionsStoreController {
   @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @Put(':storeId')
   update(@Req() req: any, @Param('storeId') s: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string) { return this.svc.update(req, s, body, { employee: e }); }
 
+  @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @Post(':storeId/preset')
+  applyPreset(@Req() req: any, @Param('storeId') s: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string) { return this.svc.applyPreset(req, s, body, { employee: e }); } // G5.6
+
   @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @Post(':storeId/reset')
   reset(@Req() req: any, @Param('storeId') s: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string) { return this.svc.reset(req, s, body, { employee: e }); }
 }

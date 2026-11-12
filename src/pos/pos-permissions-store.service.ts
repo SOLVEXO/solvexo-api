@@ -3,6 +3,7 @@ import { BadRequestException, ConflictException, Injectable } from '@nestjs/comm
 import { DatabaseService } from '@/database/databaseservice';
 import { PosService } from './pos.service';
 import { PosAuthorizer } from './pos-authorizer.service';
+import { presetByKey, ROLE_PRESETS } from './pos-role-presets';
 import { APPROVAL_LIMITS, effectiveRule, normalizeOverrides, overrideErrors, PermissionOverrides, PermissionRule, PINNED_ACTIONS, PosAction, POS_ACTIONS, POS_PERMISSIONS } from './pos-permissions.config';
 
 type Req = any;
@@ -46,7 +47,7 @@ export class PosPermissionsStoreService {
     await this.pos.verifyStoreOwnership(storeId, req.user.userId);
     const a = await this.auth.authorize(req, { storeId, action: 'settings.permissions.view', employeeToken: t.employee });
     const { overrides, version } = await this.load(storeId);
-    return { success: true, data: { version, canEdit: a.role === 'owner', roles: ['cashier', 'manager', 'owner'], actions: POS_ACTIONS.map((x) => this.view(x, (overrides as any)[x])) } };
+    return { success: true, data: { version, canEdit: a.role === 'owner', roles: ['cashier', 'manager', 'owner'], actions: POS_ACTIONS.map((x) => this.view(x, (overrides as any)[x])), presets: ROLE_PRESETS.map((p) => ({ key: p.key, label: p.label, summary: p.summary, status: 'proposed' })) } }; // G5.6: presets (additive)
   }
 
   /** `changes` = { action: { roles?, approval? } } merged over the current overrides; `preview: true` only returns the diff. `expectedVersion` guards against a stale screen. */
@@ -66,6 +67,31 @@ export class PosPermissionsStoreService {
     const hit = await this.r.posSettingsModel.findOneAndUpdate({ storeId, permissionsVersion: expected === 0 ? { $in: [0, null] } : expected }, { $set: { permissionOverrides: next }, $inc: { permissionsVersion: 1 } }, { new: true });
     if (!hit) throw new ConflictException({ statusCode: 409, code: 'VERSION_CONFLICT', message: 'The permissions were changed on another device — reload and try again.' });
     await this.r.posAuditLogModel.create([{ storeId, employeeId: a.employeeId, action: 'permissions_changed', targetId: storeId, targetType: 'permission', metadata: { version: hit.permissionsVersion, diff } }]);
+    return this.get(req, storeId, t);
+  }
+
+  /**
+   * G5.6 — apply a role preset (owner only): `{ preset, preview?, expectedVersion? }`. The preset's overrides REPLACE the store's; `preview: true` returns
+   * the diff and changes nothing. Audited (`permissions_preset_applied`, full diff), version-guarded like any permissions change.
+   */
+  async applyPreset(req: Req, storeId: string, body: any, t: Tokens) {
+    await this.pos.verifyStoreOwnership(storeId, req.user.userId);
+    const a = await this.auth.authorize(req, { storeId, action: 'settings.permissions.edit', employeeToken: t.employee });
+    const p = presetByKey(body?.preset);
+    if (!p) throw new BadRequestException({ statusCode: 400, code: 'PRESET_UNKNOWN', message: `preset must be one of: ${ROLE_PRESETS.map((x) => x.key).join(', ')}` });
+    const errors = overrideErrors(p.overrides);
+    if (errors.length) throw new BadRequestException({ statusCode: 400, code: 'INVALID_PERMISSIONS', message: errors[0], errors }); // a preset that no longer fits the matrix is refused, never half-applied
+    const cur = await this.load(storeId);
+    const next = normalizeOverrides({ ...p.overrides });
+    const diff = this.diff(cur.overrides, next);
+    if (body?.preview === true) return { success: true, data: { preview: true, preset: p.key, version: cur.version, diff } };
+    if (!diff.length) return { ...(await this.get(req, storeId, t)), unchanged: true };
+    const expected = body?.expectedVersion ?? cur.version;
+    await this.r.posSettingsModel.db.transaction(async (tx: any) => {
+      const hit = await this.r.posSettingsModel.findOneAndUpdate({ storeId, permissionsVersion: expected === 0 ? { $in: [0, null] } : expected }, { $set: { permissionOverrides: next }, $inc: { permissionsVersion: 1 } }, { new: true, session: tx });
+      if (!hit) throw new ConflictException({ statusCode: 409, code: 'VERSION_CONFLICT', message: 'The permissions were changed on another device — reload and try again.' });
+      await this.r.posAuditLogModel.create([{ storeId, employeeId: a.employeeId, action: 'permissions_preset_applied', targetId: storeId, targetType: 'permission', metadata: { preset: p.key, version: hit.permissionsVersion, diff } }], { session: tx });
+    });
     return this.get(req, storeId, t);
   }
 

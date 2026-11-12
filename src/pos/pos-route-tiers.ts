@@ -11,6 +11,9 @@
 export type PosTier = 'owner' | 'manager-with-limit' | 'cashier' | 'public';
 
 export const POS_ROUTE_TIERS: Readonly<Record<string, PosTier>> = {
+  'POST /api/pos/store/settings/:storeId/receipt-logo': 'owner', // G5.6: receipt logo upload (content-checked, resized, audited)
+  'POST /api/pos/store/settings/:storeId/receipt-logo/remove': 'owner',
+  'POST /api/pos/permissions/:storeId/preset': 'owner', // G5.6: apply a role preset (proposed presets; preview first; audited; version-guarded)
   'GET /api/pos/connectors/:storeId': 'cashier', // G5.4/G5.7: provider-dependent feature switches + provider status (read-only; switches change via owner store settings)
   'POST /api/pos/receipt-delivery/:storeId/:saleId': 'cashier', // G5.3: the public link by e-mail / SMS (flags off by default; consent; rate-limited)
   // G5.2: the product page (cost stripped for managers when hidden) and editing an existing product
