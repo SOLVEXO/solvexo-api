@@ -1,0 +1,26 @@
+name: Security audit
+# Fails when a production dependency has a known CRITICAL vulnerability, so a new one can't slip in unnoticed.
+# Runs on every PR, on main, and weekly (an advisory can be published for code that hasn't changed).
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 2 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  npm-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Production dependencies, critical advisories
+        run: npm audit --omit=dev --audit-level=critical
+      - name: Full report (informational)
+        if: always()
+        run: npm audit --omit=dev || true
