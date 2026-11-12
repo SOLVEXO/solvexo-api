@@ -155,6 +155,7 @@ export function validateContactFieldDefs(input: unknown): void {
 }
 
 const SUCCESS_ACTIONS = ['message', 'redirect'];
+const DISPLAY_MODES = ['inline', 'popup'];
 
 /** Parses the "who gets an email" setting: a comma / line separated list of addresses. */
 export function parseNotifyEmails(value: unknown): string[] {
@@ -177,7 +178,7 @@ export function validateContactFormSettings(settings: Record<string, any>): void
   const text = (k: string, max: number) => {
     if (settings[k] !== undefined && (typeof settings[k] !== 'string' || settings[k].length > max)) bad(`settings.${k} must be up to ${max} characters`);
   };
-  text('formName', 60); text('autoReplySubject', 120); text('autoReplyBody', 2000);
+  text('formName', 60); text('popupButtonLabel', 40); text('autoReplySubject', 120); text('autoReplyBody', 2000);
   if (settings.successAction !== undefined && !SUCCESS_ACTIONS.includes(settings.successAction)) bad('settings.successAction must be message or redirect');
   if (settings.successAction === 'redirect' && !isSafeRedirect(settings.redirectUrl)) bad('Enter the address visitors are sent to (https://… or a path starting with /)');
   if (settings.redirectUrl !== undefined && settings.redirectUrl !== '' && !isSafeRedirect(settings.redirectUrl)) bad('The redirect address must start with https:// or /');
@@ -187,6 +188,7 @@ export function validateContactFormSettings(settings: Record<string, any>): void
     if (raw.length > 5) bad('You can email up to 5 addresses');
     for (const e of raw) if (!EMAIL_RE.test(e) || e.length > 120) bad(`"${e}" is not a valid email address`);
   }
+  if (settings.display !== undefined && !DISPLAY_MODES.includes(settings.display)) bad('settings.display must be inline or popup');
   if (settings.autoReplyEnabled !== undefined && typeof settings.autoReplyEnabled !== 'boolean') bad('settings.autoReplyEnabled must be true or false');
   if (settings.captcha !== undefined && typeof settings.captcha !== 'boolean') bad('settings.captcha must be true or false');
 }
