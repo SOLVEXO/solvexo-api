@@ -4,7 +4,7 @@ Read FINAL.md first. MASTER2.md is superseded by FINAL.md. Q0-Q9 were already do
 
 | phase | status | commit | not-verified |
 |---|---|---|---|
-| N Navigation / information architecture | NOT STARTED (next) | - | browser 375px + desktop |
+| N Navigation / information architecture | IN PROGRESS: step 1 NAV-INVENTORY.md done; NAV-MAP, nav rewrite, orders list, Ctrl+K, tests open | - | browser 375px + desktop |
 | Q0 Housekeeping | done under MASTER2 (scheduler-job tests open) | see PROGRESS2.md | browser, Redis pub/sub, scheduler locks |
 | Q1 B2B | done under MASTER2 | see PROGRESS2.md | browser, real SMTP |
 | Q2 Small gaps | done under MASTER2 | see PROGRESS2.md | wallets on real Stripe |
