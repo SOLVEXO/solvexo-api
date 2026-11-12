@@ -403,6 +403,12 @@ export class OrdersService {
     if (query.preorder === 'true' || query.preorder === true) subFilter.items = { $elemMatch: { isPreorder: true } };
     // "Local delivery" view: orders the store delivers itself.
     if (query.localDelivery === 'true' || query.localDelivery === true) matchFilter.localDelivery = true;
+    // Shopify-style saved views (whitelisted values only, never client operators).
+    const view = typeof query.view === 'string' ? query.view : '';
+    if (view === 'unfulfilled') subFilter.status = { $in: ['pending', 'processing'] };
+    else if (view === 'open') subFilter.status = { $in: ['pending', 'processing', 'shipped'] };
+    else if (view === 'unpaid') { matchFilter.isPaid = false; subFilter.status = { $nin: ['cancelled', 'refunded'] }; }
+    else if (view === 'cod_awaiting') matchFilter['codProtection.confirmation.status'] = 'awaiting';
     if (Object.keys(subFilter).length > 1) matchFilter.sellerOrders = { $elemMatch: subFilter };
 
     if (query.time && query.time !== 'all') {
