@@ -45,7 +45,8 @@ function makeRepos(over: Record<string, any> = {}) {
       exists: jest.fn().mockResolvedValue({ _id: 'v1' }),
       find: jest.fn().mockReturnValue(chain([])),
     },
-    productModel: { findOne: jest.fn().mockReturnValue({ select: () => Promise.resolve({ name: 'Tea', gallery: [] }) }) },
+    // find: main's bundle-component stock lookup (no bundles here)
+    productModel: { findOne: jest.fn().mockReturnValue({ select: () => Promise.resolve({ name: 'Tea', gallery: [] }) }), find: jest.fn().mockReturnValue(chain([])) },
     posSettingsModel: { findOneAndUpdate: jest.fn().mockResolvedValue({ saleCounter: 1, invoiceCounter: 1, creditNoteCounter: 1 }), findOne: jest.fn().mockReturnValue(lean(null)), updateOne: jest.fn().mockResolvedValue({}) },
     posCreditNoteModel: { create: jest.fn().mockImplementation((d: any) => Promise.resolve((Array.isArray(d) ? d : [d]).map((x: any) => ({ _id: 'cn1', ...x })))) },
     variantLocationStockModel: { find: jest.fn().mockReturnValue(chain([])) },

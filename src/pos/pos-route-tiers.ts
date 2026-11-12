@@ -11,6 +11,7 @@
 export type PosTier = 'owner' | 'manager-with-limit' | 'cashier' | 'public';
 
 export const POS_ROUTE_TIERS: Readonly<Record<string, PosTier>> = {
+  'POST /api/pos/employees/:storeId/:employeeId/unlock-pin': 'owner', // from main: the owner unlocks a locked-out PIN (owner session only)
   // public receipt links: no auth by design — trust is the unguessable token / client key; rate-limited, one 404 for anything unknown
   'GET /r/:token': 'public',
   'GET /r/:token/invoice': 'public',
