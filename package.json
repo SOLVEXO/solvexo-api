@@ -136,6 +136,9 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node",
+    "setupFiles": [
+      "<rootDir>/../test/jest-mongodb-runtime.ts"
+    ],
     "maxWorkers": 2,
     "workerIdleMemoryLimit": "1GB",
     "globalSetup": "<rootDir>/../test/jest-global-setup.ts",
