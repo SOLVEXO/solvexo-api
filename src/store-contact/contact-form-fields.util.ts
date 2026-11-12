@@ -12,7 +12,7 @@ import { BadRequestException } from '@nestjs/common';
  */
 export const CONTACT_FIELD_TYPES = [
   'name', 'text', 'email', 'phone', 'textarea', 'number', 'date', 'time', 'url',
-  'dropdown', 'radio', 'checkbox', 'consent', 'rating', 'country', 'hidden', 'heading', 'paragraph', 'file',
+  'dropdown', 'radio', 'checkbox', 'consent', 'rating', 'country', 'hidden', 'heading', 'paragraph', 'step', 'file',
 ] as const;
 export type ContactFieldType = (typeof CONTACT_FIELD_TYPES)[number];
 
@@ -60,7 +60,8 @@ export const UPLOAD_ID_RE = /^[a-f0-9]{24}$/i;
 export const MAX_CONTACT_FIELDS = 31;
 const OPTION_TYPES: ContactFieldType[] = ['dropdown', 'radio', 'checkbox'];
 /** Fields that show text but collect nothing. */
-const STATIC_TYPES: ContactFieldType[] = ['heading', 'paragraph'];
+/** `step` starts a new page of a multi-step form; it only holds the page title. */
+const STATIC_TYPES: ContactFieldType[] = ['heading', 'paragraph', 'step'];
 const ID_RE = /^[A-Za-z0-9_-]{2,40}$/;
 const PHONE_RE = /^\+?[\d\s().-]{5,25}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

@@ -213,4 +213,13 @@ describe('phase 2: file, consent signup and CAPTCHA settings', () => {
     expect(() => validateSectionSettings('contact_form', { fields: [mail], captcha: true })).not.toThrow();
     expect(() => validateSectionSettings('contact_form', { fields: [mail], captcha: 'yes' })).toThrow();
   });
+  it('accepts a "step" field (a page break) and never asks the visitor for an answer to it', () => {
+    const list = [
+      { id: 'em', type: 'email', label: 'Email', required: true },
+      { id: 'st', type: 'step', label: 'Next page' },
+      { id: 'ms', type: 'textarea', label: 'Message' },
+    ];
+    expect(() => validateContactFieldDefs(list as never)).not.toThrow();
+    expect(() => validateContactFieldDefs([{ ...list[0] }, { ...list[1], required: true }] as never)).toThrow();
+  });
 });
