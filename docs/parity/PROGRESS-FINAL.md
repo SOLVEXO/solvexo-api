@@ -4,7 +4,7 @@ Read FINAL.md first. MASTER2.md is superseded by FINAL.md. Q0-Q9 were already do
 
 | phase | status | commit | not-verified |
 |---|---|---|---|
-| N Navigation / information architecture | IN PROGRESS: N1+N2 done (navConfig LAYOUT map, NAV-MAP.md, tsc clean; Customers hub tabs + Security link in Account page open); N3 orders, N4 Ctrl+K, N5 tests open | web N1 commit | browser 375px + desktop | browser 375px + desktop |
+| N Navigation / information architecture | IN PROGRESS: N1+N2 done (navConfig LAYOUT map, NAV-MAP.md, tsc clean; Customers hub tabs + Security link in Account page open); N3 done (view tabs + server filter, row menu removed, Edit order in header; bulk mark-paid/tag/archive/export NOT built); N4 Ctrl+K, N5 tests open | web N1 commit | browser 375px + desktop | browser 375px + desktop |
 | Q0 Housekeeping | done under MASTER2 (scheduler-job tests open) | see PROGRESS2.md | browser, Redis pub/sub, scheduler locks |
 | Q1 B2B | done under MASTER2 | see PROGRESS2.md | browser, real SMTP |
 | Q2 Small gaps | done under MASTER2 | see PROGRESS2.md | wallets on real Stripe |
