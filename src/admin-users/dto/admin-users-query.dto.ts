@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import { VERIFICATION_STATUSES } from '../../store/schemas/store.schema';
 
 // Sellers only — see AdminUsersService.list's doc comment for why buyers were
 // removed from this page (a buyer is a global account, not owned by any one
@@ -18,6 +19,34 @@ export class AdminUsersQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  // Accepted for clarity (`?role=seller`) — this list is sellers only anyway.
+  @ApiProperty({ required: false, enum: ['seller'] })
+  @IsOptional()
+  @IsIn(['seller'])
+  role?: 'seller';
+
+  // Seller-trust filters — a seller matches when ANY of their stores matches all of them.
+  @ApiProperty({ required: false, example: 'PK' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2)
+  country?: string;
+
+  @ApiProperty({ required: false, enum: ['yes', 'no'] })
+  @IsOptional()
+  @IsIn(['yes', 'no'])
+  ntn?: 'yes' | 'no';
+
+  @ApiProperty({ required: false, enum: VERIFICATION_STATUSES })
+  @IsOptional()
+  @IsIn([...VERIFICATION_STATUSES])
+  verification?: string;
+
+  @ApiProperty({ required: false, enum: ['low', 'medium', 'high'] })
+  @IsOptional()
+  @IsIn(['low', 'medium', 'high'])
+  risk?: 'low' | 'medium' | 'high';
 
   @ApiProperty({ required: false, default: 1 })
   @IsOptional()

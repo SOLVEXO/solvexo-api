@@ -314,10 +314,12 @@ export class ProductsService {
   private async restrictToActiveStores(query: any, excludeLocked = true): Promise<void> {
     // Marketplace-wide listings (no single storeId) also drop password-protected / coming_soon stores so a locked store never
     // leaks via search/category browse. A single exact storeId is left to the storefront-access middleware (owner/token bypass).
+    // Seller-trust limited stores (`marketplaceHidden`) are likewise left out of marketplace-wide listings only — a store's own
+    // storefront (single storeId) keeps showing its products.
     const wide = excludeLocked && typeof query.storeId !== 'string';
     const activeIds: string[] = (
       await this.databaseService.repositories.storeModel
-        .find({ status: 'active', isDelete: false, ...(wide ? { privacyMode: { $nin: ['password', 'coming_soon'] } } : {}) }, { _id: 1 })
+        .find({ status: 'active', isDelete: false, ...(wide ? { privacyMode: { $nin: ['password', 'coming_soon'] }, marketplaceHidden: { $ne: true } } : {}) }, { _id: 1 })
         .lean()
     ).map((s: any) => s._id.toString());
 

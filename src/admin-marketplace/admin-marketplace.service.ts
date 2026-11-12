@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -9,6 +9,7 @@ import { StoreService } from '../store/store.service';
 import { assertValidVerificationTransition, type VerificationStatus } from '../store/schemas/store.schema';
 import { MarketplaceListingQueryDto } from './dto/marketplace-listing-query.dto';
 import { LeadsQueryDto } from './dto/leads-query.dto';
+import { SellerTrustService } from '../seller-trust/seller-trust.service';
 
 interface AuditMeta {
   adminId: string;
@@ -24,6 +25,7 @@ export class AdminMarketplaceService {
     private readonly notificationsService: NotificationsService,
     private readonly uploadService: UploadService,
     private readonly storeService: StoreService,
+    @Optional() private readonly sellerTrust?: SellerTrustService,
   ) {}
 
   private get r() {
@@ -294,7 +296,13 @@ export class AdminMarketplaceService {
         businessAddress: v.businessAddress ?? null,
         idDocumentType: v.idDocumentType ?? null,
         authorizedContact: v.authorizedContact ?? null,
+        cnicNumber: v.cnicNumber ?? null,
+        strn: v.strn ?? null,
+        businessProfile: this.storeService.shapeBusinessProfile(v.businessProfile),
+        ntnCheck: v.ntnCheck ?? null,
+        infoRequestMessage: (store as any).infoRequestMessage ?? null,
         documents: evaluation.documents,
+        requirements: evaluation.requirements,
         missingFields: evaluation.missingFields,
         missingDocuments: evaluation.missingDocuments,
         canApprove: evaluation.canSubmit,
@@ -364,49 +372,88 @@ export class AdminMarketplaceService {
     }
     assertValidVerificationTransition(current, 'verified');
 
+    // Only a store still waiting on review (or rejected under the old flow) goes live here — an admin
+    // suspension is a separate decision that approval must never undo.
+    const set: Record<string, unknown> = { verificationStatus: 'verified', reviewedAt: new Date(), infoRequestMessage: null, rejectionReason: null, marketplaceHidden: false };
+    if (['pending', 'rejected'].includes(store.status)) set.status = 'active';
     await this.r.storeModel.findByIdAndUpdate(id, {
-      $set: { status: 'active', verificationStatus: 'verified', reviewedAt: new Date() },
+      $set: set,
+      $addToSet: { badges: 'verified' },
       $push: { 'verification.history': this.pushVerificationHistory('approved', null, meta) },
     });
+    await this.sellerTrust?.recomputeStore(id);
 
-    this.log('lead_approved', `Store "${store.name}" approved and is now live`, meta, id, 'store');
+    this.log('lead_approved', `Store "${store.name}" verified${set.status ? ' and is now live' : ''}`, meta, id, 'store');
     this.notificationsService.notify({
       recipientId: store.sellerId,
       recipientRole: 'seller',
       storeId: id,
       type: NOTIFICATION_TYPES.STORE_APPROVED,
-      title: 'Your store is live!',
-      body: `"${store.name}" has been approved and is now visible on the marketplace.`,
+      title: 'Your business is verified',
+      body: `"${store.name}" passed business verification and now shows the Verified business badge.`,
       data: { storeId: id },
     }).catch(() => {});
 
-    return { success: true, message: 'Lead approved — store is now live' };
+    return { success: true, message: set.status ? 'Lead approved — store is now live' : 'Lead approved — business verified' };
   }
 
   /** `reason` is mandatory here (enforced by `RejectLeadDto`) — a rejection
    *  without an explanation leaves the seller with no way to fix and
-   *  resubmit. Moves both fields together, same reasoning as approveLead. */
+   *  resubmit. Seller trust (owner decision 1): an unverified seller is
+   *  LIMITED, not blocked — so this only rejects the VERIFICATION and never
+   *  touches `Store.status` any more (stores rejected under the old flow keep
+   *  their data as-is). */
   async rejectLead(id: string, reason: string, meta: AuditMeta) {
     const store = await this.findReviewableStoreOrThrow(id);
     const current: VerificationStatus = store.verificationStatus ?? 'not_started';
     assertValidVerificationTransition(current, 'rejected');
 
     await this.r.storeModel.findByIdAndUpdate(id, {
-      $set: { status: 'rejected', verificationStatus: 'rejected', rejectionReason: reason, reviewedAt: new Date() },
+      $set: { verificationStatus: 'rejected', rejectionReason: reason, reviewedAt: new Date(), infoRequestMessage: null },
+      $pull: { badges: 'verified' },
       $push: { 'verification.history': this.pushVerificationHistory('rejected', reason, meta) },
     });
+    await this.sellerTrust?.recomputeStore(id);
 
-    this.log('lead_rejected', `Store "${store.name}" rejected: ${reason}`, meta, id, 'store');
+    this.log('lead_rejected', `Store "${store.name}" verification rejected: ${reason}`, meta, id, 'store');
     this.notificationsService.notify({
       recipientId: store.sellerId,
       recipientRole: 'seller',
       storeId: id,
       type: NOTIFICATION_TYPES.STORE_REJECTED,
-      title: 'Your store application was rejected',
-      body: `"${store.name}" was rejected: ${reason}. You can correct the details and resubmit.`,
+      title: 'Your business verification was not approved',
+      body: `"${store.name}" verification was rejected: ${reason}. You can correct the details and resubmit.`,
       data: { storeId: id },
     }).catch(() => {});
 
     return { success: true, message: 'Lead rejected' };
+  }
+
+  /** Sends the submission back to the seller with a question (pending|under_review → needs_info).
+   *  The seller can edit again and resubmits (needs_info → pending). */
+  async requestInfo(id: string, message: string, meta: AuditMeta) {
+    const store = await this.findReviewableStoreOrThrow(id);
+    const current: VerificationStatus = store.verificationStatus ?? 'not_started';
+    assertValidVerificationTransition(current, 'needs_info');
+
+    await this.r.storeModel.findByIdAndUpdate(id, {
+      $set: { verificationStatus: 'needs_info', infoRequestMessage: message, reviewedAt: new Date() },
+      $pull: { badges: 'verified' },
+      $push: { 'verification.history': this.pushVerificationHistory('info_requested', message, meta) },
+    });
+    await this.sellerTrust?.recomputeStore(id);
+
+    this.log('lead_info_requested', `More information requested from store "${store.name}": ${message}`, meta, id, 'store');
+    this.notificationsService.notify({
+      recipientId: store.sellerId,
+      recipientRole: 'seller',
+      storeId: id,
+      type: NOTIFICATION_TYPES.VERIFICATION_INFO_REQUESTED,
+      title: 'We need a bit more information',
+      body: `About "${store.name}"'s business verification: ${message}`,
+      data: { storeId: id },
+    }).catch(() => {});
+
+    return { success: true, message: 'Information requested from the seller' };
   }
 }

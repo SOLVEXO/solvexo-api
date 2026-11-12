@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Controller, Get, Param, Patch, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Param, Patch, Query, Req, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Response } from 'express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -44,6 +45,16 @@ export class AdminUsersController {
   @Get()
   list(@Query() query: AdminUsersQueryDto) {
     return this.adminUsersService.list(query);
+  }
+
+  /** CSV of the seller list with the same filters (`?role=seller&country=PK&ntn=no…`). */
+  @RequirePermission('clients.view')
+  @Get('export')
+  async exportCsv(@Query() query: AdminUsersQueryDto, @Res() res: Response) {
+    const csv = await this.adminUsersService.exportCsv(query);
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="solvexo-sellers.csv"');
+    res.send(csv);
   }
 
   // ── Store-scoped routes — declared BEFORE the generic `:role/:id` routes

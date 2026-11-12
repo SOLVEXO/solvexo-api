@@ -90,6 +90,29 @@ export class AdminConfigService {
     return currency === 'PKR' ? config.payoutConfig?.minPayoutPKR ?? 1500 : config.payoutConfig?.minPayoutUSD ?? 5;
   }
 
+  /** Seller trust enforcement settings (SellerTrustService). */
+  async getSellerTrustSettings(): Promise<{ enforcementStartedAt: Date | null; graceDays: number }> {
+    const config = await this.getRawConfig();
+    const st = config?.sellerTrust ?? {};
+    return {
+      enforcementStartedAt: st.enforcementStartedAt ? new Date(st.enforcementStartedAt) : null,
+      graceDays: typeof st.graceDays === 'number' ? st.graceDays : 30,
+    };
+  }
+
+  /** Writes the seller trust settings (only the keys given). Audit-logged. */
+  async updateSellerTrustSettings(patch: { enforcementStartedAt?: Date | null; graceDays?: number }, meta: AuditMeta) {
+    const set: Record<string, unknown> = {};
+    if (patch.enforcementStartedAt !== undefined) set['sellerTrust.enforcementStartedAt'] = patch.enforcementStartedAt;
+    if (patch.graceDays !== undefined) set['sellerTrust.graceDays'] = patch.graceDays;
+    if (Object.keys(set).length) {
+      await this.model.findOneAndUpdate({}, { $set: set }, { upsert: true, new: true, setDefaultsOnInsert: true });
+      this.invalidateCache();
+      await this.logChange('seller_trust_settings_updated', `Seller trust settings updated: ${JSON.stringify(patch)}`, meta);
+    }
+    return this.getSellerTrustSettings();
+  }
+
   /** Used by checkout (to decide whether to offer the option) and by the manual-payments module (bank details + FX rate shown to the buyer). */
   async getManualPaymentConfig() {
     const config = await this.getRawConfig();
