@@ -27,6 +27,17 @@ export class StoreContactMessage {
   @Prop({ default: '', trim: true, maxlength: 3000 })
   message: string;
 
+  /** Which form it came from (the section's form name, or '' for an unnamed one) and the section itself. */
+  @Prop({ default: '', trim: true, maxlength: 60 })
+  formName: string;
+
+  @Prop({ default: '' })
+  sectionId: string;
+
+  /** When the visitor got the automatic reply (at most one per address per day, so a form cannot be used to mail strangers). */
+  @Prop({ type: Date, default: null })
+  autoRepliedAt: Date | null;
+
   /** Every answer of the seller-built form, in the order of the form (label as it was when sent). */
   @Prop({ type: [{ _id: false, id: String, label: String, type: { type: String }, value: String }], default: [] })
   fields: { id: string; label: string; type: string; value: string }[];
@@ -44,3 +55,5 @@ export class StoreContactMessage {
 
 export const StoreContactMessageSchema = SchemaFactory.createForClass(StoreContactMessage);
 StoreContactMessageSchema.index({ storeId: 1, createdAt: -1 });
+StoreContactMessageSchema.index({ storeId: 1, formName: 1, createdAt: -1 });
+StoreContactMessageSchema.index({ storeId: 1, email: 1, autoRepliedAt: 1 });

@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -23,8 +23,23 @@ export class StoreContactController {
   constructor(private readonly service: StoreContactService) {}
 
   @Get(':storeId')
-  list(@Req() req: any, @Param('storeId') storeId: string, @Query('page') page?: string, @Query('limit') limit?: string, @Query('status') status?: string) {
-    return this.service.list(storeId, actingSellerId(req.user), { page: Number(page), limit: Number(limit), status });
+  list(@Req() req: any, @Param('storeId') storeId: string, @Query('page') page?: string, @Query('limit') limit?: string, @Query('status') status?: string, @Query('form') form?: string, @Query('q') q?: string) {
+    return this.service.list(storeId, actingSellerId(req.user), { page: Number(page), limit: Number(limit), status, form, q });
+  }
+
+  /** The forms that received messages, for the inbox filter. */
+  @Get(':storeId/forms')
+  forms(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.service.forms(storeId, actingSellerId(req.user));
+  }
+
+  /** CSV of the messages matching the same filters as the list. */
+  @Get(':storeId/export')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Header('Content-Type', 'text/csv; charset=utf-8')
+  @Header('Content-Disposition', 'attachment; filename="contact-messages.csv"')
+  exportCsv(@Req() req: any, @Param('storeId') storeId: string, @Query('status') status?: string, @Query('form') form?: string, @Query('q') q?: string) {
+    return this.service.exportCsv(storeId, actingSellerId(req.user), { status, form, q });
   }
 
   @Patch(':storeId/:id')

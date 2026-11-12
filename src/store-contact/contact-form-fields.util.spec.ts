@@ -117,3 +117,76 @@ describe('contact_form section settings (saved by the seller)', () => {
     expect(() => validateSectionSettings('contact_form', { fields: 'nope' })).toThrow();
   });
 });
+
+describe('phase 1: new field types, conditions and form settings', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { validateSectionSettings } = require('../common/store-content/section-settings.validator');
+  const mail: ContactFormField = { id: 'm1', type: 'email', label: 'Email', required: true };
+
+  it('accepts the new field types and checks their answers', () => {
+    const defs: ContactFormField[] = [
+      mail,
+      { id: 'u1', type: 'url', label: 'Site' }, { id: 't1', type: 'time', label: 'Time' }, { id: 'r1', type: 'rating', label: 'Rating', required: true },
+      { id: 'c1', type: 'country', label: 'Country' }, { id: 'k1', type: 'consent', label: 'I agree', required: true },
+      { id: 'h1', type: 'hidden', label: 'Page', defaultValue: '{page_url}' }, { id: 'g1', type: 'heading', label: 'About you' },
+    ];
+    expect(() => validateContactFieldDefs(defs)).not.toThrow();
+    const r = validateContactAnswers(defs, [
+      { fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'u1', value: 'https://x.co/p' }, { fieldId: 't1', value: '14:30' }, { fieldId: 'r1', value: 4 },
+      { fieldId: 'c1', value: 'PK' }, { fieldId: 'k1', value: 'true' }, { fieldId: 'h1', value: 'https://shop.co/contact' }, { fieldId: 'g1', value: 'ignored' },
+    ]);
+    const val = (id: string) => r.clean.find(a => a.id === id)?.value;
+    expect(val('r1')).toBe('4 / 5');
+    expect(val('c1')).toBe('Pakistan');
+    expect(val('k1')).toBe('Yes');
+    expect(val('g1')).toBe(undefined);
+    expect(() => validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'r1', value: 9 }, { fieldId: 'k1', value: 'true' }])).toThrow();
+    expect(() => validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'r1', value: 3 }])).toThrow(); // consent required
+    expect(() => validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'r1', value: 3 }, { fieldId: 'k1', value: 'true' }, { fieldId: 'u1', value: 'javascript:alert(1)' }])).toThrow();
+    expect(() => validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'r1', value: 3 }, { fieldId: 'k1', value: 'true' }, { fieldId: 't1', value: '25:99' }])).toThrow();
+  });
+
+  it('uses the seller\'s own error message and the min / max rules', () => {
+    const defs: ContactFormField[] = [
+      mail,
+      { id: 'n1', type: 'number', label: 'Guests', min: 1, max: 10, errorMessage: 'Between 1 and 10 please' },
+      { id: 'x1', type: 'text', label: 'Code', minLength: 3, maxLength: 5 },
+    ];
+    expect(() => validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'n1', value: 11 }])).toThrow('Between 1 and 10 please');
+    expect(() => validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'x1', value: 'ab' }])).toThrow();
+    expect(() => validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'x1', value: 'abcdef' }])).toThrow();
+    expect(validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'n1', value: 4 }, { fieldId: 'x1', value: 'abc' }]).clean).toHaveLength(3);
+  });
+
+  it('shows a field only when an earlier answer matches (and never asks for or stores a hidden one)', () => {
+    const defs: ContactFormField[] = [
+      mail,
+      { id: 'q1', type: 'radio', label: 'Topic', options: ['Order', 'Other'], required: true },
+      { id: 'o1', type: 'text', label: 'Order number', required: true, showIf: { fieldId: 'q1', op: 'equals', value: 'Order' } },
+    ];
+    expect(() => validateContactFieldDefs(defs)).not.toThrow();
+    // Topic = Other: the order number is hidden, so it is neither required nor stored.
+    const hidden = validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'q1', value: 'Other' }, { fieldId: 'o1', value: '99' }]);
+    expect(hidden.clean.map(a => a.id)).toEqual(['m1', 'q1']);
+    // Topic = Order: now it is required.
+    expect(() => validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'q1', value: 'Order' }])).toThrow();
+    expect(validateContactAnswers(defs, [{ fieldId: 'm1', value: 'a@b.co' }, { fieldId: 'q1', value: 'Order' }, { fieldId: 'o1', value: '99' }]).clean).toHaveLength(3);
+  });
+
+  it('refuses a condition on a later or missing field, and a conditional Email that could leave the form without a contact', () => {
+    expect(() => validateContactFieldDefs([{ id: 'a1', type: 'text', label: 'A', showIf: { fieldId: 'b1', op: 'filled' } }, { id: 'b1', type: 'text', label: 'B' }, mail])).toThrow();
+    expect(() => validateContactFieldDefs([mail, { id: 'a1', type: 'text', label: 'A', showIf: { fieldId: 'nope', op: 'filled' } }])).toThrow();
+    expect(() => validateContactFieldDefs([{ ...mail, showIf: { fieldId: 'z1', op: 'filled' } }])).toThrow();
+    expect(() => validateContactFieldDefs([mail, { id: 'a1', type: 'text', label: 'A', showIf: { fieldId: 'm1', op: 'equals' } }])).toThrow(); // needs a value
+  });
+
+  it('checks the form-level settings', () => {
+    expect(() => validateSectionSettings('contact_form', { fields: [mail], formName: 'Wholesale', successAction: 'redirect', redirectUrl: 'https://x.co/thanks', notifyEmails: 'a@b.co, c@d.co', autoReplyEnabled: true })).not.toThrow();
+    expect(() => validateSectionSettings('contact_form', { fields: [mail], successAction: 'redirect', redirectUrl: 'javascript:alert(1)' })).toThrow();
+    expect(() => validateSectionSettings('contact_form', { fields: [mail], successAction: 'redirect' })).toThrow();
+    expect(() => validateSectionSettings('contact_form', { fields: [mail], redirectUrl: '//evil.co' })).toThrow();
+    expect(() => validateSectionSettings('contact_form', { fields: [mail], notifyEmails: 'not-an-email' })).toThrow();
+    expect(() => validateSectionSettings('contact_form', { fields: [mail], notifyEmails: 'a@b.co,b@b.co,c@b.co,d@b.co,e@b.co,f@b.co' })).toThrow();
+    expect(() => validateSectionSettings('contact_form', { fields: [mail], formName: 'x'.repeat(61) })).toThrow();
+  });
+});

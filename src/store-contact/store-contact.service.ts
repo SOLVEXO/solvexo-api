@@ -9,7 +9,9 @@ import { ContactMessageStatus } from './schemas/store-contact-message.schema';
 import { EmailService } from '../otp/services/email.service';
 import { notificationEmailShell } from '../notifications/templates/notification-email.template';
 import { textToParagraphs } from '../notifications/customer-email-template.util';
-import { ContactFormField, resolveContactFields, validateContactAnswers } from './contact-form-fields.util';
+import { sellerAppUrl } from '../common/app-urls.util';
+import { ContactFormField, parseNotifyEmails, resolveContactFields, validateContactAnswers } from './contact-form-fields.util';
+import { MAX_EXPORT_ROWS, buildAutoReply, buildSellerNotification, contactMessagesToCsv } from './contact-form-mail.util';
 
 const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 // A store can only answer so fast: stops the inbox being used to push mail out.
@@ -45,11 +47,13 @@ export class StoreContactService {
 
     let name = '', email = '', phone = '', message = '';
     let fields: { id: string; label: string; type: string; value: string }[] = [];
+    let formSettings: Record<string, any> = {};
     if (dto.sectionId) {
       // The seller's own field list decides what is accepted, never what the visitor's browser claims.
-      const defs = await this.findFormFields(storeId, dto.sectionId);
-      if (!defs) throw new BadRequestException('This form is no longer available. Please reload the page and try again.');
-      const r = validateContactAnswers(defs, dto.answers);
+      const form = await this.findForm(storeId, dto.sectionId);
+      if (!form) throw new BadRequestException('This form is no longer available. Please reload the page and try again.');
+      formSettings = form.settings;
+      const r = validateContactAnswers(form.fields, dto.answers);
       ({ name, email, phone, message } = r);
       fields = r.clean;
     } else {
@@ -60,7 +64,8 @@ export class StoreContactService {
       if (!message) throw new BadRequestException('Please write a message');
     }
 
-    const doc = await this.model.create({ storeId, name, email, phone: phone || null, message, fields });
+    const formName = String(formSettings.formName ?? '').trim().slice(0, 60);
+    const doc = await this.model.create({ storeId, name, email, phone: phone || null, message, fields, formName, sectionId: dto.sectionId ?? '' });
 
     // Tell the owner (in-app bell + email, per their notification preferences). Never fails the visitor's request.
     const who = name || email || phone || 'a visitor';
@@ -70,19 +75,48 @@ export class StoreContactService {
       recipientRole: 'seller',
       storeId,
       type: NOTIFICATION_TYPES.CONTACT_FORM_MESSAGE,
-      title: `New message from ${who}`,
+      title: formName ? `${formName}: new message from ${who}` : `New message from ${who}`,
       body: summary.length > 160 ? `${summary.slice(0, 157)}…` : summary,
       data: { link: `/store/${storeId}/online-store/contact-messages`, messageId: String(doc._id) },
     }).catch(() => undefined);
 
+    // Emails after the visitor's answer is safely stored: a mail problem never fails the visitor's request.
+    this.sendFormEmails(storeId, store, doc, formSettings, { who, formName, fields, name, email, message, phone }).catch(() => undefined);
+
     return { success: true, message: 'Thanks — your message was sent.' };
   }
 
-  /** The live field list of one contact form (any page or template section), or null when that section is gone. */
-  private async findFormFields(storeId: string, sectionId: string): Promise<ContactFormField[] | null> {
-    const pick = (sections?: any[]): ContactFormField[] | null => {
+  /** Email with every answer to the addresses the seller listed, and the automatic reply to the visitor (once a day per address). */
+  private async sendFormEmails(
+    storeId: string, store: any, doc: any, settings: Record<string, any>,
+    d: { who: string; formName: string; fields: { label: string; value: string }[]; name: string; email: string; message: string; phone: string },
+  ) {
+    const full: any = await this.storeModel.findById(storeId).select('name logo contactEmail').lean();
+    const storeName = String(full?.name ?? store?.name ?? 'the store');
+    const recipients = parseNotifyEmails(settings.notifyEmails);
+    if (recipients.length) {
+      const rows = d.fields.length ? d.fields : [{ label: 'Name', value: d.name }, { label: 'Email', value: d.email }, { label: 'Message', value: d.message }].filter(r => r.value);
+      const mail = buildSellerNotification({ storeName, logoUrl: full?.logo ?? null, formName: d.formName, who: d.who, rows, inboxUrl: `${sellerAppUrl()}/store/${storeId}/online-store/contact-messages` });
+      for (const to of recipients) {
+        await this.emailService.sendMail(to, mail.subject, mail.html, d.email || null, undefined, undefined, storeName, storeId).catch(() => false);
+      }
+    }
+    if (settings.autoReplyEnabled === true && d.email) {
+      // A form must not be a way to mail strangers: one automatic reply per address per day, per store.
+      const already = await this.model.countDocuments({ storeId, email: d.email, autoRepliedAt: { $gte: new Date(Date.now() - 86_400_000) } });
+      if (already === 0) {
+        const mail = buildAutoReply({ storeName, logoUrl: full?.logo ?? null, formName: d.formName, name: d.name, subject: settings.autoReplySubject, body: settings.autoReplyBody });
+        const ok = await this.emailService.sendMail(d.email, mail.subject, mail.html, full?.contactEmail ?? null, undefined, undefined, storeName, storeId).catch(() => false);
+        if (ok) await this.model.updateOne({ _id: doc._id }, { $set: { autoRepliedAt: new Date() } });
+      }
+    }
+  }
+
+  /** The live field list and settings of one contact form (any page or template section), or null when that section is gone. */
+  private async findForm(storeId: string, sectionId: string): Promise<{ fields: ContactFormField[]; settings: Record<string, any> } | null> {
+    const pick = (sections?: any[]) => {
       const sec = (sections ?? []).find(x => String(x?._id) === sectionId && x.type === 'contact_form' && x.enabled !== false);
-      return sec ? resolveContactFields(sec.settings) : null;
+      return sec ? { fields: resolveContactFields(sec.settings), settings: (sec.settings ?? {}) as Record<string, any> } : null;
     };
     const repos: any = this.databaseService.repositories;
     // A page keeps its live sections per installed theme (themeTemplates[].sections); the root `sections` is the older copy.
@@ -99,12 +133,44 @@ export class StoreContactService {
 
   // ── Seller ───────────────────────────────────────────────────────────────
 
-  async list(storeId: string, sellerId: string, query: { page?: number; limit?: number; status?: string }) {
+  /** The filter shared by the inbox list and the CSV export: status, one form, and a text search. */
+  private buildFilter(storeId: string, query: { status?: string; form?: string; q?: string }) {
+    const filter: Record<string, any> = { storeId };
+    if (query.status === 'new' || query.status === 'read' || query.status === 'archived') filter.status = query.status;
+    if (query.form === '__unnamed') filter.formName = '';
+    else if (typeof query.form === 'string' && query.form.trim()) filter.formName = query.form.trim().slice(0, 60);
+    const q = typeof query.q === 'string' ? query.q.trim().slice(0, 80) : '';
+    if (q) {
+      const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [{ name: rx }, { email: rx }, { phone: rx }, { message: rx }, { 'fields.value': rx }];
+    }
+    return filter;
+  }
+
+  /** The forms that received messages (for the inbox filter), with their counts. */
+  async forms(storeId: string, sellerId: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const rows: any[] = await this.model.aggregate([
+      { $match: { storeId } },
+      { $group: { _id: '$formName', total: { $sum: 1 }, unread: { $sum: { $cond: [{ $eq: ['$status', 'new'] }, 1, 0] } } } },
+      { $sort: { total: -1 } },
+      { $limit: 50 },
+    ]);
+    return { success: true, data: rows.map(r => ({ name: r._id || '', total: r.total, unread: r.unread })) };
+  }
+
+  /** Every matching message as CSV (newest first, up to 5000). */
+  async exportCsv(storeId: string, sellerId: string, query: { status?: string; form?: string; q?: string }) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const rows = await this.model.find(this.buildFilter(storeId, query)).sort({ createdAt: -1 }).limit(MAX_EXPORT_ROWS).lean();
+    return contactMessagesToCsv(rows);
+  }
+
+  async list(storeId: string, sellerId: string, query: { page?: number; limit?: number; status?: string; form?: string; q?: string }) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const limit = Math.min(50, Math.max(1, Number(query.limit) || 20));
     const page = Math.max(1, Number(query.page) || 1);
-    const filter: Record<string, unknown> = { storeId };
-    if (query.status === 'new' || query.status === 'read' || query.status === 'archived') filter.status = query.status;
+    const filter = this.buildFilter(storeId, query);
     const [data, total, unread] = await Promise.all([
       this.model.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       this.model.countDocuments(filter),

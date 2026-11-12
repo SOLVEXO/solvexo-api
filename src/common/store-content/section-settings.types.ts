@@ -207,6 +207,16 @@ export interface ContactFormSectionSettings extends BaseSectionSettings {
   showPhone?: boolean;
   /** The seller-built field list (see store-contact/contact-form-fields.util.ts). Missing = the old fixed form. */
   fields?: unknown[];
+  /** Shown in the inbox so answers of different forms can be told apart. */
+  formName?: string;
+  /** 'message' (default) shows successMessage; 'redirect' sends the visitor to redirectUrl. */
+  successAction?: 'message' | 'redirect';
+  redirectUrl?: string;
+  /** Up to 5 addresses (comma / line separated) that get an email with every answer. */
+  notifyEmails?: string;
+  autoReplyEnabled?: boolean;
+  autoReplySubject?: string;
+  autoReplyBody?: string;
 }
 
 // ── Shopify-parity section library ──────────────────────────────────────────
