@@ -414,6 +414,10 @@ export class Store {
   @Prop({ type: String, unique: true })
   slug: string;
 
+  /** G5.2.0b (reserved, not used yet): a per-store receipt origin for white-label domains. Null = RECEIPT_PUBLIC_URL / API_PUBLIC_URL. */
+  @Prop({ type: String, default: null })
+  receiptBaseUrl: string | null;
+
   @Prop({ type: String, default: null })
   logo: string | null;
 

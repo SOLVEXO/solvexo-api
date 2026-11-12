@@ -2,7 +2,7 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { DatabaseService } from '@/database/databaseservice';
-import { API_PUBLIC_ORIGIN } from '@/common/api-origin';
+import { RECEIPT_PUBLIC_ORIGIN } from '@/common/api-origin';
 import { PosService } from './pos.service';
 
 const esc = (v: unknown): string => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
@@ -21,7 +21,7 @@ export class PosReceiptService {
   constructor(private readonly db: DatabaseService, private readonly pos: PosService) {}
   private get r() { return this.db.repositories; }
 
-  linkOf(token: string) { return { path: `/r/${token}`, url: `${API_PUBLIC_ORIGIN}/r/${token}` }; }
+  linkOf(token: string) { return { path: `/r/${token}`, url: `${RECEIPT_PUBLIC_ORIGIN}/r/${token}` }; } // G5.2.0b: the web domain when RECEIPT_PUBLIC_URL is set
 
   /** The sale's receipt link — created on first use, the same link afterwards (until a manager revokes it; then a NEW one is made). */
   async getLink(sellerId: string, saleId: string) {

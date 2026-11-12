@@ -40,9 +40,16 @@ export function publicUrlProblem(value: string | undefined, nodeEnv: string | un
   return null;
 }
 
+/** G5.2.0b: RECEIPT_PUBLIC_URL is OPTIONAL (unset → receipts use API_PUBLIC_URL); when set it must pass the same rules, in every environment but development. */
+export function receiptUrlProblem(value: string | undefined, nodeEnv: string | undefined): string | null {
+  if (!(value ?? '').trim()) return null;
+  const p = publicUrlProblem(value, nodeEnv);
+  return p ? p.replace(/API_PUBLIC_URL/g, 'RECEIPT_PUBLIC_URL').replace(/ — it is printed in every receipt QR; set it to this API's public https origin/, '') : null;
+}
+
 /** Called first thing at boot. */
 export function assertPublicUrl(env: NodeJS.ProcessEnv = process.env): void {
-  const p = publicUrlProblem(env.API_PUBLIC_URL, env.NODE_ENV);
+  const p = publicUrlProblem(env.API_PUBLIC_URL, env.NODE_ENV) ?? receiptUrlProblem(env.RECEIPT_PUBLIC_URL, env.NODE_ENV);
   if (p) {
     console.error(`[FATAL] ${p}. Refusing to start (NODE_ENV=${env.NODE_ENV ?? 'unset'}).`);
     process.exit(1);

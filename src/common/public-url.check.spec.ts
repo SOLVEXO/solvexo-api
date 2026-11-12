@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { assertPublicUrl, publicUrlProblem } from './public-url.check';
+import { assertPublicUrl, publicUrlProblem, receiptUrlProblem } from './public-url.check';
 
 describe('API_PUBLIC_URL boot check (G5.1)', () => {
   const prod = (v?: string) => publicUrlProblem(v, 'production');
@@ -54,6 +54,24 @@ describe('API_PUBLIC_URL boot check (G5.1)', () => {
     expect(exit).toHaveBeenCalledWith(1);
     exit.mockClear();
     assertPublicUrl({ NODE_ENV: 'production', API_PUBLIC_URL: 'https://api.solvexo.store' } as any);
+    expect(exit).not.toHaveBeenCalled();
+    exit.mockRestore(); err.mockRestore();
+  });
+
+  it('G5.2.0b RECEIPT_PUBLIC_URL: optional; when set, the same rules (https, origin only, not local / private); boot refuses an invalid one', () => {
+    expect(receiptUrlProblem(undefined, 'production')).toBeNull();
+    expect(receiptUrlProblem('', 'production')).toBeNull();
+    expect(receiptUrlProblem('https://solvexo.store', 'production')).toBeNull();
+    expect(receiptUrlProblem('http://solvexo.store', 'production')).toMatch(/RECEIPT_PUBLIC_URL must be https/);
+    expect(receiptUrlProblem('https://localhost', 'production')).toMatch(/local \/ private/);
+    expect(receiptUrlProblem('https://solvexo.store/r', 'production')).toMatch(/origin only/);
+    expect(receiptUrlProblem('http://localhost:3000', 'development')).toBeNull();
+    const exit = jest.spyOn(process, 'exit').mockImplementation((() => undefined) as any);
+    const err = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    assertPublicUrl({ NODE_ENV: 'production', API_PUBLIC_URL: 'https://api.solvexo.store', RECEIPT_PUBLIC_URL: 'http://solvexo.store' } as any);
+    expect(exit).toHaveBeenCalledWith(1);
+    exit.mockClear();
+    assertPublicUrl({ NODE_ENV: 'production', API_PUBLIC_URL: 'https://api.solvexo.store', RECEIPT_PUBLIC_URL: 'https://solvexo.store' } as any);
     expect(exit).not.toHaveBeenCalled();
     exit.mockRestore(); err.mockRestore();
   });
