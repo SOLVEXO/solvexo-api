@@ -2,6 +2,7 @@
 import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Cron } from '@nestjs/schedule';
+import { readAnalyticsSessionId } from '../common/storefront-session.util';
 import { Model } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -97,6 +98,7 @@ export class StoreContactService {
     try {
       doc = await this.model.create({
         storeId, name, email, phone: phone || null, message, fields, formName, sectionId: dto.sectionId ?? '',
+        ...(await this.enrich(storeId, dto, email)),
         ...(spam ? { status: 'spam', spamReason: spam } : {}),
       });
     } catch (e) {
@@ -246,6 +248,29 @@ export class StoreContactService {
   async publicConfig(storeId: string) {
     const row: any = await this.formSettings?.findOne({ storeId }).select('turnstileSiteKey').lean();
     return { success: true, data: { captcha: row?.turnstileSiteKey ? { provider: 'turnstile', siteKey: row.turnstileSiteKey } : null } };
+  }
+
+  /** Page, traffic source and customer link of a new message. Never fails the visitor's request. */
+  private async enrich(storeId: string, dto: { analyticsSessionId?: string; pageUrl?: string }, email: string) {
+    const out: { pageUrl: string | null; source: Record<string, string | null> | null; customerId: string | null; customerOrders: number } = { pageUrl: null, source: null, customerId: null, customerOrders: 0 };
+    try {
+      const url = String(dto.pageUrl ?? '').trim();
+      if (/^https?:\/\//i.test(url)) out.pageUrl = url.slice(0, 500);
+      const sid = readAnalyticsSessionId(dto);
+      if (sid) {
+        const row: any = await this.databaseService.repositories.storefrontSessionModel.findOne({ storeId, sessionId: sid })
+          .select('trafficSource referrerHost landingPath utmSource utmMedium utmCampaign deviceType country').lean();
+        if (row) out.source = { trafficSource: row.trafficSource ?? null, referrerHost: row.referrerHost ?? null, landingPath: row.landingPath ?? null, utmSource: row.utmSource ?? null, utmMedium: row.utmMedium ?? null, utmCampaign: row.utmCampaign ?? null, deviceType: row.deviceType ?? null, country: row.country ?? null };
+      }
+      if (email) {
+        const user: any = await this.databaseService.repositories.userModel.findOne({ storeId, email: email.toLowerCase() }).select('_id').lean();
+        if (user) {
+          out.customerId = String(user._id);
+          out.customerOrders = await this.databaseService.repositories.orderModel.countDocuments({ userId: String(user._id), 'sellerOrders.storeId': storeId });
+        }
+      }
+    } catch { /* optional extras */ }
+    return out;
   }
 
   async getSpamSettings(storeId: string, sellerId: string) {
