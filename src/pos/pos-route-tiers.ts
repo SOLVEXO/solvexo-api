@@ -15,6 +15,8 @@ export const POS_ROUTE_TIERS: Readonly<Record<string, PosTier>> = {
   'POST /api/pos/store/settings/:storeId/receipt-logo/remove': 'owner',
   'POST /api/pos/permissions/:storeId/preset': 'owner', // G5.6: apply a role preset (proposed presets; preview first; audited; version-guarded)
   'GET /api/pos/connectors/:storeId': 'cashier',
+  'GET /api/pos/fiscal/:storeId/issues': 'manager-with-limit', // G6.1: fiscal documents that need attention
+  'POST /api/pos/fiscal/:storeId/retry': 'owner',
   // G5.7: store API keys — managed by the owner only; the secret shown once, hashed, expiring, revocable
   'GET /api/pos/api-keys/:storeId': 'owner',
   'POST /api/pos/api-keys/:storeId': 'owner',

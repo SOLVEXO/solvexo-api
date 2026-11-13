@@ -88,6 +88,17 @@ export class PosReceiptService {
     return this.receiptHtml(sale);
   }
 
+  /**
+   * G6.1 — the public page's fiscal block from the contract (FISCAL_CONTRACT.md): the provider's display lines as given (a G5.5 row without lines
+   * shows just the number), only once confirmed. Pending / failed / rejected show nothing to the customer here.
+   */
+  static fiscalHtml(f: any, esc: (s: string) => string): string {
+    if (!f || f.status !== 'confirmed') return '';
+    const lines: Array<{ label: string; value: string }> = Array.isArray(f.displayLines) ? f.displayLines : [];
+    const body = lines.length ? lines.map((l) => `<div>${esc(String(l.label))} ${esc(String(l.value))}</div>`).join('') : f.externalInvoiceNumber ? `<div>${esc(String(f.externalInvoiceNumber))}</div>` : '';
+    return body ? `<div class="fiscal sub">${body}</div>` : '';
+  }
+
   private async receiptHtml(sale: any): Promise<string> {
     if (sale.invoice && this.fiscal) { // G5.5: the confirmed fiscal number / QR, once there is one
       const b = (await this.fiscal.blocks([{ type: 'invoice', id: String(sale._id) }])).get(`invoice:${sale._id}`);
@@ -153,7 +164,7 @@ body{margin:0;background:#f4f1ee;font:16px/1.45 -apple-system,BlinkMacSystemFont
 <table><tr><th>Item</th><th class="r">Value excl. tax</th><th class="r">Tax</th></tr>${rows}</table>
 <table><tr><td>Subtotal</td><td class="r">${m(sale.subtotalMinor)}</td></tr>${Number(sale.discountMinor) > 0 ? `<tr><td>Discount</td><td class="r">−${m(sale.discountMinor)}</td></tr>` : ''}<tr><td>Sales tax</td><td class="r">${m(sale.taxMinor)}</td></tr><tr class="tot"><td>Total</td><td class="r">${m(sale.totalMinor)}</td></tr></table>
 <h2>Paid by</h2><table>${pays}</table>${notes}
-<!-- fiscal block (FBR invoice number, QR, logo) is reserved here: rendered only once a fiscal number exists -->${sale.invoice.fiscal?.externalInvoiceNumber ? `<div class="fiscal sub">FBR invoice no. ${esc(sale.invoice.fiscal.externalInvoiceNumber)}</div>` : ''}`;
+${PosReceiptService.fiscalHtml(sale.invoice.fiscal, esc)}`;
     return this.pageShell(`Tax invoice ${sale.invoice.number}`, name, logo, body);
   }
 

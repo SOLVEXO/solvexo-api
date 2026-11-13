@@ -35,7 +35,48 @@ export class PosConnectorsService {
         cardGateway: { ...provider(cardGatewayFor()), needs: Object.keys(CARD_GATEWAY_NEEDS ?? {}) },
         fiscal: provider(fiscalProviderFor()),
         raast: raast ? { ...raast, adaptersPending: Object.keys(RAAST_PROVIDER_NEEDS ?? {}) } : null,
+        ui: connectorUi({ raastProvider: raast?.providerKey ?? null, raastReason: raast?.reason ?? null, cardGateway: cardGatewayFor() }),
       },
     };
   }
+}
+
+/**
+ * G6.1 — what the till shows for each provider-dependent feature, decided HERE so a real provider (or new wording, fields, rules) needs no app
+ * update. The app falls back to these same values when the field is absent (an older backend). Nothing secret; no provider credential.
+ */
+export function connectorUi(a: { raastProvider: string | null; raastReason: string | null; cardGateway: { key: string; testMode: boolean } | null }, env: NodeJS.ProcessEnv = process.env) {
+  const raastReasonText: Record<string, string> = {
+    no_sub_merchant: 'Raast is being set up for your store by the payment provider. You will be able to take Raast payments once that is done.',
+    disabled_by_store: 'Raast is switched off for this store (Payments setup).',
+    sub_merchant_other_provider: 'Raast is being moved to a new payment provider for your store. It will be available again once that is done.',
+  };
+  const reasonText = (r: string | null) => (!r ? null : r.startsWith('kyb_') ? 'Verify your business (Payments setup) to take Raast payments.' : raastReasonText[r] ?? null);
+  return {
+    raast: {
+      displayName: 'Raast QR',
+      customerInstructions: 'Customer: open your bank app, choose Raast and scan.',
+      pollAfterMs: 2000,
+      // the "simulate paid" button exists only for the mock provider outside production
+      simulateAvailable: a.raastProvider === 'mock' && env.NODE_ENV !== 'production',
+      reasonText: reasonText(a.raastReason),
+    },
+    cardExternalTerminal: {
+      label: 'Card on a bank terminal',
+      fields: [
+        { key: 'approvalCode', label: 'Approval code', required: true, pattern: null, maxLength: 32, keyboard: 'text' },
+        { key: 'last4', label: 'Last 4', required: false, pattern: '^\\d{4}$', maxLength: 4, keyboard: 'number' },
+        { key: 'terminalLabel', label: 'Terminal', required: false, pattern: null, maxLength: 40, keyboard: 'text' },
+      ],
+    },
+    cardGateway: {
+      statusText: a.cardGateway && a.cardGateway.key !== 'mock' ? null : 'Not available yet. Solvexo is choosing a card provider; until then, use a bank terminal.',
+    },
+    receipts: {
+      whatsapp: { mode: 'link' as 'link' | 'api' | 'off' },
+      minPhoneDigits: 10,
+      consentText: 'The customer gave this contact for their receipt',
+      privacyNote: 'Only the store name, the total and the receipt link are sent.',
+    },
+  };
 }

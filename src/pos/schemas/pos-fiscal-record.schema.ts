@@ -16,12 +16,17 @@ export class PosFiscalRecord {
   @Prop({ type: String, required: true }) saleId: string;
   @Prop({ type: String, required: true }) documentNumber: string;
   @Prop({ type: Number, required: true }) attempt: number;
-  @Prop({ type: String, enum: ['confirmed', 'rejected', 'pending'], required: true }) status: 'confirmed' | 'rejected' | 'pending';
+  @Prop({ type: String, enum: ['confirmed', 'rejected', 'pending', 'failed'], required: true }) status: 'confirmed' | 'rejected' | 'pending' | 'failed';
   @Prop({ type: String, default: null }) fiscalInvoiceNumber: string | null;
   @Prop({ type: String, default: null }) qrPayload: string | null;
   @Prop({ type: String, default: null }) error: string | null;
   @Prop({ type: String, required: true }) providerKey: string;
   @Prop({ type: Boolean, default: false }) testMode: boolean;
+  /** G6.1: what the till prints, as the provider adapter chose it (FISCAL_CONTRACT.md); empty for older rows */
+  @Prop({ type: [{ label: { type: String }, value: { type: String } }], default: [], _id: false }) displayLines: Array<{ label: string; value: string }>;
+  @Prop({ type: String, default: null }) logoUrl: string | null;
+  /** G6.1: a manual retry by the owner (after failed / retries stopped) */
+  @Prop({ type: String, default: null }) requestedBy: string | null;
 }
 export const PosFiscalRecordSchema = SchemaFactory.createForClass(PosFiscalRecord);
 PosFiscalRecordSchema.index({ documentType: 1, documentId: 1, attempt: 1 }, { unique: true });

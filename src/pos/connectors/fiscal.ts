@@ -16,22 +16,48 @@ export interface FiscalDocumentInput {
   seller: { ntn: string | null; strn: string | null; legalName: string | null } | null;
   lines: Array<{ name: string; qty: number; hsCode: string | null; netMinor: number; taxMinor: number }>;
 }
-export interface FiscalResult { status: 'confirmed' | 'rejected' | 'pending'; fiscalInvoiceNumber: string | null; qrPayload: string | null; message?: string }
+/** G6.1: one line the till prints / shows exactly as given (label and value chosen by the provider adapter, never by the app). */
+export interface FiscalDisplayLine { label: string; value: string }
+/**
+ * What a provider answers for one attempt (see docs/pos-blueprint/FISCAL_CONTRACT.md):
+ * - `confirmed` — accepted; `fiscalInvoiceNumber` (+ `qrPayload`) and the `displayLines` to print;
+ * - `pending`   — not fiscalised yet and SAFE to send again (nothing reached the authority / a temporary outage): the sweep retries;
+ * - `failed`    — not fiscalised and NOT safe to resend automatically (outcome unknown, auth error, locked …): stops, needs the owner;
+ * - `rejected`  — the authority refused the document (validation): final, needs correction.
+ * `message` is shown to the cashier / owner for failed and rejected. `logoUrl` is an optional authority logo printed next to the QR.
+ */
+export interface FiscalResult {
+  status: 'confirmed' | 'rejected' | 'pending' | 'failed';
+  fiscalInvoiceNumber: string | null;
+  qrPayload: string | null;
+  message?: string;
+  displayLines?: FiscalDisplayLine[];
+  logoUrl?: string | null;
+}
 export interface FiscalProvider { readonly key: string; readonly testMode: boolean; fiscalise(doc: FiscalDocumentInput): Promise<FiscalResult> }
 
 export class FiscalNotConfiguredError extends Error {
   constructor(readonly key: string) { super(`Fiscal provider "${key}" is not configured — see docs/pos-blueprint/FBR_INTEGRATION_NEEDS.md`); }
 }
 
-/** Dev / tests: confirms with a deterministic number; `MOCK_FISCAL_DOWN=true` simulates an outage (pending → retried). */
+/**
+ * Dev / tests: confirms with a deterministic number and its own display lines. `MOCK_FISCAL_MODE` picks another outcome so every status can be
+ * exercised end to end: `down` (pending → retried), `fail` (failed: not resent), `reject` (rejected). `MOCK_FISCAL_DOWN=true` = `down` (G5.5).
+ */
 export class MockFiscalProvider implements FiscalProvider {
   readonly key = 'mock';
   readonly testMode = true;
   constructor(private readonly env: NodeJS.ProcessEnv = process.env) {}
   async fiscalise(d: FiscalDocumentInput): Promise<FiscalResult> {
-    if (this.env.MOCK_FISCAL_DOWN === 'true') return { status: 'pending', fiscalInvoiceNumber: null, qrPayload: null, message: 'Mock fiscal service unavailable' };
+    const mode = this.env.MOCK_FISCAL_DOWN === 'true' ? 'down' : (this.env.MOCK_FISCAL_MODE ?? '').toLowerCase();
+    if (mode === 'down') return { status: 'pending', fiscalInvoiceNumber: null, qrPayload: null, message: 'Mock fiscal service unavailable' };
+    if (mode === 'fail') return { status: 'failed', fiscalInvoiceNumber: null, qrPayload: null, message: 'Mock: the outcome is unknown, so it was not sent again. Check it, then retry.' };
+    if (mode === 'reject') return { status: 'rejected', fiscalInvoiceNumber: null, qrPayload: null, message: 'Mock: the tax authority refused this document (invalid item code).' };
     const n = `MOCK-FBR-${d.documentType === 'invoice' ? 'I' : 'C'}-${d.documentNumber}`;
-    return { status: 'confirmed', fiscalInvoiceNumber: n, qrPayload: `mock-fiscal:${n}:${d.totalMinor}` };
+    return {
+      status: 'confirmed', fiscalInvoiceNumber: n, qrPayload: `mock-fiscal:${n}:${d.totalMinor}`,
+      displayLines: [{ label: 'Mock fiscal no.', value: n }, { label: 'Mode', value: 'TEST — not filed' }],
+    };
   }
 }
 

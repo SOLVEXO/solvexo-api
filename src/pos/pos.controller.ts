@@ -79,7 +79,14 @@ export class PosController {
   private async fiscaliseCreditNoteOf(res: any): Promise<void> {
     const id = res?.data?.creditNote?.id ? String(res.data.creditNote.id) : null;
     if (!id || !this.fiscal) return;
-    try { const storeId = await this.posService.creditNoteStore(id); if (storeId && (await this.fiscal.enabled(storeId))) await this.fiscal.fiscaliseCreditNote(storeId, id); } catch { /* pending → sweep */ }
+    try {
+      const storeId = await this.posService.creditNoteStore(id);
+      if (storeId && (await this.fiscal.enabled(storeId))) {
+        const b = await this.fiscal.fiscaliseCreditNote(storeId, id);
+        // G6.1: the refund / void response carries the credit note's fiscal block (contract shape) so the till prints it at once
+        res.data.creditNote.fiscal = PosFiscalService.view(res.data.creditNote.fiscal, b ?? undefined, true);
+      }
+    } catch { /* pending → sweep */ }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
