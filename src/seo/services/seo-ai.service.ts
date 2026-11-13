@@ -1,7 +1,8 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
@@ -40,12 +41,18 @@ export class SeoAiService {
     @InjectQueue(QUEUE_NAMES.SEO_AI) private readonly seoAiQueue: Queue,
   ) {}
 
+  /**
+   * `options.apply` (default false): when false the suggestion is only PREVIEWED - nothing on the product/store changes and the
+   * seller decides with `accept()`; the bulk job passes `apply: true` (it exists to fill many products in one go).
+   */
   async generate(
     entityType: 'product' | 'category' | 'store',
     entityId: string,
     sellerId: string,
     actor: { id: string; name?: string; role?: string },
+    options: { apply?: boolean } = {},
   ) {
+    const apply = options.apply === true;
     if (entityType === 'category') {
       throw new BadRequestException('AI SEO suggestions are not available for platform categories.');
     }
@@ -62,33 +69,79 @@ export class SeoAiService {
     const storeId = context.storeId as string;
 
     await this.entitlements.assertFeatureAllowed(storeId, 'seoAiSuggestionsAllowed', 'AI-generated SEO suggestions');
+    // No API key yet: refuse BEFORE touching the seller's credits.
+    if (this.aiProvider.isConfigured === false) {
+      throw new ServiceUnavailableException('AI SEO suggestions are not switched on yet. Nothing was charged.');
+    }
     await this.aiCredits.deduct(storeId, sellerId, AI_SEO_SUGGESTION_CREDIT_COST, `AI SEO suggestion — ${entityType} ${entityId}`);
 
-    const suggestion = await this.aiProvider.generateSuggestion({
-      entityType,
-      name: context.name,
-      description: context.description,
-      categoryName: context.categoryName,
-      storeName: context.storeName,
-    });
+    let suggestion: Awaited<ReturnType<AnthropicSeoAiProvider['generateSuggestion']>>;
+    try {
+      suggestion = await this.aiProvider.generateSuggestion({
+        entityType,
+        name: context.name,
+        description: context.description,
+        categoryName: context.categoryName,
+        storeName: context.storeName,
+      });
+      if (apply) await this.seoContent.applySeoSuggestion(entityType, entityId, suggestion, true);
+    } catch (e) {
+      // Credits are charged only for a suggestion that was really produced: give them back on any failure.
+      await this.aiCredits.grant(storeId, sellerId, AI_SEO_SUGGESTION_CREDIT_COST, `Refund — AI SEO suggestion failed (${entityType} ${entityId})`).catch(() => undefined);
+      throw e;
+    }
 
-    await this.seoContent.applySeoSuggestion(entityType, entityId, suggestion, true);
-
-    await this.db.repositories.seoAiSuggestionLogModel.create({
-      storeId, sellerId, entityType, entityId, suggestion, accepted: true, creditsCost: AI_SEO_SUGGESTION_CREDIT_COST,
+    const log: any = await this.db.repositories.seoAiSuggestionLogModel.create({
+      storeId, sellerId, entityType, entityId, suggestion, accepted: apply, creditsCost: AI_SEO_SUGGESTION_CREDIT_COST,
     });
 
     await this.activityLog.log({
       storeId,
       category: 'seo',
       action: 'seo_ai_suggestion_generated',
-      description: `AI SEO suggestion generated for ${entityType} "${context.name}"`,
+      description: `AI SEO suggestion generated for ${entityType} "${context.name}"${apply ? ' and applied' : ' (preview)'}`,
       actorId: actor.id, actorName: actor.name ?? null, actorRole: actor.role ?? null,
       targetId: entityId, targetType: `${entityType}_seo`,
-      metadata: { creditsCost: AI_SEO_SUGGESTION_CREDIT_COST },
+      metadata: { creditsCost: AI_SEO_SUGGESTION_CREDIT_COST, applied: apply },
     });
 
-    return suggestion;
+    return { ...suggestion, suggestionId: String(log._id), applied: apply };
+  }
+
+  /** Writes a PREVIEWED suggestion onto the product/store once the seller says "use this". Idempotent: a second call changes nothing. No credits are charged here. */
+  async accept(
+    storeId: string,
+    suggestionId: string,
+    actor: { id: string; name?: string; role?: string },
+  ) {
+    await this.entitlements.assertFeatureAllowed(storeId, 'seoAiSuggestionsAllowed', 'AI-generated SEO suggestions');
+    if (!isValidObjectId(suggestionId)) throw new NotFoundException('Suggestion not found.');
+    const model = this.db.repositories.seoAiSuggestionLogModel;
+    const log: any = await model.findOne({ _id: suggestionId, storeId }).lean();
+    if (!log) throw new NotFoundException('Suggestion not found.');
+    const result = { applied: true, entityType: log.entityType as string, entityId: String(log.entityId) };
+    if (log.accepted) return { ...result, alreadyApplied: true };
+
+    const context = await this.seoContent.getEntityContext(log.entityType, String(log.entityId));
+    if (context.storeId !== storeId) throw new ForbiddenException('This suggestion does not belong to your store.');
+
+    // Claim first, so two clicks cannot both write; put the claim back if the write fails.
+    const claim = await model.findOneAndUpdate({ _id: suggestionId, storeId, accepted: false }, { $set: { accepted: true } });
+    if (!claim) return { ...result, alreadyApplied: true };
+    try {
+      await this.seoContent.applySeoSuggestion(log.entityType, String(log.entityId), log.suggestion, true);
+    } catch (e) {
+      await model.updateOne({ _id: suggestionId }, { $set: { accepted: false } });
+      throw e;
+    }
+
+    await this.activityLog.log({
+      storeId, category: 'seo', action: 'seo_ai_suggestion_accepted',
+      description: `AI SEO suggestion applied to ${log.entityType} "${context.name}"`,
+      actorId: actor.id, actorName: actor.name ?? null, actorRole: actor.role ?? null,
+      targetId: String(log.entityId), targetType: `${log.entityType}_seo`,
+    });
+    return { ...result, alreadyApplied: false };
   }
 
   async getSuggestionHistory(storeId: string, query: { page?: number; limit?: number }) {

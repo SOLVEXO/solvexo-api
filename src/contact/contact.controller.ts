@@ -6,12 +6,17 @@ import {
   Param,
   Patch,
   Post,
+  Query,
+  Req,
   UseGuards,
+  UsePipes,
+  ValidationPipe,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ContactService } from './contact.service';
 import { CreateContactSubmissionDto, UpdateContactStatusDto } from './dto/contact.dto';
+import { ReplyContactDto } from './dto/support.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -44,8 +49,20 @@ export class ContactController {
   @Roles('admin')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get all contact submissions (admin)' })
-  getAll() {
-    return this.contactService.findAll();
+  getAll(@Query('tier') tier?: string, @Query('source') source?: string) {
+    return this.contactService.findAll({ tier, source });
+  }
+
+  @RequirePermission('content.manage')
+  @Post('admin/:id/reply')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('admin')
+  @ApiBearerAuth()
+  @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
+  @ApiOperation({ summary: 'Answer a contact submission by email (admin)' })
+  reply(@Req() req: any, @Param('id') id: string, @Body() dto: ReplyContactDto) {
+    return this.contactService.reply(id, dto.message, String(req.user?.name ?? req.user?.email ?? 'Solvexo'));
   }
 
   @RequirePermission('content.manage')

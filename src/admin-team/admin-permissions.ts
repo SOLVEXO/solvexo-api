@@ -9,7 +9,6 @@ export const ADMIN_PERMISSIONS = [
   'billing.manage', // platform plans, subscriptions, POS plans
   'commission.manage', // commission rules + FX settings
   'seo.manage',
-  'ai.manage', // admin AI Studio
   'content.manage', // announcements, FAQs, testimonials, contact messages, newsletter, onboarding slides
   'marketing.manage', // platform coupons, promotions, banners
   'marketplace.manage',

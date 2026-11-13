@@ -10,7 +10,7 @@ import {
   SalesWaMessageSchema,
 } from './schemas/sales-wa-message.schema';
 import { SalesAgentService } from './sales-agent.service';
-import { AiStudioModule } from '../ai-studio/ai-studio.module';
+import { AiTextModule } from '../ai/ai-text.module';
 import {
   SalesChatSession,
   SalesChatSessionSchema,
@@ -78,7 +78,7 @@ import {
     RedisModule,
     AdminAnalyticsModule,
     ExchangeRateModule,
-    AiStudioModule,
+    AiTextModule,
     MongooseModule.forFeature([
       { name: SalesLead.name, schema: SalesLeadSchema },
       { name: SalesActivity.name, schema: SalesActivitySchema },

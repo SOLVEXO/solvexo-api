@@ -34,7 +34,7 @@ export class SeoAiProcessor extends WorkerHost {
 
     for (const entityId of entityIds) {
       try {
-        await this.seoAiService.generate(entityType, entityId, sellerId, actor);
+        await this.seoAiService.generate(entityType, entityId, sellerId, actor, { apply: true }); // the bulk job fills many products in one go
         succeeded.push(entityId);
       } catch (err: any) {
         failed.push({ entityId, reason: err?.message ?? 'Unknown error' });

@@ -57,6 +57,7 @@ export class EmailCampaignsService {
 
   async create(sellerId: string, storeId: string, dto: CreateEmailCampaignDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
+    await this.entitlementsService.assertFeatureAllowed(storeId, 'emailCampaignsAllowed', 'Email Campaigns');
     const campaign = await this.r.emailCampaignModel.create({ storeId, ...dto, status: 'draft' });
     return { success: true, message: 'Campaign created', data: campaign };
   }
@@ -242,6 +243,7 @@ export class EmailCampaignsService {
    *  EmailCampaignSend row, doesn't change the campaign. */
   async sendTest(sellerId: string, storeId: string, campaignId: string, email: string | null) {
     const campaign = await this.getOwnedCampaign(storeId, sellerId, campaignId);
+    await this.entitlementsService.assertFeatureAllowed(storeId, 'emailCampaignsAllowed', 'Email Campaigns');
     if (!email) throw new BadRequestException('No email address to send the test to');
     const store = await this.r.storeModel.findById(storeId).select('name slug customDomain customDomainStatus contactEmail').lean();
     const rendered = renderCampaignEmail({
@@ -284,17 +286,36 @@ export class EmailCampaignsService {
       return { recipientCount: 0 };
     }
 
+    // The plan's monthly allowance of campaign emails (automations and abandoned-cart mails are not counted).
+    await this.entitlementsService.assertEmailAllowance(campaign.storeId, recipients.length);
+
+    // Atomic claim: only ONE caller can move the campaign out of draft/scheduled, so a double click or two parallel
+    // requests can never queue the same audience twice.
+    const previousStatus = campaign.status;
+    const sentAt = new Date();
+    const claimed = await this.r.emailCampaignModel.findOneAndUpdate(
+      { _id: campaign._id, status: { $in: ['draft', 'scheduled'] } },
+      { $set: { status: 'sending', sentAt, recipientCount: recipients.length, scheduledAt: campaign.scheduledAt ?? null } },
+      { new: true },
+    );
+    if (!claimed) throw new BadRequestException('Campaign already sent/sending');
+    campaign.status = 'sending';
+    campaign.sentAt = sentAt;
+    campaign.recipientCount = recipients.length;
+
     const sends = recipients.map((rcpt) => ({
       campaignId: campaign._id.toString(),
       storeId: campaign.storeId,
       email: rcpt.email,
     }));
-    const createdSends = await this.r.emailCampaignSendModel.insertMany(sends);
-
-    campaign.status = 'sending';
-    campaign.sentAt = new Date();
-    campaign.recipientCount = recipients.length;
-    await campaign.save();
+    let createdSends: any[];
+    try {
+      createdSends = await this.r.emailCampaignSendModel.insertMany(sends);
+    } catch (e) {
+      // Nothing was queued yet: put the campaign back so the seller can try again.
+      await this.r.emailCampaignModel.updateOne({ _id: campaign._id }, { $set: { status: previousStatus } });
+      throw e;
+    }
 
     for (let i = 0; i < createdSends.length; i++) {
       const send = createdSends[i] as any;
@@ -345,6 +366,7 @@ export class EmailCampaignsService {
 
   async schedule(sellerId: string, storeId: string, campaignId: string, scheduledAt: string) {
     const campaign = await this.getOwnedCampaign(storeId, sellerId, campaignId);
+    await this.entitlementsService.assertFeatureAllowed(storeId, 'emailCampaignsAllowed', 'Email Campaigns');
     if (campaign.status !== 'draft') throw new BadRequestException('Only a draft campaign can be scheduled');
     const when = new Date(scheduledAt);
     if (Number.isNaN(when.getTime()) || when.getTime() <= Date.now()) throw new BadRequestException('scheduledAt must be a valid future date');
@@ -372,7 +394,13 @@ export class EmailCampaignsService {
   // ── Processor callbacks (see EmailCampaignsProcessor) ────────────────────
 
   async getSendState(sendId: string) {
-    return this.r.emailCampaignSendModel.findById(sendId).select('sentAt failedAt').lean() as Promise<{ sentAt?: Date | null; failedAt?: Date | null } | null>;
+    return this.r.emailCampaignSendModel.findById(sendId).select('sentAt failedAt storeId').lean() as Promise<{ sentAt?: Date | null; failedAt?: Date | null; storeId?: string } | null>;
+  }
+
+  /** Re-checked right before a queued mail goes out: someone who unsubscribed after the campaign was queued must not get it. */
+  async isStillSubscribed(storeId: string, email: string): Promise<boolean> {
+    const row = await this.r.newsletterSubscriberModel.findOne({ storeId, email, isActive: true }).select('_id').lean();
+    return !!row;
   }
 
   /** Idempotent: a send resolves exactly once (sent XOR failed), so a BullMQ

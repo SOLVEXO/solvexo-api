@@ -480,6 +480,14 @@ export class Checkout {
   @Prop({ type: Date, default: null })
   abandonedEmailSentAt: Date | null;
 
+  /** Set when the optional second reminder went out (never more than one). */
+  @Prop({ type: Date, default: null })
+  abandonedSecondEmailSentAt: Date | null;
+
+  /** The store whose plan the recovery mail counts against (a cart can hold several stores, but only one mail goes out). */
+  @Prop({ type: String, default: null })
+  abandonedEmailStoreId: string | null;
+
   /** Set instead of abandonedEmailSentAt when the shopper had unsubscribed
    *  from the store's emails — takes the checkout out of the recovery scan
    *  for good without counting it as a sent reminder in the stats. */
@@ -505,5 +513,7 @@ CheckoutSchema.index({ 'items.sellerId': 1 });
 CheckoutSchema.index({ 'items.storeId': 1 });
 CheckoutSchema.index({ status: 1, abandonedEmailSentAt: 1, updatedAt: 1 });
 CheckoutSchema.index({ abandonedRecoveryToken: 1 }, { sparse: true });
+// Monthly marketing-email count of a store (recovery mails sent this month).
+CheckoutSchema.index({ abandonedEmailStoreId: 1, abandonedEmailSentAt: 1 }, { sparse: true });
 // Abandoned-cart cron: newest-first scan of not-yet-emailed, not-yet-suppressed checkouts (see AbandonedCartService).
 CheckoutSchema.index({ status: 1, isDelete: 1, abandonedEmailSentAt: 1, abandonedEmailSuppressedAt: 1, updatedAt: -1 });

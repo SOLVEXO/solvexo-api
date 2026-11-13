@@ -16,7 +16,7 @@ import { RejectPayoutDto } from './dto/reject-payout.dto';
 import { ManualPayoutDto } from './dto/manual-payout.dto';
 import { AdminFinanceExportQueryDto } from './dto/admin-finance-export-query.dto';
 import { VerifyPayoutMethodDto } from './dto/verify-payout-method.dto';
-import { TransactionFeeBillsQueryDto } from './dto/transaction-fee-bills-query.dto';
+import { MarkFeeBillPaidDto, TransactionFeeBillsQueryDto } from './dto/transaction-fee-bills-query.dto';
 
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
@@ -145,6 +145,12 @@ export class AdminFinanceController {
   @Get('transaction-fee-bills')
   getTransactionFeeBills(@Query() query: TransactionFeeBillsQueryDto) {
     return this.adminFinanceService.getTransactionFeeBills(query);
+  }
+
+  @RequirePermission('finance.payouts')
+  @Patch('transaction-fee-bills/:billId/mark-paid')
+  markTransactionFeeBillPaid(@Req() req: any, @Param('billId') billId: string, @Body() body: MarkFeeBillPaidDto) {
+    return this.adminFinanceService.markTransactionFeeBillPaid(billId, req.user.userId, body?.note ?? null);
   }
 
   @RequirePermission('finance.view')

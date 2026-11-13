@@ -1,3 +1,5 @@
+> SUPERSEDED by FINAL.md (see PROGRESS-FINAL.md)
+
 # SOLVEXO MASTER 2: finish all remaining CODE-SIDE work (no keys needed)
 
 ## FIRST ACTION (session 1 only)

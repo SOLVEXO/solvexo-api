@@ -14,8 +14,10 @@ import type { PlatformPlan } from './schemas/platform-plan.schema';
  * Every limit below is one the backend REALLY enforces (EntitlementsService + the
  * feature guards it feeds) — a switch that nothing checks must never be sold.
  * Deliberately `false`/`null` in every plan, because the product has nothing behind
- * them yet: `advancedAnalyticsAllowed`, `apiWebhooksAllowed`, `marketplaceFeaturedBadge`,
- * `slaUptimePercent`. Turn one on only once the feature behind it exists.
+ * them yet: `advancedAnalyticsAllowed`, `marketplaceFeaturedBadge` (there is no central
+ * marketplace any more), `slaUptimePercent`. Turn one on only once the feature behind it exists.
+ * Store banners and paid promotions are dead (banners live in the theme's hero blocks, there is
+ * no marketplace to advertise on): their limits are unlimited everywhere and never sold.
  *
  * `transactionFeeRate` is the Shopify-style THIRD-PARTY gateway fee: charged only on sales paid through
  * a gateway other than Solvexo Payments (SafePay, JazzCash…). Card sales through Solvexo Payments and
@@ -32,7 +34,7 @@ export type PlanKey = 'basic' | 'grow' | 'advanced' | 'enterprise';
 
 /** Bump when the limits/features in `PLAN_CATALOG` change — existing plan documents
  *  are re-aligned to the catalog once per bump (see PlatformPlanCatalogService). */
-export const CATALOG_VERSION = 4; // v2: Enterprise became fixed-price · v3: transactionFeeRate now means the Shopify-style third-party gateway fee · v4: one uniform yearly discount (25%), yearly prices re-aligned once
+export const CATALOG_VERSION = 5; // v2: Enterprise became fixed-price · v3: transactionFeeRate now means the Shopify-style third-party gateway fee · v4: one uniform yearly discount (25%), yearly prices re-aligned once · v5: final plan matrix (banners/promotions dead and unlimited, abandoned cart + redirects + B2B on every plan, memberships/licenses/courses Grow+, API & webhooks Advanced+, B2B catalogs and monthly email limits). Re-alignment never touches prices.
 
 /** Shopify bills a year up front at 25% off the monthly rate on every plan ($25→$19, $65→$49, $399→$299 a month).
  *  Solvexo applies the same discount to every plan so the catalog is internally consistent. */
@@ -69,10 +71,14 @@ export interface CatalogPlan {
 /** Switches/limits that are OFF/empty on every plan until the feature behind them exists. */
 const NOT_OFFERED = {
   advancedAnalyticsAllowed: false,
-  apiWebhooksAllowed: false,
   marketplaceFeaturedBadge: false,
   slaUptimePercent: null,
 } as const;
+
+/** Store banners and paid promotions are dead (banners now live in the theme's hero blocks like Shopify, and Solvexo no
+ *  longer runs a central marketplace to place ads on): the limits stay in the schema but are unlimited on every plan
+ *  and are never shown or sold. */
+const DEAD_LIMITS = { maxActiveStoreBanners: -1, maxActivePromotions: -1 } as const;
 
 export const PLAN_CATALOG: CatalogPlan[] = [
   {
@@ -84,13 +90,14 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     limits: {
       maxProducts: 25, maxStaffAccounts: 1, maxPosLocations: 1, aiCreditsPerMonth: 100,
       transactionFeeRate: 0.02,
-      maxActiveStoreBanners: 4, maxActivePromotions: 1, maxMarkets: 3,
+      maxMarkets: 3, monthlyEmailSends: 2000, maxB2BCatalogs: 1,
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
-      abandonedCartRecoveryAllowed: false, loyaltyProgramAllowed: false, customRedirectsAllowed: false,
+      abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: false, customRedirectsAllowed: true,
       seoAiSuggestionsAllowed: false, prioritySupport: false,
       whiteLabelAllowed: false, searchConsoleIntegrationAllowed: false,
-      calculatedShippingRatesAllowed: false, digitalMembershipsAllowed: true, digitalLicensesAllowed: true, b2bWholesaleAllowed: true, dedicatedAccountManager: false,
-      ...NOT_OFFERED,
+      calculatedShippingRatesAllowed: false, digitalMembershipsAllowed: false, digitalLicensesAllowed: false, digitalCoursesAllowed: false,
+      b2bWholesaleAllowed: true, apiWebhooksAllowed: false, dedicatedAccountManager: false,
+      ...DEAD_LIMITS, ...NOT_OFFERED,
     },
   },
   {
@@ -102,13 +109,14 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     limits: {
       maxProducts: -1, maxStaffAccounts: 5, maxPosLocations: 3, aiCreditsPerMonth: 500,
       transactionFeeRate: 0.01,
-      maxActiveStoreBanners: 10, maxActivePromotions: 5, maxMarkets: 5,
+      maxMarkets: 5, monthlyEmailSends: 10000, maxB2BCatalogs: 3,
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: true, customRedirectsAllowed: true,
       seoAiSuggestionsAllowed: true, prioritySupport: true,
       whiteLabelAllowed: false, searchConsoleIntegrationAllowed: false,
-      calculatedShippingRatesAllowed: false, digitalMembershipsAllowed: true, digitalLicensesAllowed: true, b2bWholesaleAllowed: true, dedicatedAccountManager: false,
-      ...NOT_OFFERED,
+      calculatedShippingRatesAllowed: false, digitalMembershipsAllowed: true, digitalLicensesAllowed: true, digitalCoursesAllowed: true,
+      b2bWholesaleAllowed: true, apiWebhooksAllowed: false, dedicatedAccountManager: false,
+      ...DEAD_LIMITS, ...NOT_OFFERED,
     },
   },
   {
@@ -120,13 +128,14 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     limits: {
       maxProducts: -1, maxStaffAccounts: 15, maxPosLocations: 10, aiCreditsPerMonth: 2000,
       transactionFeeRate: 0.006,
-      maxActiveStoreBanners: -1, maxActivePromotions: -1, maxMarkets: 10,
+      maxMarkets: 10, monthlyEmailSends: 50000, maxB2BCatalogs: 10,
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: true, customRedirectsAllowed: true,
       seoAiSuggestionsAllowed: true, prioritySupport: true,
       whiteLabelAllowed: true, searchConsoleIntegrationAllowed: true,
-      calculatedShippingRatesAllowed: true, digitalMembershipsAllowed: true, digitalLicensesAllowed: true, b2bWholesaleAllowed: true, dedicatedAccountManager: false,
-      ...NOT_OFFERED,
+      calculatedShippingRatesAllowed: true, digitalMembershipsAllowed: true, digitalLicensesAllowed: true, digitalCoursesAllowed: true,
+      b2bWholesaleAllowed: true, apiWebhooksAllowed: true, dedicatedAccountManager: false,
+      ...DEAD_LIMITS, ...NOT_OFFERED,
     },
   },
   {
@@ -137,13 +146,14 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     limits: {
       maxProducts: -1, maxStaffAccounts: -1, maxPosLocations: -1, aiCreditsPerMonth: 10000,
       transactionFeeRate: 0.002,
-      maxActiveStoreBanners: -1, maxActivePromotions: -1, maxMarkets: -1,
+      maxMarkets: -1, monthlyEmailSends: 200000, maxB2BCatalogs: -1,
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: true, customRedirectsAllowed: true,
       seoAiSuggestionsAllowed: true, prioritySupport: true,
       whiteLabelAllowed: true, searchConsoleIntegrationAllowed: true,
-      calculatedShippingRatesAllowed: true, digitalMembershipsAllowed: true, digitalLicensesAllowed: true, b2bWholesaleAllowed: true, dedicatedAccountManager: true,
-      ...NOT_OFFERED,
+      calculatedShippingRatesAllowed: true, digitalMembershipsAllowed: true, digitalLicensesAllowed: true, digitalCoursesAllowed: true,
+      b2bWholesaleAllowed: true, apiWebhooksAllowed: true, dedicatedAccountManager: true,
+      ...DEAD_LIMITS, ...NOT_OFFERED,
     },
   },
 ];
@@ -152,13 +162,14 @@ export const PLAN_CATALOG: CatalogPlan[] = [
 
 type NumericKey =
   | 'maxProducts' | 'maxStaffAccounts' | 'maxPosLocations' | 'aiCreditsPerMonth'
-  | 'maxActiveStoreBanners' | 'maxActivePromotions' | 'maxMarkets';
+  | 'maxActiveStoreBanners' | 'maxActivePromotions' | 'maxMarkets' | 'maxB2BCatalogs' | 'monthlyEmailSends';
 type FlagKey =
   | 'customDomainAllowed' | 'emailCampaignsAllowed' | 'advancedSeoToolsAllowed'
   | 'abandonedCartRecoveryAllowed' | 'loyaltyProgramAllowed' | 'customRedirectsAllowed'
   | 'seoAiSuggestionsAllowed' | 'prioritySupport' | 'whiteLabelAllowed'
   | 'searchConsoleIntegrationAllowed'
-  | 'calculatedShippingRatesAllowed' | 'dedicatedAccountManager';
+  | 'calculatedShippingRatesAllowed' | 'dedicatedAccountManager'
+  | 'digitalMembershipsAllowed' | 'digitalLicensesAllowed' | 'digitalCoursesAllowed' | 'b2bWholesaleAllowed' | 'apiWebhooksAllowed';
 
 /** `min` = lowest legal non-unlimited value; `unlimited` = whether -1 means unlimited
  *  (AI credits aren't -1-aware in AiCreditsService, so they must stay a real number). */
@@ -170,6 +181,8 @@ const NUMERIC_LIMITS: Record<NumericKey, { label: string; min: number; unlimited
   maxActiveStoreBanners: { label: 'Store banners', min: 1, unlimited: true },
   maxActivePromotions:   { label: 'Active promotions', min: 1, unlimited: true },
   maxMarkets:            { label: 'Selling currencies (markets)', min: 1, unlimited: true },
+  maxB2BCatalogs:        { label: 'Wholesale catalogs', min: 1, unlimited: true },
+  monthlyEmailSends:     { label: 'Marketing emails per month', min: 0, unlimited: false },
 };
 
 /** Feature switches that are real (enforced, or an explicit human promise), in display order. */
@@ -184,6 +197,11 @@ export const FLAG_FEATURES: { key: FlagKey; label: string }[] = [
   { key: 'whiteLabelAllowed', label: 'White-label branding' },
   { key: 'searchConsoleIntegrationAllowed', label: 'Google Search Console integration' },
   { key: 'calculatedShippingRatesAllowed', label: 'Live carrier shipping rates at checkout' },
+  { key: 'b2bWholesaleAllowed', label: 'Wholesale (B2B)' },
+  { key: 'digitalMembershipsAllowed', label: 'Memberships' },
+  { key: 'digitalLicensesAllowed', label: 'License keys' },
+  { key: 'digitalCoursesAllowed', label: 'Courses' },
+  { key: 'apiWebhooksAllowed', label: 'Webhooks & API' },
   { key: 'prioritySupport', label: 'Priority support' },
   { key: 'dedicatedAccountManager', label: 'Dedicated account manager' },
 ];
@@ -313,10 +331,12 @@ export function buildFeatureBullets(
   if (changed('maxPosLocations')) {
     lines.push(l.maxPosLocations === -1 ? 'Unlimited POS & inventory locations' : `${money(l.maxPosLocations)} POS / inventory location${l.maxPosLocations === 1 ? '' : 's'}`);
   }
-  if (changed('aiCreditsPerMonth') && l.aiCreditsPerMonth > 0) lines.push(`${money(l.aiCreditsPerMonth)} AI Studio credits every month`);
+  // AI credits are only spent by AI SEO suggestions, so a plan without them does not advertise credits it can not use.
+  if (changed('aiCreditsPerMonth') && l.aiCreditsPerMonth > 0 && l.seoAiSuggestionsAllowed) lines.push(`${money(l.aiCreditsPerMonth)} AI credits every month (for AI SEO suggestions)`);
   if (changed('maxMarkets')) lines.push(l.maxMarkets === -1 ? 'Sell in unlimited currencies' : `Sell in up to ${money(l.maxMarkets)} currencies`);
-  if (changed('maxActiveStoreBanners')) lines.push(l.maxActiveStoreBanners === -1 ? 'Unlimited store banners' : `${money(l.maxActiveStoreBanners)} store banners`);
-  if (changed('maxActivePromotions')) lines.push(l.maxActivePromotions === -1 ? 'Unlimited active promotions' : `${money(l.maxActivePromotions)} active promotion${l.maxActivePromotions === 1 ? '' : 's'}`);
+  // Store banners and promotions are dead (see DEAD_LIMITS) and are never advertised.
+  if (changed('monthlyEmailSends') && l.monthlyEmailSends > 0) lines.push(`${money(l.monthlyEmailSends)} marketing emails a month`);
+  if (l.b2bWholesaleAllowed && changed('maxB2BCatalogs')) lines.push(l.maxB2BCatalogs === -1 ? 'Unlimited wholesale catalogs' : `${money(l.maxB2BCatalogs)} wholesale catalog${l.maxB2BCatalogs === 1 ? '' : 's'}`);
   for (const { key, label } of FLAG_FEATURES) {
     if (l[key] && !(p && p[key])) lines.push(label);
   }

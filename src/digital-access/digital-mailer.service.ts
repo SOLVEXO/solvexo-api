@@ -33,8 +33,8 @@ export class DigitalMailerService {
       const url = `${r.base}${path}`;
       await this.notifications.sendCustomerEmail({
         to: r.to, storeId, event,
-        vars: { customerName: r.name, libraryUrl: url, membershipUrl: url, ...vars },
-        cta: r.base ? { label: path === '/library' ? 'Open my library' : 'Manage membership', url } : null,
+        vars: { customerName: r.name, libraryUrl: url, membershipUrl: url, licensesUrl: url, ...vars },
+        cta: r.base ? { label: path === '/library' || path.startsWith('/library?') ? 'Open my library' : path === '/licenses' ? 'View my license keys' : 'Manage membership', url } : null,
       });
     } catch (e: any) {
       this.logger.warn(`${event} email failed: ${e?.message}`);
@@ -48,6 +48,11 @@ export class DigitalMailerService {
 
   purchaseDelivered(storeId: string, customerId: string, productName: string) {
     return this.send('digital_purchase_delivered', storeId, customerId, { productName }, '/library');
+  }
+
+  /** The key is shown in the mail itself (the buyer paid for it) and stays in the buyer's /licenses page. */
+  licenseKeyIssued(storeId: string, customerId: string, productName: string, licenseKey: string, activationLimit: number) {
+    return this.send('license_key_issued', storeId, customerId, { productName, licenseKey, activationLimit: String(Math.max(1, activationLimit)) }, '/licenses');
   }
 
   fileUpdated(storeId: string, customerId: string, v: { productName: string; fileName: string; version: string; changelog: string | null }) {

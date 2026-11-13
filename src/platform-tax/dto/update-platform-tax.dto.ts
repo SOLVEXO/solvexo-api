@@ -3,6 +3,11 @@ import { Type } from 'class-transformer';
 import { ArrayMaxSize, IsArray, IsBoolean, IsDateString, IsIn, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import { PLATFORM_TAX_AUTHORITIES } from '../platform-tax.util';
 
+export class PlatformTaxRateVerificationDto {
+  @IsString() @MaxLength(300) source: string;
+  @IsString() @MaxLength(120) accountantName: string;
+}
+
 export class PlatformTaxRateDto {
   @IsOptional() @IsString() @MaxLength(64) id?: string;
   @IsString() @Matches(/^[A-Za-z]{2}$/, { message: 'country must be a 2-letter ISO code' }) country: string;
@@ -10,6 +15,8 @@ export class PlatformTaxRateDto {
   @IsNumber() @Min(0) @Max(100) ratePercent: number;
   @IsIn(['draft', 'confirmed']) status: 'draft' | 'confirmed';
   @IsOptional() @IsDateString() effectiveFrom?: string | null;
+  /** Required when a rate is newly marked Confirmed (or a confirmed rate is changed): where the rate comes from and who confirmed it. */
+  @IsOptional() @ValidateNested() @Type(() => PlatformTaxRateVerificationDto) verification?: PlatformTaxRateVerificationDto;
 }
 
 export class UpdatePlatformTaxDto {

@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, Injectable, ServiceUnavailableException } from '@nestjs/common';
-import { TextGenerationService } from '../ai-studio/providers/text-generation.service';
+import { TextGenerationService } from '../ai/text-generation.service';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { EmailService } from '@/otp/services/email.service';

@@ -18,6 +18,9 @@ const RESET_EXPIRY_MINUTES = 60;
 const VIEW_AS_MINUTES = 30;
 const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
 const known = new Set<string>(ADMIN_PERMISSIONS);
+/** Permissions that no longer exist (their feature was removed). A role that still carries one must keep working: it is ignored when checking, dropped when saving, and pulled out of stored roles at boot. */
+const RETIRED_PERMISSIONS = new Set<string>(['ai.manage']);
+const withoutRetired = (list: string[]) => list.filter((p) => !RETIRED_PERMISSIONS.has(p));
 
 /** Who is calling: the owner / a Super Admin (never restricted) or a team admin holding `team.manage`. */
 export interface Actor { userId: string; teamAdmin?: boolean; permissions?: string[]; name?: string }
@@ -43,6 +46,9 @@ export class AdminTeamService implements OnModuleInit {
       const anySuper = await this.admins.exists({ isSuperAdmin: true });
       if (!anySuper) await this.admins.updateMany({ isDelete: { $ne: true } }, { $set: { isSuperAdmin: true } });
     } catch { /* never block boot */ }
+    try {
+      await this.roles.updateMany({ permissions: { $in: [...RETIRED_PERMISSIONS] } }, { $pull: { permissions: { $in: [...RETIRED_PERMISSIONS] } } });
+    } catch { /* never block boot */ }
   }
 
   // ── helpers ───────────────────────────────────────────────────────────────
@@ -50,7 +56,8 @@ export class AdminTeamService implements OnModuleInit {
     await this.activity.log({ category: 'admin_team', action, description, actorId: actor.userId, actorName: actor.name ?? null, actorRole: 'admin', targetId: targetId ?? null, targetType: 'admin' });
   }
 
-  private async assertRoleGrantable(actor: Actor, permissions: string[]) {
+  private async assertRoleGrantable(actor: Actor, requested: string[]) {
+    const permissions = withoutRetired(requested);
     const bad = permissions.filter((p) => !known.has(p));
     if (bad.length) throw new BadRequestException(`Unknown permission: ${bad.join(', ')}`);
     if (isSuper(actor)) return;
@@ -110,7 +117,7 @@ export class AdminTeamService implements OnModuleInit {
     await this.assertRoleGrantable(actor, dto.permissions);
     const name = dto.name.trim();
     if (await this.roles.exists({ name, isDelete: false })) throw new BadRequestException('A role with this name already exists.');
-    const role = await this.roles.create({ name, description: dto.description?.trim() || null, permissions: dto.permissions, readOnly: !!dto.readOnly });
+    const role = await this.roles.create({ name, description: dto.description?.trim() || null, permissions: withoutRetired(dto.permissions), readOnly: !!dto.readOnly });
     await this.log(actor, 'admin_role_created', `Admin role "${name}" created`, String(role._id));
     return { success: true, data: role };
   }
@@ -121,7 +128,7 @@ export class AdminTeamService implements OnModuleInit {
     await this.assertRoleGrantable(actor, [...(role.permissions ?? []), ...(dto.permissions ?? [])]);
     if (dto.name !== undefined) role.name = dto.name.trim();
     if (dto.description !== undefined) role.description = dto.description.trim() || null;
-    if (dto.permissions !== undefined) role.permissions = dto.permissions;
+    if (dto.permissions !== undefined) role.permissions = withoutRetired(dto.permissions);
     if (dto.readOnly !== undefined) role.readOnly = dto.readOnly;
     await role.save();
     // Everyone on this role signs in again with the new access.

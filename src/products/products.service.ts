@@ -1423,7 +1423,9 @@ export class ProductsService {
 
     const categoryId = await this.resolveProductCategoryId(storeId, store.categoryId, requestedCategoryId);
     // Prepared BEFORE the transaction: it can upload/derive a preview file, which must not hold a transaction open.
-    const digitalPayload = digital ? await this.prepareDigitalPreview(null, normalizeDigital(digital)) : null;
+    const normalizedDigital = digital ? normalizeDigital(digital) : null;
+    if (normalizedDigital?.licenseKeys?.enabled) await this.entitlementsService.assertFeatureAllowed(storeId, 'digitalLicensesAllowed', 'License keys');
+    const digitalPayload = normalizedDigital ? await this.prepareDigitalPreview(null, normalizedDigital) : null;
 
     const productId = new Types.ObjectId();
     const [sku] = generateSkus(String(productId), 1, []);
@@ -1685,7 +1687,12 @@ export class ProductsService {
       productUpdate.scheduledAt = resolveScheduledAt('scheduled', scheduledAt);
     }
     if (digital !== undefined && product.type === 'digital') {
-      productUpdate.digital = await this.prepareDigitalPreview(product.digital?.preview, normalizeDigital(digital, product.digital));
+      const nextDigital = normalizeDigital(digital, product.digital);
+      // Switching license keys ON is a plan feature; leaving them on (or switching off) for a store that downgraded is always allowed.
+      if (nextDigital?.licenseKeys?.enabled && !product.digital?.licenseKeys?.enabled) {
+        await this.entitlementsService.assertFeatureAllowed(String(product.storeId), 'digitalLicensesAllowed', 'License keys');
+      }
+      productUpdate.digital = await this.prepareDigitalPreview(product.digital?.preview, nextDigital);
     }
 
     if (educationLevel !== undefined && product.productType === 'educational') {

@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { aiModel } from './ai-model.util';
 import Anthropic from '@anthropic-ai/sdk';
 import { RedisService } from '../redis/redis.service';
 import { resolveCountryName } from './country-names.const';
@@ -328,7 +329,7 @@ export class AuthVisualService {
     ].join('\n');
     try {
       const msg = await client.messages.create({
-        model: process.env.AUTH_VISUAL_VETTING_MODEL || 'claude-haiku-4-5-20251001',
+        model: aiModel(process.env.AUTH_VISUAL_VETTING_MODEL),
         max_tokens: 60,
         messages: [{
           role: 'user',

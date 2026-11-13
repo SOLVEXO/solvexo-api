@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { latestUsdRates, toUsd } from '../common/usd-rates.util';
 import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
@@ -16,6 +16,7 @@ import { PdfReportBuilder } from '../analytics/utils/pdf-report.util';
 import { AdminConfigService } from '../admin-config/admin-config.service';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { PlatformTaxService } from '../platform-tax/platform-tax.service';
+import { TransactionFeeBillingService } from '../platform-plans/transaction-fee-billing.service';
 
 const CACHE_TTL_SECONDS = 600; // 10 minutes — same convention as admin/seller analytics
 
@@ -37,6 +38,7 @@ export class AdminFinanceService {
     private readonly adminConfigService: AdminConfigService,
     private readonly activityLogService: ActivityLogService,
     @Optional() private readonly platformTax?: PlatformTaxService,
+    @Optional() private readonly feeBilling?: TransactionFeeBillingService,
   ) {}
 
   private get r() {
@@ -87,7 +89,7 @@ export class AdminFinanceService {
     const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
     const filter: Record<string, any> = { isDelete: false };
     switch (query.status ?? 'open') {
-      case 'open': filter.status = { $in: ['invoiced', 'payment_failed', 'failed'] }; break;
+      case 'open': filter.status = { $in: ['invoiced', 'payment_failed', 'failed', 'awaiting_payment'] }; break;
       case 'all': break;
       default: filter.status = query.status;
     }
@@ -96,7 +98,7 @@ export class AdminFinanceService {
       this.r.transactionFeeBillModel.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       this.r.transactionFeeBillModel.countDocuments(filter),
       this.r.transactionFeeBillModel.aggregate([
-        { $match: { isDelete: false, status: { $in: ['invoiced', 'payment_failed', 'failed'] } } },
+        { $match: { isDelete: false, status: { $in: ['invoiced', 'payment_failed', 'failed', 'awaiting_payment'] } } },
         { $group: { _id: null, amountUSD: { $sum: '$amountUSD' }, count: { $sum: 1 } } },
       ]),
     ]);
@@ -125,12 +127,24 @@ export class AdminFinanceService {
           saleCount: b.saleCount ?? 0,
           status: b.status,
           failureReason: b.failureReason ?? null,
+          collectionMode: b.collectionMode ?? 'stripe',
+          dueAt: b.dueAt ?? null,
+          sellerReportedPaidAt: b.sellerReportedPaidAt ?? null,
+          sellerPaymentNote: b.sellerPaymentNote ?? null,
           hostedInvoiceUrl: b.hostedInvoiceUrl ?? null,
           paidAt: b.paidAt ?? null,
           createdAt: b.createdAt,
         })),
       },
     };
+  }
+
+  /** The money for a fee bill arrived outside Stripe (a bank transfer): close the bill. The seller is told. */
+  async markTransactionFeeBillPaid(billId: string, adminId: string, note?: string | null) {
+    if (!this.feeBilling) throw new ServiceUnavailableException('Fee billing is not available');
+    const bill = await this.feeBilling.markPaidManually(billId, adminId, note ?? null);
+    if (!bill) throw new BadRequestException('This bill is not waiting for a payment (it may already be paid, or it does not exist).');
+    return { success: true, data: { billId, status: 'paid' } };
   }
 
   async getPlatformRevenue(query: any) {
@@ -158,7 +172,7 @@ export class AdminFinanceService {
           { $group: { _id: null, total: { $sum: '$amountUSD' }, tax: { $sum: { $ifNull: ['$taxAmountUSD', 0] } }, count: { $sum: 1 } } },
         ]),
         this.r.transactionFeeBillModel.aggregate([
-          { $match: { status: { $in: ['invoiced', 'payment_failed'] }, isDelete: false, createdAt: { $gte: from, $lte: to } } },
+          { $match: { status: { $in: ['invoiced', 'payment_failed', 'awaiting_payment'] }, isDelete: false, createdAt: { $gte: from, $lte: to } } },
           { $group: { _id: null, total: { $sum: '$amountUSD' }, count: { $sum: 1 } } },
         ]),
         this.r.transactionModel.aggregate([

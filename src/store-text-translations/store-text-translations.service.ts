@@ -4,7 +4,7 @@ import { isValidObjectId, Types } from 'mongoose';
 import { DatabaseService } from '@/database/databaseservice';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { normalizeLocale } from '@/markets/market-price.util';
-import { TextGenerationService } from '@/ai-studio/providers/text-generation.service';
+import { TextGenerationService } from '@/ai/text-generation.service';
 import {
   collectBlogBodyItems, collectChromeBlockItems, collectFieldItems, collectSectionItems, isUiTextKey, isValidTextKey, MAX_TEXT_LENGTH,
   type TextSourceGroup, type TextSourceItem,

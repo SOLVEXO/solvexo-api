@@ -77,6 +77,10 @@ export class StorefrontSession {
   @Prop({ type: [String], default: [] })
   orderIds: string[];
 
+  // A/B tests this visit joined (variant recomputed by the server; see experiments/). Goals = the funnel flags above.
+  @Prop({ type: [{ _id: false, experimentId: String, variant: String }], default: [] })
+  experiments: { experimentId: string; variant: 'a' | 'b' }[];
+
   @Prop({ type: String, default: null })
   userId: string | null;
 

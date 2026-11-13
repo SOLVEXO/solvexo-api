@@ -2,7 +2,7 @@
 import { StoreMailService } from './store-mail.service';
 import { Global, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
-import { AiStudioModule } from '../ai-studio/ai-studio.module';
+import { AiTextModule } from '../ai/ai-text.module';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
@@ -38,7 +38,7 @@ import { IntegrationsModule } from '../integrations/integrations.module';
     AuthModule,
     RedisModule,
     IntegrationsModule,
-    AiStudioModule,
+    AiTextModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

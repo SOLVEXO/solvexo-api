@@ -19,5 +19,7 @@ export interface SeoAiSuggestion {
  * provider drops in later without touching `SeoAiService`.
  */
 export interface ISeoAiProvider {
+  /** False when the provider has no credentials yet; callers refuse before charging anything. */
+  readonly isConfigured?: boolean;
   generateSuggestion(input: SeoAiSuggestionInput): Promise<SeoAiSuggestion>;
 }

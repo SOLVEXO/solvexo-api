@@ -12,7 +12,7 @@ import { IdempotencyInterceptor } from '@/common/idempotency.interceptor';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { actingSellerId } from '@/common/acting-seller-id.util';
 import { SeoAiService } from '../services/seo-ai.service';
-import { GenerateAiSuggestionDto, GenerateAiSuggestionBulkDto } from '../dto/generate-ai-suggestion.dto';
+import { GenerateAiSuggestionDto, GenerateAiSuggestionBulkDto, AcceptAiSuggestionDto } from '../dto/generate-ai-suggestion.dto';
 import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
 // AI generation costs real money (AI credits + the underlying Claude API
@@ -38,6 +38,15 @@ export class SellerSeoAiController {
     const sellerId = actingSellerId(req.user);
     await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, sellerId);
     return this.seoAi.generate(dto.entityType, dto.entityId, sellerId, { id: req.user.userId, role: req.user.role });
+  }
+
+  /** "Use this": writes a previewed suggestion (from `generate`) onto the product or store. Idempotent, no credits. */
+  @RequirePermission('seo.manage')
+  @Post('accept')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  async accept(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AcceptAiSuggestionDto) {
+    await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, actingSellerId(req.user));
+    return this.seoAi.accept(storeId, dto.suggestionId, { id: req.user.userId, role: req.user.role });
   }
 
   @RequirePermission('seo.manage')

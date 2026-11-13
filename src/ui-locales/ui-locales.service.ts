@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
-import { TextGenerationService } from '@/ai-studio/providers/text-generation.service';
+import { TextGenerationService } from '@/ai/text-generation.service';
 import { LANGUAGE_NAMES, isSupportedLanguage } from '@/common/supported-languages.const';
 import { STOREFRONT_EN } from './storefront-en.source';
 import { chunk, flattenStrings, keepsPlaceholders, STATIC_UI_LOCALES, unflattenStrings, type FlatStrings } from './ui-locales.util';

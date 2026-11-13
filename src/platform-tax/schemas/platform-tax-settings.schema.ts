@@ -25,10 +25,11 @@ export class PlatformTaxSettings {
       status: { type: String, enum: ['draft', 'confirmed'], default: 'draft' },
       effectiveFrom: { type: Date, default: null },
       stripeTaxRateId: { type: String, default: null },
+      verification: { type: { _id: false, source: String, accountantName: String, verifiedAt: Date, verifiedBy: String }, default: null },
     }],
     default: [],
   })
-  rates: Array<{ id: string; country: string; label: string; ratePercent: number; status: 'draft' | 'confirmed'; effectiveFrom: Date | null; stripeTaxRateId: string | null }>;
+  rates: Array<{ id: string; country: string; label: string; ratePercent: number; status: 'draft' | 'confirmed'; effectiveFrom: Date | null; stripeTaxRateId: string | null; verification?: { source: string; accountantName: string; verifiedAt: Date; verifiedBy: string } | null }>;
 
   @Prop({ type: String, default: null }) updatedBy: string | null;
 }

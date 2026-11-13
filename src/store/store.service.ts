@@ -1165,10 +1165,10 @@ export class StoreService {
       // this Settings page used to show as-is, disagreeing with Billing
       // Center's real answer for the exact same store.
       sellerPlatformSubscriptionModel.findOne({ storeId, isDelete: false }).select('platformPlanId status').lean(),
-      // Real AI Studio wallet balance, same fix/reasoning as `plan` above —
+      // Real AI credits wallet balance, same fix/reasoning as `plan` above —
       // store.aiCredits (spread in below via store.toObject()) is a legacy
       // field never kept in sync with AiCreditsWalletModel, the real ledger
-      // AiStudioCreditsService.hold()/grant() actually deduct/credit against.
+      // AiCreditsService.deduct()/grant() actually deduct/credit against.
       this.aiCreditsService.getBalance(storeId),
       orderModel.aggregate([
         { $match: { isDelete: false } },

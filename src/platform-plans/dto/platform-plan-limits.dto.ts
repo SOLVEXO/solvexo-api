@@ -65,4 +65,15 @@ export class PlatformPlanLimitsDto {
   @ApiProperty({ required: false, description: 'Max checkout currencies (markets), base currency included. -1 = unlimited' })
   @IsOptional() @Type(() => Number) @IsNumber() @Min(-1) @NotEquals(0, { message: 'maxMarkets must be -1 (unlimited) or at least 1' })
   maxMarkets?: number;
+
+  @ApiProperty({ required: false, description: 'Gates creating courses in the Digital hub' })
+  @IsOptional() @IsBoolean() digitalCoursesAllowed?: boolean;
+
+  @ApiProperty({ required: false, description: 'Wholesale (B2B) catalogs per store. -1 = unlimited' })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(-1) @NotEquals(0, { message: 'maxB2BCatalogs must be -1 (unlimited) or at least 1' })
+  maxB2BCatalogs?: number;
+
+  @ApiProperty({ required: false, description: 'Marketing campaign emails per calendar month (automations and abandoned-cart mails are not counted)' })
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0)
+  monthlyEmailSends?: number;
 }

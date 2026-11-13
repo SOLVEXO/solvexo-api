@@ -110,16 +110,21 @@ export class PlatformPlanNotificationsService {
 
   async sendPaymentFailed(to: string | string[], data: {
     sellerName: string; storeName: string; planName: string; amountUSD: number;
-    attemptNumber: number; maxAttempts: number; nextRetryDate: Date;
+    attemptNumber: number; maxAttempts: number; nextRetryDate: Date | null; lockDate?: Date | null;
   }) {
+    const retryLine = data.nextRetryDate
+      ? `We'll automatically retry on <strong>${data.nextRetryDate.toDateString()}</strong>.`
+      : `We'll keep trying while your card is on file.`;
+    const lockLine = data.lockDate
+      ? `If the payment is still unpaid on <strong>${data.lockDate.toDateString()}</strong>, your store will be locked (selling paused; your data stays safe).`
+      : `To avoid your store being locked (selling paused), please make sure your payment method is up to date.`;
     const html = shell('Platform plan payment failed', `
       <p>Hi ${data.sellerName},</p>
       <p>We couldn't process your platform-plan payment for <strong>${data.storeName}</strong> — ${data.planName}.</p>
       <div class="danger">
-        <strong>Attempt ${data.attemptNumber} of ${data.maxAttempts} failed</strong> for ${money(data.amountUSD)}.
+        <strong>Payment failed</strong> for ${money(data.amountUSD)}.
       </div>
-      <p>We'll automatically retry on <strong>${data.nextRetryDate.toDateString()}</strong>. To avoid your store being
-      locked (selling paused), please make sure your payment method is up to date before then.</p>
+      <p>${retryLine} ${lockLine} Update your payment method from Plan &amp; Billing to avoid this.</p>
     `);
     await this.send(to, `Action needed: payment failed for ${data.storeName}`, html);
   }

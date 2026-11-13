@@ -34,7 +34,12 @@ export class BillingAccessGuard implements CanActivate {
     const req = context.switchToHttp().getRequest();
     // Covers both a seller-dashboard mutation (storeId in the URL) and a
     // buyer checkout (storeId in the body) — whichever shape the route uses.
-    const storeId: string | undefined = req.params?.storeId ?? req.body?.storeId ?? req.query?.storeId;
+    // Buyer checkout takes the store from the buyer's JWT (create-checkout never
+    // sends storeId in the body), so fall back to it — otherwise a locked store's
+    // checkout resolved no store and failed open. Seller routes always carry :storeId.
+    const storeId: string | undefined =
+      req.params?.storeId ?? req.body?.storeId ?? req.query?.storeId ??
+      (options.audience === 'buyer' ? req.user?.storeId : undefined);
     if (!storeId) return true; // can't resolve which store — fail open rather than break an unrelated route
 
     const sub = await this.db.repositories.sellerPlatformSubscriptionModel
