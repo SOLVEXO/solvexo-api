@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, Param, Patch, Post, Put, Query, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -23,8 +25,53 @@ export class StoreContactController {
   constructor(private readonly service: StoreContactService) {}
 
   @Get(':storeId')
-  list(@Req() req: any, @Param('storeId') storeId: string, @Query('page') page?: string, @Query('limit') limit?: string, @Query('status') status?: string) {
-    return this.service.list(storeId, actingSellerId(req.user), { page: Number(page), limit: Number(limit), status });
+  list(@Req() req: any, @Param('storeId') storeId: string, @Query('page') page?: string, @Query('limit') limit?: string, @Query('status') status?: string, @Query('form') form?: string, @Query('q') q?: string, @Query('source') source?: string) {
+    return this.service.list(storeId, actingSellerId(req.user), { page: Number(page), limit: Number(limit), status, form, q, source });
+  }
+
+  /** Seen / started / sent per form for the last N days. */
+  @Get(':storeId/report')
+  report(@Req() req: any, @Param('storeId') storeId: string, @Query('days') days?: string) {
+    return this.service.report(storeId, actingSellerId(req.user), Number(days));
+  }
+
+  /** The forms that received messages, for the inbox filter. */
+  @Get(':storeId/forms')
+  forms(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.service.forms(storeId, actingSellerId(req.user));
+  }
+
+  /** CSV of the messages matching the same filters as the list. */
+  @Get(':storeId/export')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Header('Content-Type', 'text/csv; charset=utf-8')
+  @Header('Content-Disposition', 'attachment; filename="contact-messages.csv"')
+  exportCsv(@Req() req: any, @Param('storeId') storeId: string, @Query('status') status?: string, @Query('form') form?: string, @Query('q') q?: string, @Query('source') source?: string) {
+    return this.service.exportCsv(storeId, actingSellerId(req.user), { status, form, q, source });
+  }
+
+  /** A 2-minute link to one file a visitor attached. */
+  @Get(':storeId/:id/file/:fileId')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  fileLink(@Req() req: any, @Param('storeId') storeId: string, @Param('id') id: string, @Param('fileId') fileId: string) {
+    return this.service.fileLink(storeId, actingSellerId(req.user), id, fileId);
+  }
+
+  /** The CAPTCHA keys of the store's forms (the secret is never sent back). */
+  @Get(':storeId/spam-protection')
+  spamSettings(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.service.getSpamSettings(storeId, actingSellerId(req.user));
+  }
+
+  @Put(':storeId/spam-protection')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  saveSpamSettings(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { siteKey?: string; secretKey?: string }) {
+    return this.service.saveSpamSettings(storeId, actingSellerId(req.user), body);
+  }
+
+  @Delete(':storeId/spam-protection')
+  clearSpamSettings(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.service.clearSpamSettings(storeId, actingSellerId(req.user));
   }
 
   @Patch(':storeId/:id')
@@ -52,9 +99,31 @@ export class StoreContactController {
 export class PublicStoreContactController {
   constructor(private readonly service: StoreContactService) {}
 
+  /** Which CAPTCHA (if any) the store's forms use: only the public site key. */
+  @Get(':storeId/config')
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  config(@Param('storeId') storeId: string) {
+    return this.service.publicConfig(storeId);
+  }
+
+  /** A visitor attaches a file to a form field (private storage; checked against the seller's field). */
+  @Post(':storeId/upload')
+  @Throttle({ default: { limit: 8, ttl: 60_000 } })
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } }))
+  upload(@Param('storeId') storeId: string, @UploadedFile() file: any, @Body() body: { sectionId?: string; fieldId?: string }) {
+    return this.service.upload(storeId, body, file);
+  }
+
+  /** A visitor saw / started a form (anonymous counters for the seller's report). */
+  @Post(':storeId/event')
+  @Throttle({ default: { limit: 40, ttl: 60_000 } })
+  event(@Param('storeId') storeId: string, @Body() body: { sectionId?: string; kind?: string; fieldId?: string }) {
+    return this.service.trackEvent(storeId, String(body?.sectionId ?? ''), String(body?.kind ?? ''), typeof body?.fieldId === 'string' ? body.fieldId : undefined);
+  }
+
   @Post(':storeId')
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
-  submit(@Param('storeId') storeId: string, @Body() dto: CreateContactMessageDto) {
-    return this.service.submit(storeId, dto);
+  submit(@Param('storeId') storeId: string, @Body() dto: CreateContactMessageDto, @Req() req: any) {
+    return this.service.submit(storeId, dto, req.ip);
   }
 }
