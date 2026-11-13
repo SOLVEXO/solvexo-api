@@ -2,6 +2,7 @@
 import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Cron } from '@nestjs/schedule';
+import { FormStat, FormStatDocument } from './schemas/form-stat.schema';
 import { readAnalyticsSessionId } from '../common/storefront-session.util';
 import { Model } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
@@ -45,6 +46,7 @@ export class StoreContactService {
     @Optional() private readonly webhooks?: MerchantWebhooksService,
     @Optional() private readonly newsletter?: NewsletterService,
     @Optional() private readonly redis?: RedisService,
+    @Optional() @InjectModel(FormStat.name) private readonly stats?: Model<FormStatDocument>,
   ) {}
 
   private static readonly replyTimes = new Map<string, number[]>();
@@ -346,8 +348,9 @@ export class StoreContactService {
   // ── Seller ───────────────────────────────────────────────────────────────
 
   /** The filter shared by the inbox list and the CSV export: status, one form, and a text search. */
-  private buildFilter(storeId: string, query: { status?: string; form?: string; q?: string }) {
+  private buildFilter(storeId: string, query: { status?: string; form?: string; q?: string; source?: string }) {
     const filter: Record<string, any> = { storeId };
+    if (typeof query.source === 'string' && /^[a-z_]{1,20}$/.test(query.source)) filter['source.trafficSource'] = query.source;
     if (query.status === 'new' || query.status === 'read' || query.status === 'archived' || query.status === 'spam') filter.status = query.status;
     else filter.status = { $ne: 'spam' }; // spam only shows in its own tab
     if (query.form === '__unnamed') filter.formName = '';
@@ -361,6 +364,43 @@ export class StoreContactService {
   }
 
   /** The forms that received messages (for the inbox filter), with their counts. */
+  /** A visitor saw the form / started filling it. Anonymous daily counters, only for forms that exist. */
+  async trackEvent(storeId: string, sectionId: string, kind: string) {
+    if (!/^[a-f0-9]{24}$/i.test(sectionId ?? '') || (kind !== 'view' && kind !== 'start') || !this.stats) return { success: true };
+    const found = await this.storeModel.exists({ _id: storeId, isDelete: { $ne: true } }).catch(() => null);
+    if (!found) return { success: true };
+    const day = new Date().toISOString().slice(0, 10);
+    await this.stats.updateOne({ storeId, sectionId, day }, { $inc: kind === 'view' ? { views: 1 } : { starts: 1 } }, { upsert: true }).catch(() => undefined);
+    return { success: true };
+  }
+
+  /** Per form, last N days: seen, started, sent, spam, and where the messages came from. */
+  async report(storeId: string, sellerId: string, daysRaw?: number) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const days = Math.min(365, Math.max(1, Number(daysRaw) || 30));
+    const since = new Date(Date.now() - days * 86_400_000);
+    const sinceDay = since.toISOString().slice(0, 10);
+    const [msgs, stats]: [any[], any[]] = await Promise.all([
+      this.model.aggregate([
+        { $match: { storeId, createdAt: { $gte: since } } },
+        { $group: { _id: { s: '$sectionId', src: { $ifNull: ['$source.trafficSource', 'unknown'] }, spam: { $eq: ['$status', 'spam'] } }, n: { $sum: 1 }, name: { $last: '$formName' } } },
+      ]),
+      this.stats ? this.stats.aggregate([
+        { $match: { storeId, day: { $gte: sinceDay } } },
+        { $group: { _id: '$sectionId', views: { $sum: '$views' }, starts: { $sum: '$starts' } } },
+      ]) : Promise.resolve([]),
+    ]);
+    const forms = new Map<string, { sectionId: string; name: string; views: number; starts: number; sent: number; spam: number; sources: Record<string, number> }>();
+    const get = (id: string) => { let f = forms.get(id); if (!f) { f = { sectionId: id, name: '', views: 0, starts: 0, sent: 0, spam: 0, sources: {} }; forms.set(id, f); } return f; };
+    for (const m of msgs) {
+      const f = get(m._id.s || '');
+      if (m.name) f.name = m.name;
+      if (m._id.spam) f.spam += m.n; else { f.sent += m.n; f.sources[m._id.src] = (f.sources[m._id.src] ?? 0) + m.n; }
+    }
+    for (const st of stats) { const f = get(String(st._id)); f.views += st.views; f.starts += st.starts; }
+    return { success: true, data: { days, forms: [...forms.values()].sort((a, b) => b.sent - a.sent || b.views - a.views).slice(0, 50) } };
+  }
+
   async forms(storeId: string, sellerId: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const rows: any[] = await this.model.aggregate([
@@ -373,13 +413,13 @@ export class StoreContactService {
   }
 
   /** Every matching message as CSV (newest first, up to 5000). */
-  async exportCsv(storeId: string, sellerId: string, query: { status?: string; form?: string; q?: string }) {
+  async exportCsv(storeId: string, sellerId: string, query: { status?: string; form?: string; q?: string; source?: string }) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const rows = await this.model.find(this.buildFilter(storeId, query)).sort({ createdAt: -1 }).limit(MAX_EXPORT_ROWS).lean();
     return contactMessagesToCsv(rows);
   }
 
-  async list(storeId: string, sellerId: string, query: { page?: number; limit?: number; status?: string; form?: string; q?: string }) {
+  async list(storeId: string, sellerId: string, query: { page?: number; limit?: number; status?: string; form?: string; q?: string; source?: string }) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const limit = Math.min(50, Math.max(1, Number(query.limit) || 20));
     const page = Math.max(1, Number(query.page) || 1);
