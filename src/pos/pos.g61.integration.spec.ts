@@ -188,5 +188,6 @@ describe('G6.1 · provider-dependent wording and rules come from the server (con
     expect(ui.cardGateway.statusText).toMatch(/Not available yet/);
     expect(connectorUi({ raastProvider: null, raastReason: null, cardGateway: { key: 'realgw', testMode: false } }).cardGateway.statusText).toBeNull();
     expect(ui.receipts).toMatchObject({ whatsapp: { mode: 'link' }, minPhoneDigits: 10 });
+    expect(ui.fiscal.title).toMatch(/Fiscal/);
   });
 });

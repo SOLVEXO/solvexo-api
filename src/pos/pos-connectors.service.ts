@@ -72,6 +72,8 @@ export function connectorUi(a: { raastProvider: string | null; raastReason: stri
     cardGateway: {
       statusText: a.cardGateway && a.cardGateway.key !== 'mock' ? null : 'Not available yet. Solvexo is choosing a card provider; until then, use a bank terminal.',
     },
+    // the owner's switch for fiscal invoices: the server names the authority (the app never does)
+    fiscal: { title: 'Fiscal invoices (FBR)' },
     receipts: {
       whatsapp: { mode: 'link' as 'link' | 'api' | 'off' },
       minPhoneDigits: 10,
