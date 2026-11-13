@@ -11,6 +11,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { SavedFormsController } from './saved-forms.controller';
 import { SavedFormsService } from './saved-forms.service';
 import { SavedForm, SavedFormSchema } from './schemas/saved-form.schema';
+import { FormStat, FormStatSchema } from './schemas/form-stat.schema';
 import { StoreContactController, PublicStoreContactController } from './store-contact.controller';
 import { StoreContactService } from './store-contact.service';
 import { EmailService } from '../otp/services/email.service';
@@ -18,7 +19,7 @@ import { EmailService } from '../otp/services/email.service';
 @Module({
   imports: [
     AuthModule, RedisModule, NotificationsModule, UploadModule, MerchantApiModule, NewsletterModule,
-    MongooseModule.forFeature([{ name: SavedForm.name, schema: SavedFormSchema }, { name: FormUpload.name, schema: FormUploadSchema }, { name: StoreFormSettings.name, schema: StoreFormSettingsSchema }]),
+    MongooseModule.forFeature([{ name: FormStat.name, schema: FormStatSchema }, { name: SavedForm.name, schema: SavedFormSchema }, { name: FormUpload.name, schema: FormUploadSchema }, { name: StoreFormSettings.name, schema: StoreFormSettingsSchema }]),
   ],
   controllers: [SavedFormsController, StoreContactController, PublicStoreContactController],
   providers: [SavedFormsService, StoreContactService, EmailService],
