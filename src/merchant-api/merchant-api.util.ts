@@ -2,7 +2,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { isIP } from 'net';
 
-export const WEBHOOK_EVENTS = ['order.created', 'order.paid', 'order.fulfilled', 'order.cancelled', 'refund.created', 'product.updated', 'inventory.changed', 'customer.created'] as const;
+export const WEBHOOK_EVENTS = ['order.created', 'order.paid', 'order.fulfilled', 'order.cancelled', 'refund.created', 'product.updated', 'inventory.changed', 'customer.created', 'form.submitted'] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 
 export const API_SCOPES = ['read_orders', 'write_orders', 'read_products', 'write_products', 'read_customers', 'write_customers', 'read_inventory', 'write_inventory'] as const;

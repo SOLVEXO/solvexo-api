@@ -13,6 +13,7 @@ export const NEWSLETTER_SOURCES = [
   'checkout', // "Email me with news and offers" at checkout
   'seller', // set by the seller on the customer's behalf
   'import', // seller CSV import (seller attests to having consent)
+  'contact_form', // a consent box ticked on a storefront form
   'footer', // legacy rows written before `source` was split up
 ] as const;
 export type NewsletterSource = (typeof NEWSLETTER_SOURCES)[number];
