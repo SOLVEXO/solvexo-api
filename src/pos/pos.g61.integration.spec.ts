@@ -11,6 +11,9 @@ import { FISCAL_MAX_ATTEMPTS, PosFiscalService } from './pos-fiscal.service';
 import { FiscalDocumentInput, FiscalProvider, FiscalResult, MockFiscalProvider } from './connectors/fiscal';
 import { moneyContractViolations } from './testing/money-contract';
 import { connectorUi } from './pos-connectors.service';
+import { providerUsable } from './pos-store-settings.service';
+import { fiscalProviderFor as fiscalFor } from './connectors/fiscal';
+import { cardGatewayFor } from './connectors/card-gateway';
 import { MongoHarness, seedStore, startMongoHarness } from './testing/mongo-harness';
 
 /** G6.1 — the fiscal contract (every status, display lines, message, retry) and the per-document / sweep leases, on a real replica-set MongoDB. */
@@ -189,5 +192,16 @@ describe('G6.1 · provider-dependent wording and rules come from the server (con
     expect(connectorUi({ raastProvider: null, raastReason: null, cardGateway: { key: 'realgw', testMode: false } }).cardGateway.statusText).toBeNull();
     expect(ui.receipts).toMatchObject({ whatsapp: { mode: 'link' }, minPhoneDigits: 10 });
     expect(ui.fiscal.title).toMatch(/Fiscal/);
+  });
+});
+
+describe('G6.1 · release config: fiscal and the card gateway cannot be switched on without a usable provider', () => {
+  it('production: no provider → not usable (the switch is refused with PROVIDER_NOT_CONFIGURED); a named but unbuilt provider → not usable; the mock outside production → usable', () => {
+    expect(providerUsable(fiscalFor({ NODE_ENV: 'production' } as any))).toBe(false);
+    expect(providerUsable(fiscalFor({ NODE_ENV: 'production', FISCAL_PROVIDER: 'pral' } as any))).toBe(false);
+    expect(providerUsable(fiscalFor({ NODE_ENV: 'production', FISCAL_PROVIDER: 'mock' } as any))).toBe(false);
+    expect(providerUsable(fiscalFor({ NODE_ENV: 'development' } as any))).toBe(true);
+    expect(providerUsable(cardGatewayFor({ NODE_ENV: 'production' } as any))).toBe(false);
+    expect(providerUsable(cardGatewayFor({ NODE_ENV: 'production', CARD_GATEWAY_PROVIDER: 'mock' } as any))).toBe(false);
   });
 });

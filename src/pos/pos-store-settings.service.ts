@@ -5,6 +5,11 @@ import { detectImageMime } from './pos-product-edit.service';
 import { DatabaseService } from '@/database/databaseservice';
 import { PosService } from './pos.service';
 import { PosAuthorizer } from './pos-authorizer.service';
+import { fiscalProviderFor, NotConfiguredFiscalProvider } from './connectors/fiscal';
+import { cardGatewayFor, NotConfiguredCardGateway } from './connectors/card-gateway';
+
+/** G6.1: a provider exists and is not a "not configured" placeholder (the mock counts outside production; it is never built in production). */
+export const providerUsable = (p: object | null): boolean => !!p && !(p instanceof NotConfiguredFiscalProvider) && !(p instanceof NotConfiguredCardGateway);
 
 type Req = any;
 interface Tokens { employee?: string }
@@ -84,6 +89,10 @@ export class PosStoreSettingsService {
       if (autoLockMinutes !== undefined) { if (!Number.isInteger(autoLockMinutes) || autoLockMinutes < 1 || autoLockMinutes > 240) throw bad('INVALID_SETTINGS', 'security.autoLockMinutes must be 1–240'); set.autoLockMinutes = autoLockMinutes; }
     }
     bools(body?.connectors, CONNECTOR_DEFAULTS, 'connectors', 'connectorPrefs');
+    // G6.1: a provider-dependent switch can only be turned ON when the server has a usable provider for it (production: none until a real
+    // adapter is configured) — so a real store never runs with fiscal "pending" forever or a gateway that cannot charge
+    if (body?.connectors?.fiscal === true && !providerUsable(fiscalProviderFor())) throw bad('PROVIDER_NOT_CONFIGURED', 'Fiscal invoices cannot be switched on yet: no tax-authority connection is configured on the server.');
+    if (body?.connectors?.cardGateway === true && !providerUsable(cardGatewayFor())) throw bad('PROVIDER_NOT_CONFIGURED', 'In-app card payments cannot be switched on yet: no card provider is configured on the server.');
     const rl = body?.receiptLinks;
     if (rl !== undefined) {
       const days = rl?.days;
