@@ -257,6 +257,10 @@ export const STOREFRONT_EN: Record<string, any> = {
   "notFoundHint": "This category may have been removed or renamed."
  },
  "checkout": {
+  "stepCart": "Cart",
+  "stepDetails": "Details",
+  "stepPayment": "Payment",
+  "stepsAria": "Checkout steps",
   "accentWord": "checkout",
   "addAddress": "Add a new address",
   "address": "Address",
