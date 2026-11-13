@@ -12,7 +12,7 @@ import { BadRequestException } from '@nestjs/common';
  */
 export const CONTACT_FIELD_TYPES = [
   'name', 'text', 'email', 'phone', 'textarea', 'number', 'date', 'time', 'url',
-  'dropdown', 'radio', 'checkbox', 'consent', 'rating', 'country', 'hidden', 'heading', 'paragraph', 'step', 'file', 'slider', 'signature',
+  'dropdown', 'radio', 'checkbox', 'consent', 'rating', 'country', 'hidden', 'heading', 'paragraph', 'step', 'file', 'slider', 'signature', 'total',
 ] as const;
 export type ContactFieldType = (typeof CONTACT_FIELD_TYPES)[number];
 
@@ -46,6 +46,12 @@ export interface ContactFormField {
   maxSizeMb?: number;
   /** A file field that takes up to MAX_FILES files (each is stored as its own answer line). */
   multiple?: boolean;
+  /** Price of each choice (same order as options) for the Total field. */
+  optionPrices?: number[];
+  /** Price per unit of a number field (quantity x price) for the Total field. */
+  unitPrice?: number;
+  /** Short text before a Total ("Rs", "$"). */
+  currencyLabel?: string;
   /** Slider step (default 1). */
   step?: number;
   /** consent: when ticked and the visitor gave an email, add them to the store's email marketing list. */
@@ -128,6 +134,12 @@ export function validateContactFieldDefs(input: unknown): void {
     if (STATIC_TYPES.includes(type) && f.required) return bad(`"${f.label}" only shows text, so it cannot be required`);
     if (f.fileKinds !== undefined && !['images', 'documents', 'both'].includes(f.fileKinds as string)) return bad(`${p}.fileKinds must be images, documents or both`);
     if (f.maxSizeMb !== undefined && !wholeNumber(f.maxSizeMb, 1, MAX_FILE_MB)) return bad(`${p}.maxSizeMb must be a whole number from 1 to ${MAX_FILE_MB}`);
+    if (f.optionPrices !== undefined) {
+      if (!(type === 'dropdown' || type === 'radio' || type === 'checkbox')) return bad(`${p}.optionPrices is only for choice fields`);
+      if (!Array.isArray(f.optionPrices) || f.optionPrices.length > MAX_CHOICES || (Array.isArray(f.options) && f.optionPrices.length !== f.options.length) || f.optionPrices.some((n: unknown) => typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > 1e9)) return bad(`"${f.label}": every choice needs a price from 0 to 1,000,000,000`);
+    }
+    if (f.unitPrice !== undefined && (type !== 'number' || typeof f.unitPrice !== 'number' || !Number.isFinite(f.unitPrice) || f.unitPrice < 0 || f.unitPrice > 1e9)) return bad(`"${f.label}": the price per unit must be a number from 0 to 1,000,000,000 (number fields only)`);
+    if (f.currencyLabel !== undefined && (type !== 'total' || typeof f.currencyLabel !== 'string' || f.currencyLabel.length > 8)) return bad(`"${f.label}": the currency text is up to 8 characters (total fields only)`);
     if (f.multiple !== undefined && (typeof f.multiple !== 'boolean' || (f.multiple && type !== 'file'))) return bad(`${p}.multiple is only for file fields`);
     if (f.step !== undefined && (typeof f.step !== 'number' || !(f.step > 0) || f.step > 1000000)) return bad(`${p}.step must be a positive number`);
     if (f.subscribes !== undefined && typeof f.subscribes !== 'boolean') return bad(`${p}.subscribes must be true or false`);
@@ -201,6 +213,24 @@ export function validateContactFormSettings(settings: Record<string, any>): void
   if (settings.captcha !== undefined && typeof settings.captcha !== 'boolean') bad('settings.captcha must be true or false');
 }
 
+/** Sum of the prices of what the visitor picked (choices) and of quantity x unit price (number fields). */
+export function computeTotal(defs: ContactFormField[], answers: { id: string; type: string; value: string }[]): number {
+  let sum = 0;
+  for (const a of answers) {
+    const def = defs.find(d => d.id === a.id);
+    if (!def) continue;
+    if (def.type === 'number' && def.unitPrice) sum += (Number(a.value) || 0) * def.unitPrice;
+    else if ((def.type === 'dropdown' || def.type === 'radio' || def.type === 'checkbox') && def.options && def.optionPrices) {
+      for (const v of def.type === 'checkbox' ? a.value.split(', ') : [a.value]) {
+        const i = def.options.indexOf(v);
+        if (i >= 0) sum += def.optionPrices[i] ?? 0;
+      }
+    }
+  }
+  return Math.round(sum * 100) / 100;
+}
+export const formatTotal = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2));
+
 export interface CleanAnswer { id: string; label: string; type: ContactFieldType; value: string }
 
 function asText(v: unknown): string {
@@ -252,6 +282,14 @@ export function validateContactAnswers(defs: ContactFormField[], answers: unknow
   for (const def of defs) {
     if (STATIC_TYPES.includes(def.type)) continue;
     if (!conditionHolds(def.showIf, shown)) continue;
+    if (def.type === 'total') {
+      // The server works the total out from the answers above it: a total sent by the browser is never trusted.
+      const sum = computeTotal(defs, clean);
+      const text = formatTotal(sum);
+      clean.push({ id: def.id, label: def.label, type: def.type, value: `${def.currencyLabel ? def.currencyLabel + ' ' : ''}${text}` });
+      shown.set(def.id, text);
+      continue;
+    }
     const fail = (msg: string): never => bad(def.errorMessage?.trim() || msg);
     const raw = byId.get(def.id);
     let value = '';

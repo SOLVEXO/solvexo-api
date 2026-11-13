@@ -222,4 +222,19 @@ describe('phase 2: file, consent signup and CAPTCHA settings', () => {
     expect(() => validateContactFieldDefs(list as never)).not.toThrow();
     expect(() => validateContactFieldDefs([{ ...list[0] }, { ...list[1], required: true }] as never)).toThrow();
   });
+  it('works the Total out on the server from prices, ignores what the browser sends, and respects conditions', () => {
+    const defs: any[] = [
+      { id: 'svc', type: 'dropdown', label: 'Service', options: ['Logo', 'Site'], optionPrices: [5000, 20000] },
+      { id: 'ext', type: 'checkbox', label: 'Extras', options: ['SEO', 'Hosting'], optionPrices: [300, 700] },
+      { id: 'qty', type: 'number', label: 'Pages', unitPrice: 100 },
+      { id: 'tot', type: 'total', label: 'Total', currencyLabel: 'Rs' },
+    ];
+    expect(() => validateContactFieldDefs(defs)).not.toThrow();
+    const r = validateContactAnswers(defs, [
+      { fieldId: 'svc', value: 'Site' }, { fieldId: 'ext', value: ['SEO', 'Hosting'] }, { fieldId: 'qty', value: '3' }, { fieldId: 'tot', value: '1' },
+    ]);
+    expect(r.clean.find(a => a.id === 'tot')?.value).toBe('Rs 21300');
+    expect(() => validateContactFieldDefs([{ id: 'svc', type: 'dropdown', label: 'S', options: ['A'], optionPrices: [1, 2] }] as any)).toThrow();
+    expect(() => validateContactFieldDefs([{ id: 'tx', type: 'text', label: 'T', unitPrice: 5 }] as any)).toThrow();
+  });
 });
