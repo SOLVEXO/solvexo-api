@@ -340,6 +340,10 @@ export function validateContactAnswers(defs: ContactFormField[], answers: unknow
         const hi = def.max ?? (def.type === 'slider' ? 100 : undefined);
         if (lo !== undefined && n < lo) fail(`${def.label} must be ${lo} or more`);
         if (hi !== undefined && n > hi) fail(`${def.label} must be ${hi} or less`);
+        if (def.type === 'slider') {
+          const steps = (n - (lo ?? 0)) / (def.step && def.step > 0 ? def.step : 1);
+          if (Math.abs(steps - Math.round(steps)) > 1e-6) fail(`${def.label} must be one of the slider steps`);
+        }
         break;
       }
       case 'date': if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) fail(`${def.label} must be a date`); break;
