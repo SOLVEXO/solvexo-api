@@ -57,7 +57,8 @@ export const FILE_EXTENSIONS: Record<'images' | 'documents' | 'both', string[]> 
 export const MAX_FILE_MB = 10;
 export const UPLOAD_ID_RE = /^[a-f0-9]{24}$/i;
 
-export const MAX_CONTACT_FIELDS = 31;
+export const MAX_CONTACT_FIELDS = 100;
+export const MAX_CHOICES = 200;
 const OPTION_TYPES: ContactFieldType[] = ['dropdown', 'radio', 'checkbox'];
 /** Fields that show text but collect nothing. */
 /** `step` starts a new page of a multi-step form; it only holds the page title. */
@@ -69,7 +70,7 @@ const WIDTHS = ['full', 'half', 'third', 'quarter'];
 
 const bad = (msg: string): never => { throw new BadRequestException(msg); };
 
-const labelLimit = (type: ContactFieldType) => (type === 'paragraph' ? 500 : type === 'consent' ? 300 : type === 'heading' ? 120 : 60);
+const labelLimit = (type: ContactFieldType) => (type === 'paragraph' ? 500 : type === 'consent' ? 300 : type === 'heading' ? 120 : 120);
 
 /** The old fixed form (Name, Email, optional Phone, Message), rebuilt from a section that has no `fields` yet. */
 export function legacyContactFields(settings: Record<string, any> | undefined): ContactFormField[] {
@@ -126,7 +127,7 @@ export function validateContactFieldDefs(input: unknown): void {
     if (f.subscribes === true && type !== 'consent') return bad(`"${f.label}": only a consent tick box can sign visitors up for email marketing`);
 
     if (f.options !== undefined) {
-      if (!Array.isArray(f.options) || f.options.length > 20) return bad(`${p}.options can have up to 20 choices`);
+      if (!Array.isArray(f.options) || f.options.length > MAX_CHOICES) return bad(`${p}.options can have up to ${MAX_CHOICES} choices`);
       const opts = new Set<string>();
       for (const o of f.options) {
         if (typeof o !== 'string' || !o.trim() || o.length > 60) return bad(`Each choice of "${String(f.label)}" must be 1 to 60 characters`);
@@ -150,8 +151,8 @@ export function validateContactFieldDefs(input: unknown): void {
     // The contact field that lets the seller answer must always be on the form.
     if ((type === 'email' || type === 'phone') && f.required === true && f.showIf === undefined) hasContact = true;
   });
-  // Shopify Forms: every form must collect a way to reach the visitor.
-  if (!hasContact) return bad('The form needs an Email or Phone field that is required (and always shown), so you can answer your visitors');
+  // The seller decides: a form without an Email/Phone field is allowed (a survey, an anonymous note). The inbox then just cannot reply.
+  void hasContact;
 }
 
 const SUCCESS_ACTIONS = ['message', 'redirect'];

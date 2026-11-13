@@ -17,14 +17,14 @@ describe('contact form field definitions', () => {
     expect(() => validateContactFieldDefs(base())).not.toThrow();
   });
 
-  it('needs an Email or Phone field that is required (Shopify Forms rule)', () => {
-    expect(() => validateContactFieldDefs([{ id: 'a1', type: 'text', label: 'Name', required: true }])).toThrow();
-    expect(() => validateContactFieldDefs([{ id: 'a1', type: 'email', label: 'Email', required: false }])).toThrow();
+  it('lets the seller build a form without an Email or Phone field', () => {
+    expect(() => validateContactFieldDefs([{ id: 'a1', type: 'text', label: 'Name', required: true }])).not.toThrow();
+    expect(() => validateContactFieldDefs([])).not.toThrow();
     expect(() => validateContactFieldDefs([{ id: 'a1', type: 'phone', label: 'Phone', required: true }])).not.toThrow();
   });
 
-  it('refuses more than 31 fields, duplicate ids, unknown types and empty labels', () => {
-    const many = Array.from({ length: 32 }, (_, i) => ({ id: `id${i}`, type: 'text', label: `L${i}` }));
+  it('refuses more than 100 fields, duplicate ids, unknown types and empty labels', () => {
+    const many = Array.from({ length: 101 }, (_, i) => ({ id: `id${i}`, type: 'text', label: `L${i}` }));
     expect(() => validateContactFieldDefs(many)).toThrow();
     expect(() => validateContactFieldDefs([...base(), { id: 'f-name', type: 'text', label: 'Again' }])).toThrow();
     expect(() => validateContactFieldDefs([...base(), { id: 'zz1', type: 'video', label: 'Upload' }])).toThrow();
@@ -112,8 +112,8 @@ describe('contact_form section settings (saved by the seller)', () => {
     expect(() => validateSectionSettings('contact_form', { fields: base() })).not.toThrow();
     expect(() => validateSectionSettings('contact_form', { heading: 'Hi', showPhone: true })).not.toThrow();
   });
-  it('refuses a field list that cannot reach the visitor or has a bad field', () => {
-    expect(() => validateSectionSettings('contact_form', { fields: [{ id: 'a1', type: 'text', label: 'Name', required: true }] })).toThrow();
+  it('refuses a bad field list', () => {
+    expect(() => validateSectionSettings('contact_form', { fields: [{ id: 'a1', type: 'text', label: 'Name', required: true }] })).not.toThrow();
     expect(() => validateSectionSettings('contact_form', { fields: 'nope' })).toThrow();
   });
 });
