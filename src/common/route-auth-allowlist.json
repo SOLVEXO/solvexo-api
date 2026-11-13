@@ -92,6 +92,7 @@
   "platform-plans/platform-plans.controller.ts#PlatformPlansController.publicTrialSettings",
   "pos-plans/pos-plans.controller.ts#PosCheckoutStatusController.sessionStatus",
   "pos-plans/webhooks/pos-plans-webhook.controller.ts#PosPlansWebhookController.handleStripeWebhook",
+  "pos/pos-capabilities.controller.ts#PosCapabilitiesController.capabilities",
   "pos/public-receipt.controller.ts#PublicReceiptController.byClientKey",
   "pos/public-receipt.controller.ts#PublicReceiptController.creditNote",
   "pos/public-receipt.controller.ts#PublicReceiptController.invoice",

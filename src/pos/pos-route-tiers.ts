@@ -17,6 +17,7 @@ export const POS_ROUTE_TIERS: Readonly<Record<string, PosTier>> = {
   'GET /api/pos/connectors/:storeId': 'cashier',
   'GET /api/pos/fiscal/:storeId/issues': 'manager-with-limit', // G6.1: fiscal documents that need attention
   'POST /api/pos/fiscal/:storeId/retry': 'owner',
+  'GET /api/pos/capabilities': 'public', // G6.2: static feature list for the till's detection (no data)
   // G5.7: store API keys — managed by the owner only; the secret shown once, hashed, expiring, revocable
   'GET /api/pos/api-keys/:storeId': 'owner',
   'POST /api/pos/api-keys/:storeId': 'owner',

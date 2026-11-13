@@ -43,6 +43,7 @@ import { PosFiscalService } from './pos-fiscal.service';
 import { PosConnectorsService } from './pos-connectors.service';
 import { PosConnectorsController } from './pos-connectors.controller';
 import { PosFiscalController } from './pos-fiscal.controller';
+import { PosCapabilitiesController } from './pos-capabilities.controller';
 import { PosApiKeysService } from './pos-api-keys.service';
 import { PosApiKeysController } from './pos-api-keys.controller';
 import { PosExtController, PosApiKeyGuard, PosApiKeyAuditInterceptor } from './pos-ext.controller';
@@ -62,7 +63,7 @@ import { PurchaseOrdersModule } from '@/purchase-orders/purchase-orders.module';
 
 @Module({
   imports: [AuthModule, RedisModule, MessagingChannelsModule, AdminConfigModule, FinanceModule, InventoryModule, PurchaseOrdersModule, UploadModule, ProductsModule, ProductVariantsModule, CategoriesModule, StockCountsModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
-  controllers: [PosController, PublicReceiptController, PosInventoryController, PosCustomersController, PosSupplyController, PosCashController, PosTeamController, PosReportsController, PosStoreController, PosPermissionsStoreController, PosAuditController, PosCatalogAdminController, PosProductEditController, PosReceiptDeliveryController, PosConnectorsController, PosFiscalController, PosApiKeysController, PosExtController, PosReprintController],
+  controllers: [PosController, PublicReceiptController, PosInventoryController, PosCustomersController, PosSupplyController, PosCashController, PosTeamController, PosReportsController, PosStoreController, PosPermissionsStoreController, PosAuditController, PosCatalogAdminController, PosProductEditController, PosReceiptDeliveryController, PosConnectorsController, PosFiscalController, PosCapabilitiesController, PosApiKeysController, PosExtController, PosReprintController],
   providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService, PosCustomerCore, PosCustomersService, PosSupplyService, PosCashService, PosTeamService, PosReportsService, PosPermissionsStoreService, PosAuditSealService, PosStoreSettingsService, PosCatalogAdminService, PosProductEditService, PosReceiptDeliveryService, PosFiscalService, PosConnectorsService, PosApiKeysService, PosApiKeyGuard, PosApiKeyAuditInterceptor, EmailService, PosReprintService,
     // G4.8: "hide costs from managers" for every POS response, in one place
     { provide: APP_INTERCEPTOR, useClass: CostVisibilityInterceptor }],
