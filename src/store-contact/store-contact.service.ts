@@ -408,7 +408,17 @@ export class StoreContactService {
       for (const [k, n] of Object.entries((st.fields ?? {}) as Record<string, number>)) f.fieldTouches[k] = (f.fieldTouches[k] ?? 0) + Number(n);
     }
     for (const d of dailyMsgs) dayRow(String(d._id)).sent += d.n;
-    return { success: true, data: { days, forms: [...forms.values()].sort((a, b) => b.sent - a.sent || b.views - a.views).slice(0, 50), daily: [...daily.values()].sort((a, b) => a.day.localeCompare(b.day)) } };
+    // Field labels, in the order of the form as it is now, so the seller sees names instead of ids.
+    const withFields: any[] = [];
+    for (const f of [...forms.values()].slice(0, 50)) {
+      let fieldRows: { id: string; label: string; touched: number }[] = [];
+      try {
+        const form = f.sectionId ? await this.findForm(storeId, f.sectionId) : null;
+        if (form) fieldRows = form.fields.filter((d: ContactFormField) => !['heading', 'paragraph', 'step', 'hidden'].includes(d.type)).map((d: ContactFormField) => ({ id: d.id, label: d.label, touched: f.fieldTouches[d.id] ?? 0 }));
+      } catch { /* the form may have been removed since */ }
+      withFields.push({ ...f, fields: fieldRows });
+    }
+    return { success: true, data: { days, forms: withFields.sort((a, b) => b.sent - a.sent || b.views - a.views), daily: [...daily.values()].sort((a, b) => a.day.localeCompare(b.day)) } };
   }
 
   async forms(storeId: string, sellerId: string) {
