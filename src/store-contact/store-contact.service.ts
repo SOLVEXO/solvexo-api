@@ -2,6 +2,8 @@
 import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Cron } from '@nestjs/schedule';
+import { FormStat, FormStatDocument } from './schemas/form-stat.schema';
+import { readAnalyticsSessionId } from '../common/storefront-session.util';
 import { Model } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -44,6 +46,7 @@ export class StoreContactService {
     @Optional() private readonly webhooks?: MerchantWebhooksService,
     @Optional() private readonly newsletter?: NewsletterService,
     @Optional() private readonly redis?: RedisService,
+    @Optional() @InjectModel(FormStat.name) private readonly stats?: Model<FormStatDocument>,
   ) {}
 
   private static readonly replyTimes = new Map<string, number[]>();
@@ -91,12 +94,13 @@ export class StoreContactService {
     }
 
     const claimed = await this.claimUploads(storeId, fields);
-    const spam = detectSpam(fields.filter(f => f.type !== 'file').map(f => f.value).concat(message), undefined);
+    const spam = detectSpam(fields.filter(f => f.type !== 'file' && f.type !== 'signature').map(f => f.value).concat(message), undefined);
     const formName = String(formSettings.formName ?? '').trim().slice(0, 60);
     let doc: any;
     try {
       doc = await this.model.create({
         storeId, name, email, phone: phone || null, message, fields, formName, sectionId: dto.sectionId ?? '',
+        ...(await this.enrich(storeId, dto, email)),
         ...(spam ? { status: 'spam', spamReason: spam } : {}),
       });
     } catch (e) {
@@ -171,11 +175,11 @@ export class StoreContactService {
     if (!body.sectionId || !body.fieldId) throw new BadRequestException('This form is no longer available. Please reload the page.');
     const form = await this.findForm(storeId, String(body.sectionId));
     if (!form) throw new BadRequestException('This form is no longer available. Please reload the page.');
-    const def = form.fields.find(f => f.id === body.fieldId && f.type === 'file');
+    const def = form.fields.find(f => f.id === body.fieldId && (f.type === 'file' || f.type === 'signature'));
     if (!def) throw new BadRequestException('This field does not take a file.');
     const name = String(file.originalname ?? 'file').replace(/[\\/\u0000-\u001f]/g, '_').slice(0, 120);
     const ext = (name.split('.').pop() ?? '').toLowerCase();
-    const allowed = FILE_EXTENSIONS[def.fileKinds ?? 'both'];
+    const allowed = FILE_EXTENSIONS[def.type === 'signature' ? 'images' : (def.fileKinds ?? 'both')];
     if (!allowed.includes(ext)) throw new BadRequestException(`This type of file is not accepted. Use: ${allowed.join(', ')}`);
     const maxMb = Math.min(def.maxSizeMb ?? MAX_FILE_MB, MAX_FILE_MB);
     if (file.size > maxMb * 1024 * 1024) throw new BadRequestException(`The file is larger than ${maxMb} MB`);
@@ -191,7 +195,7 @@ export class StoreContactService {
   private async claimUploads(storeId: string, fields: { id: string; label: string; type: string; value: string; fileId?: string }[]): Promise<string[]> {
     const claimed: string[] = [];
     for (const f of fields) {
-      if (f.type !== 'file') continue;
+      if (f.type !== 'file' && f.type !== 'signature') continue;
       const up: any = this.uploads ? await this.uploads.findOneAndUpdate({ _id: f.value, storeId, claimedBy: null }, { $set: { claimedBy: 'pending' } }, { new: true }).lean() : null;
       if (!up) {
         await this.releaseUploads(claimed);
@@ -246,6 +250,29 @@ export class StoreContactService {
   async publicConfig(storeId: string) {
     const row: any = await this.formSettings?.findOne({ storeId }).select('turnstileSiteKey').lean();
     return { success: true, data: { captcha: row?.turnstileSiteKey ? { provider: 'turnstile', siteKey: row.turnstileSiteKey } : null } };
+  }
+
+  /** Page, traffic source and customer link of a new message. Never fails the visitor's request. */
+  private async enrich(storeId: string, dto: { analyticsSessionId?: string; pageUrl?: string }, email: string) {
+    const out: { pageUrl: string | null; source: Record<string, string | null> | null; customerId: string | null; customerOrders: number } = { pageUrl: null, source: null, customerId: null, customerOrders: 0 };
+    try {
+      const url = String(dto.pageUrl ?? '').trim();
+      if (/^https?:\/\//i.test(url)) out.pageUrl = url.slice(0, 500);
+      const sid = readAnalyticsSessionId(dto);
+      if (sid) {
+        const row: any = await this.databaseService.repositories.storefrontSessionModel.findOne({ storeId, sessionId: sid })
+          .select('trafficSource referrerHost landingPath utmSource utmMedium utmCampaign deviceType country').lean();
+        if (row) out.source = { trafficSource: row.trafficSource ?? null, referrerHost: row.referrerHost ?? null, landingPath: row.landingPath ?? null, utmSource: row.utmSource ?? null, utmMedium: row.utmMedium ?? null, utmCampaign: row.utmCampaign ?? null, deviceType: row.deviceType ?? null, country: row.country ?? null };
+      }
+      if (email) {
+        const user: any = await this.databaseService.repositories.userModel.findOne({ storeId, email: email.toLowerCase() }).select('_id').lean();
+        if (user) {
+          out.customerId = String(user._id);
+          out.customerOrders = await this.databaseService.repositories.orderModel.countDocuments({ userId: String(user._id), 'sellerOrders.storeId': storeId });
+        }
+      }
+    } catch { /* optional extras */ }
+    return out;
   }
 
   async getSpamSettings(storeId: string, sellerId: string) {
@@ -321,8 +348,9 @@ export class StoreContactService {
   // ── Seller ───────────────────────────────────────────────────────────────
 
   /** The filter shared by the inbox list and the CSV export: status, one form, and a text search. */
-  private buildFilter(storeId: string, query: { status?: string; form?: string; q?: string }) {
+  private buildFilter(storeId: string, query: { status?: string; form?: string; q?: string; source?: string }) {
     const filter: Record<string, any> = { storeId };
+    if (typeof query.source === 'string' && /^[a-z_]{1,20}$/.test(query.source)) filter['source.trafficSource'] = query.source;
     if (query.status === 'new' || query.status === 'read' || query.status === 'archived' || query.status === 'spam') filter.status = query.status;
     else filter.status = { $ne: 'spam' }; // spam only shows in its own tab
     if (query.form === '__unnamed') filter.formName = '';
@@ -336,6 +364,63 @@ export class StoreContactService {
   }
 
   /** The forms that received messages (for the inbox filter), with their counts. */
+  /** A visitor saw the form / started filling it. Anonymous daily counters, only for forms that exist. */
+  async trackEvent(storeId: string, sectionId: string, kind: string, fieldId?: string) {
+    if (!/^[a-f0-9]{24}$/i.test(sectionId ?? '') || (kind !== 'view' && kind !== 'start' && kind !== 'field') || !this.stats) return { success: true };
+    if (kind === 'field' && !/^[A-Za-z0-9_-]{2,40}$/.test(fieldId ?? '')) return { success: true };
+    const found = await this.storeModel.exists({ _id: storeId, isDelete: { $ne: true } }).catch(() => null);
+    if (!found) return { success: true };
+    const day = new Date().toISOString().slice(0, 10);
+    await this.stats.updateOne({ storeId, sectionId, day }, { $inc: kind === 'view' ? { views: 1 } : kind === 'start' ? { starts: 1 } : { [`fields.${fieldId}`]: 1 } }, { upsert: true }).catch(() => undefined);
+    return { success: true };
+  }
+
+  /** Per form, last N days: seen, started, sent, spam, and where the messages came from. */
+  async report(storeId: string, sellerId: string, daysRaw?: number) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const days = Math.min(365, Math.max(1, Number(daysRaw) || 30));
+    const since = new Date(Date.now() - days * 86_400_000);
+    const sinceDay = since.toISOString().slice(0, 10);
+    const [msgs, stats]: [any[], any[]] = await Promise.all([
+      this.model.aggregate([
+        { $match: { storeId, createdAt: { $gte: since } } },
+        { $group: { _id: { s: '$sectionId', src: { $ifNull: ['$source.trafficSource', 'unknown'] }, spam: { $eq: ['$status', 'spam'] } }, n: { $sum: 1 }, name: { $last: '$formName' } } },
+      ]),
+      this.stats ? this.stats.find({ storeId, day: { $gte: sinceDay } }).limit(5000).lean() : Promise.resolve([]),
+    ]);
+    const dailyMsgs: any[] = await this.model.aggregate([
+      { $match: { storeId, status: { $ne: 'spam' }, createdAt: { $gte: since } } },
+      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, n: { $sum: 1 } } },
+    ]);
+    const forms = new Map<string, { sectionId: string; name: string; views: number; starts: number; sent: number; spam: number; sources: Record<string, number>; fieldTouches: Record<string, number> }>();
+    const daily = new Map<string, { day: string; views: number; sent: number }>();
+    const dayRow = (d: string) => { let r = daily.get(d); if (!r) { r = { day: d, views: 0, sent: 0 }; daily.set(d, r); } return r; };
+    const get = (id: string) => { let f = forms.get(id); if (!f) { f = { sectionId: id, name: '', views: 0, starts: 0, sent: 0, spam: 0, sources: {}, fieldTouches: {} }; forms.set(id, f); } return f; };
+    for (const m of msgs) {
+      const f = get(m._id.s || '');
+      if (m.name) f.name = m.name;
+      if (m._id.spam) f.spam += m.n; else { f.sent += m.n; f.sources[m._id.src] = (f.sources[m._id.src] ?? 0) + m.n; }
+    }
+    for (const st of stats) {
+      const f = get(String(st.sectionId));
+      f.views += st.views ?? 0; f.starts += st.starts ?? 0;
+      dayRow(st.day).views += st.views ?? 0;
+      for (const [k, n] of Object.entries((st.fields ?? {}) as Record<string, number>)) f.fieldTouches[k] = (f.fieldTouches[k] ?? 0) + Number(n);
+    }
+    for (const d of dailyMsgs) dayRow(String(d._id)).sent += d.n;
+    // Field labels, in the order of the form as it is now, so the seller sees names instead of ids.
+    const withFields: any[] = [];
+    for (const f of [...forms.values()].slice(0, 50)) {
+      let fieldRows: { id: string; label: string; touched: number }[] = [];
+      try {
+        const form = f.sectionId ? await this.findForm(storeId, f.sectionId) : null;
+        if (form) fieldRows = form.fields.filter((d: ContactFormField) => !['heading', 'paragraph', 'step', 'hidden'].includes(d.type)).map((d: ContactFormField) => ({ id: d.id, label: d.label, touched: f.fieldTouches[d.id] ?? 0 }));
+      } catch { /* the form may have been removed since */ }
+      withFields.push({ ...f, fields: fieldRows });
+    }
+    return { success: true, data: { days, forms: withFields.sort((a, b) => b.sent - a.sent || b.views - a.views), daily: [...daily.values()].sort((a, b) => a.day.localeCompare(b.day)) } };
+  }
+
   async forms(storeId: string, sellerId: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const rows: any[] = await this.model.aggregate([
@@ -348,13 +433,13 @@ export class StoreContactService {
   }
 
   /** Every matching message as CSV (newest first, up to 5000). */
-  async exportCsv(storeId: string, sellerId: string, query: { status?: string; form?: string; q?: string }) {
+  async exportCsv(storeId: string, sellerId: string, query: { status?: string; form?: string; q?: string; source?: string }) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const rows = await this.model.find(this.buildFilter(storeId, query)).sort({ createdAt: -1 }).limit(MAX_EXPORT_ROWS).lean();
     return contactMessagesToCsv(rows);
   }
 
-  async list(storeId: string, sellerId: string, query: { page?: number; limit?: number; status?: string; form?: string; q?: string }) {
+  async list(storeId: string, sellerId: string, query: { page?: number; limit?: number; status?: string; form?: string; q?: string; source?: string }) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const limit = Math.min(50, Math.max(1, Number(query.limit) || 20));
     const page = Math.max(1, Number(query.page) || 1);

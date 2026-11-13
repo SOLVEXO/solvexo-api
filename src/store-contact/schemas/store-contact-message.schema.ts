@@ -46,6 +46,21 @@ export class StoreContactMessage {
   @Prop({ type: String, default: null })
   spamReason: string | null;
 
+  /** The storefront page the form was sent from. */
+  @Prop({ type: String, default: null, maxlength: 500 })
+  pageUrl: string | null;
+
+  /** Where the visitor came from (the store's own analytics session): direct / search / social / email / paid / referral, campaign, device. */
+  @Prop({ type: Object, default: null })
+  source: Record<string, string | null> | null;
+
+  /** The store's customer account with this email, when there is one (Shopify shows "existing customer" on a form message). */
+  @Prop({ type: String, default: null })
+  customerId: string | null;
+
+  @Prop({ type: Number, default: 0 })
+  customerOrders: number;
+
   @Prop({ type: String, enum: CONTACT_MESSAGE_STATUSES, default: 'new' })
   status: ContactMessageStatus;
 
