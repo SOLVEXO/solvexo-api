@@ -94,7 +94,7 @@ export class StoreContactService {
     }
 
     const claimed = await this.claimUploads(storeId, fields);
-    const spam = detectSpam(fields.filter(f => f.type !== 'file').map(f => f.value).concat(message), undefined);
+    const spam = detectSpam(fields.filter(f => f.type !== 'file' && f.type !== 'signature').map(f => f.value).concat(message), undefined);
     const formName = String(formSettings.formName ?? '').trim().slice(0, 60);
     let doc: any;
     try {
@@ -175,11 +175,11 @@ export class StoreContactService {
     if (!body.sectionId || !body.fieldId) throw new BadRequestException('This form is no longer available. Please reload the page.');
     const form = await this.findForm(storeId, String(body.sectionId));
     if (!form) throw new BadRequestException('This form is no longer available. Please reload the page.');
-    const def = form.fields.find(f => f.id === body.fieldId && f.type === 'file');
+    const def = form.fields.find(f => f.id === body.fieldId && (f.type === 'file' || f.type === 'signature'));
     if (!def) throw new BadRequestException('This field does not take a file.');
     const name = String(file.originalname ?? 'file').replace(/[\\/\u0000-\u001f]/g, '_').slice(0, 120);
     const ext = (name.split('.').pop() ?? '').toLowerCase();
-    const allowed = FILE_EXTENSIONS[def.fileKinds ?? 'both'];
+    const allowed = FILE_EXTENSIONS[def.type === 'signature' ? 'images' : (def.fileKinds ?? 'both')];
     if (!allowed.includes(ext)) throw new BadRequestException(`This type of file is not accepted. Use: ${allowed.join(', ')}`);
     const maxMb = Math.min(def.maxSizeMb ?? MAX_FILE_MB, MAX_FILE_MB);
     if (file.size > maxMb * 1024 * 1024) throw new BadRequestException(`The file is larger than ${maxMb} MB`);
@@ -195,7 +195,7 @@ export class StoreContactService {
   private async claimUploads(storeId: string, fields: { id: string; label: string; type: string; value: string; fileId?: string }[]): Promise<string[]> {
     const claimed: string[] = [];
     for (const f of fields) {
-      if (f.type !== 'file') continue;
+      if (f.type !== 'file' && f.type !== 'signature') continue;
       const up: any = this.uploads ? await this.uploads.findOneAndUpdate({ _id: f.value, storeId, claimedBy: null }, { $set: { claimedBy: 'pending' } }, { new: true }).lean() : null;
       if (!up) {
         await this.releaseUploads(claimed);
@@ -365,12 +365,13 @@ export class StoreContactService {
 
   /** The forms that received messages (for the inbox filter), with their counts. */
   /** A visitor saw the form / started filling it. Anonymous daily counters, only for forms that exist. */
-  async trackEvent(storeId: string, sectionId: string, kind: string) {
-    if (!/^[a-f0-9]{24}$/i.test(sectionId ?? '') || (kind !== 'view' && kind !== 'start') || !this.stats) return { success: true };
+  async trackEvent(storeId: string, sectionId: string, kind: string, fieldId?: string) {
+    if (!/^[a-f0-9]{24}$/i.test(sectionId ?? '') || (kind !== 'view' && kind !== 'start' && kind !== 'field') || !this.stats) return { success: true };
+    if (kind === 'field' && !/^[A-Za-z0-9_-]{2,40}$/.test(fieldId ?? '')) return { success: true };
     const found = await this.storeModel.exists({ _id: storeId, isDelete: { $ne: true } }).catch(() => null);
     if (!found) return { success: true };
     const day = new Date().toISOString().slice(0, 10);
-    await this.stats.updateOne({ storeId, sectionId, day }, { $inc: kind === 'view' ? { views: 1 } : { starts: 1 } }, { upsert: true }).catch(() => undefined);
+    await this.stats.updateOne({ storeId, sectionId, day }, { $inc: kind === 'view' ? { views: 1 } : kind === 'start' ? { starts: 1 } : { [`fields.${fieldId}`]: 1 } }, { upsert: true }).catch(() => undefined);
     return { success: true };
   }
 
@@ -385,20 +386,29 @@ export class StoreContactService {
         { $match: { storeId, createdAt: { $gte: since } } },
         { $group: { _id: { s: '$sectionId', src: { $ifNull: ['$source.trafficSource', 'unknown'] }, spam: { $eq: ['$status', 'spam'] } }, n: { $sum: 1 }, name: { $last: '$formName' } } },
       ]),
-      this.stats ? this.stats.aggregate([
-        { $match: { storeId, day: { $gte: sinceDay } } },
-        { $group: { _id: '$sectionId', views: { $sum: '$views' }, starts: { $sum: '$starts' } } },
-      ]) : Promise.resolve([]),
+      this.stats ? this.stats.find({ storeId, day: { $gte: sinceDay } }).limit(5000).lean() : Promise.resolve([]),
     ]);
-    const forms = new Map<string, { sectionId: string; name: string; views: number; starts: number; sent: number; spam: number; sources: Record<string, number> }>();
-    const get = (id: string) => { let f = forms.get(id); if (!f) { f = { sectionId: id, name: '', views: 0, starts: 0, sent: 0, spam: 0, sources: {} }; forms.set(id, f); } return f; };
+    const dailyMsgs: any[] = await this.model.aggregate([
+      { $match: { storeId, status: { $ne: 'spam' }, createdAt: { $gte: since } } },
+      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, n: { $sum: 1 } } },
+    ]);
+    const forms = new Map<string, { sectionId: string; name: string; views: number; starts: number; sent: number; spam: number; sources: Record<string, number>; fieldTouches: Record<string, number> }>();
+    const daily = new Map<string, { day: string; views: number; sent: number }>();
+    const dayRow = (d: string) => { let r = daily.get(d); if (!r) { r = { day: d, views: 0, sent: 0 }; daily.set(d, r); } return r; };
+    const get = (id: string) => { let f = forms.get(id); if (!f) { f = { sectionId: id, name: '', views: 0, starts: 0, sent: 0, spam: 0, sources: {}, fieldTouches: {} }; forms.set(id, f); } return f; };
     for (const m of msgs) {
       const f = get(m._id.s || '');
       if (m.name) f.name = m.name;
       if (m._id.spam) f.spam += m.n; else { f.sent += m.n; f.sources[m._id.src] = (f.sources[m._id.src] ?? 0) + m.n; }
     }
-    for (const st of stats) { const f = get(String(st._id)); f.views += st.views; f.starts += st.starts; }
-    return { success: true, data: { days, forms: [...forms.values()].sort((a, b) => b.sent - a.sent || b.views - a.views).slice(0, 50) } };
+    for (const st of stats) {
+      const f = get(String(st.sectionId));
+      f.views += st.views ?? 0; f.starts += st.starts ?? 0;
+      dayRow(st.day).views += st.views ?? 0;
+      for (const [k, n] of Object.entries((st.fields ?? {}) as Record<string, number>)) f.fieldTouches[k] = (f.fieldTouches[k] ?? 0) + Number(n);
+    }
+    for (const d of dailyMsgs) dayRow(String(d._id)).sent += d.n;
+    return { success: true, data: { days, forms: [...forms.values()].sort((a, b) => b.sent - a.sent || b.views - a.views).slice(0, 50), daily: [...daily.values()].sort((a, b) => a.day.localeCompare(b.day)) } };
   }
 
   async forms(storeId: string, sellerId: string) {

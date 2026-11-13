@@ -117,8 +117,8 @@ export class PublicStoreContactController {
   /** A visitor saw / started a form (anonymous counters for the seller's report). */
   @Post(':storeId/event')
   @Throttle({ default: { limit: 40, ttl: 60_000 } })
-  event(@Param('storeId') storeId: string, @Body() body: { sectionId?: string; kind?: string }) {
-    return this.service.trackEvent(storeId, String(body?.sectionId ?? ''), String(body?.kind ?? ''));
+  event(@Param('storeId') storeId: string, @Body() body: { sectionId?: string; kind?: string; fieldId?: string }) {
+    return this.service.trackEvent(storeId, String(body?.sectionId ?? ''), String(body?.kind ?? ''), typeof body?.fieldId === 'string' ? body.fieldId : undefined);
   }
 
   @Post(':storeId')

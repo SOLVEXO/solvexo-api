@@ -12,7 +12,7 @@ import { BadRequestException } from '@nestjs/common';
  */
 export const CONTACT_FIELD_TYPES = [
   'name', 'text', 'email', 'phone', 'textarea', 'number', 'date', 'time', 'url',
-  'dropdown', 'radio', 'checkbox', 'consent', 'rating', 'country', 'hidden', 'heading', 'paragraph', 'step', 'file',
+  'dropdown', 'radio', 'checkbox', 'consent', 'rating', 'country', 'hidden', 'heading', 'paragraph', 'step', 'file', 'slider', 'signature',
 ] as const;
 export type ContactFieldType = (typeof CONTACT_FIELD_TYPES)[number];
 
@@ -44,6 +44,10 @@ export interface ContactFormField {
   /** file: which kinds of file are accepted, and the size limit in MB (at most 10). */
   fileKinds?: 'images' | 'documents' | 'both';
   maxSizeMb?: number;
+  /** A file field that takes up to MAX_FILES files (each is stored as its own answer line). */
+  multiple?: boolean;
+  /** Slider step (default 1). */
+  step?: number;
   /** consent: when ticked and the visitor gave an email, add them to the store's email marketing list. */
   subscribes?: boolean;
 }
@@ -59,6 +63,7 @@ export const UPLOAD_ID_RE = /^[a-f0-9]{24}$/i;
 
 export const MAX_CONTACT_FIELDS = 100;
 export const MAX_CHOICES = 200;
+export const MAX_FILES = 5;
 const OPTION_TYPES: ContactFieldType[] = ['dropdown', 'radio', 'checkbox'];
 /** Fields that show text but collect nothing. */
 /** `step` starts a new page of a multi-step form; it only holds the page title. */
@@ -123,6 +128,8 @@ export function validateContactFieldDefs(input: unknown): void {
     if (STATIC_TYPES.includes(type) && f.required) return bad(`"${f.label}" only shows text, so it cannot be required`);
     if (f.fileKinds !== undefined && !['images', 'documents', 'both'].includes(f.fileKinds as string)) return bad(`${p}.fileKinds must be images, documents or both`);
     if (f.maxSizeMb !== undefined && !wholeNumber(f.maxSizeMb, 1, MAX_FILE_MB)) return bad(`${p}.maxSizeMb must be a whole number from 1 to ${MAX_FILE_MB}`);
+    if (f.multiple !== undefined && (typeof f.multiple !== 'boolean' || (f.multiple && type !== 'file'))) return bad(`${p}.multiple is only for file fields`);
+    if (f.step !== undefined && (typeof f.step !== 'number' || !(f.step > 0) || f.step > 1000000)) return bad(`${p}.step must be a positive number`);
     if (f.subscribes !== undefined && typeof f.subscribes !== 'boolean') return bad(`${p}.subscribes must be true or false`);
     if (f.subscribes === true && type !== 'consent') return bad(`"${f.label}": only a consent tick box can sign visitors up for email marketing`);
 
@@ -266,6 +273,16 @@ export function validateContactAnswers(defs: ContactFormField[], answers: unknow
       if (def.required) fail(def.type === 'consent' ? `Please tick: ${def.label}` : `${def.label} is required`);
       continue;
     }
+    if (def.type === 'file' && def.multiple) {
+      const ids = Array.from(new Set(value.split(',').map(x => x.trim()).filter(Boolean)));
+      if (ids.length > MAX_FILES) fail(`You can attach up to ${MAX_FILES} files to ${def.label}`);
+      for (const id of ids) {
+        if (!UPLOAD_ID_RE.test(id)) fail('Attach the file again');
+        clean.push({ id: def.id, label: def.label, type: def.type, value: id });
+      }
+      shown.set(def.id, ids[0]);
+      continue;
+    }
     switch (def.type) {
       case 'name': if (value.length > 80) fail(`${def.label} is too long`); break;
       case 'text':
@@ -277,11 +294,14 @@ export function validateContactAnswers(defs: ContactFormField[], answers: unknow
       }
       case 'email': if (value.length > 120 || !EMAIL_RE.test(value)) fail('Enter a valid email address'); value = value.toLowerCase(); break;
       case 'phone': if (!PHONE_RE.test(value)) fail('Enter a valid phone number'); break;
+      case 'slider':
       case 'number': {
         const n = Number(value);
         if (value.length > 30 || !Number.isFinite(n)) fail(`${def.label} must be a number`);
-        if (def.min !== undefined && n < def.min) fail(`${def.label} must be ${def.min} or more`);
-        if (def.max !== undefined && n > def.max) fail(`${def.label} must be ${def.max} or less`);
+        const lo = def.min ?? (def.type === 'slider' ? 0 : undefined);
+        const hi = def.max ?? (def.type === 'slider' ? 100 : undefined);
+        if (lo !== undefined && n < lo) fail(`${def.label} must be ${lo} or more`);
+        if (hi !== undefined && n > hi) fail(`${def.label} must be ${hi} or less`);
         break;
       }
       case 'date': if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) fail(`${def.label} must be a date`); break;
@@ -305,6 +325,7 @@ export function validateContactAnswers(defs: ContactFormField[], answers: unknow
         break;
       }
       case 'hidden': if (value.length > 300) value = value.slice(0, 300); break;
+      case 'signature':
       case 'file': if (!UPLOAD_ID_RE.test(value)) fail('Attach the file again'); break;
       case 'dropdown':
       case 'radio': if (!def.options?.includes(value)) bad(`"${value}" is not a choice of ${def.label}`); break;

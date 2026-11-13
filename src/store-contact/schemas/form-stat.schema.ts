@@ -14,6 +14,8 @@ export class FormStat {
   @Prop({ required: true }) day: string;
   @Prop({ default: 0 }) views: number;
   @Prop({ default: 0 }) starts: number;
+  /** Visitors who touched each field (field id -> count): shows where people stop. */
+  @Prop({ type: Object, default: {} }) fields: Record<string, number>;
   /** Counters are kept for a year. */
   @Prop({ type: Date, default: () => new Date(), expires: 366 * 86400 }) createdAt: Date;
 }
