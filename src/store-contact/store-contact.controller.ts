@@ -25,8 +25,14 @@ export class StoreContactController {
   constructor(private readonly service: StoreContactService) {}
 
   @Get(':storeId')
-  list(@Req() req: any, @Param('storeId') storeId: string, @Query('page') page?: string, @Query('limit') limit?: string, @Query('status') status?: string, @Query('form') form?: string, @Query('q') q?: string) {
-    return this.service.list(storeId, actingSellerId(req.user), { page: Number(page), limit: Number(limit), status, form, q });
+  list(@Req() req: any, @Param('storeId') storeId: string, @Query('page') page?: string, @Query('limit') limit?: string, @Query('status') status?: string, @Query('form') form?: string, @Query('q') q?: string, @Query('source') source?: string) {
+    return this.service.list(storeId, actingSellerId(req.user), { page: Number(page), limit: Number(limit), status, form, q, source });
+  }
+
+  /** Seen / started / sent per form for the last N days. */
+  @Get(':storeId/report')
+  report(@Req() req: any, @Param('storeId') storeId: string, @Query('days') days?: string) {
+    return this.service.report(storeId, actingSellerId(req.user), Number(days));
   }
 
   /** The forms that received messages, for the inbox filter. */
@@ -40,8 +46,8 @@ export class StoreContactController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Header('Content-Type', 'text/csv; charset=utf-8')
   @Header('Content-Disposition', 'attachment; filename="contact-messages.csv"')
-  exportCsv(@Req() req: any, @Param('storeId') storeId: string, @Query('status') status?: string, @Query('form') form?: string, @Query('q') q?: string) {
-    return this.service.exportCsv(storeId, actingSellerId(req.user), { status, form, q });
+  exportCsv(@Req() req: any, @Param('storeId') storeId: string, @Query('status') status?: string, @Query('form') form?: string, @Query('q') q?: string, @Query('source') source?: string) {
+    return this.service.exportCsv(storeId, actingSellerId(req.user), { status, form, q, source });
   }
 
   /** A 2-minute link to one file a visitor attached. */
@@ -106,6 +112,13 @@ export class PublicStoreContactController {
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } }))
   upload(@Param('storeId') storeId: string, @UploadedFile() file: any, @Body() body: { sectionId?: string; fieldId?: string }) {
     return this.service.upload(storeId, body, file);
+  }
+
+  /** A visitor saw / started a form (anonymous counters for the seller's report). */
+  @Post(':storeId/event')
+  @Throttle({ default: { limit: 40, ttl: 60_000 } })
+  event(@Param('storeId') storeId: string, @Body() body: { sectionId?: string; kind?: string; fieldId?: string }) {
+    return this.service.trackEvent(storeId, String(body?.sectionId ?? ''), String(body?.kind ?? ''), typeof body?.fieldId === 'string' ? body.fieldId : undefined);
   }
 
   @Post(':storeId')
