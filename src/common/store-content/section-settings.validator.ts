@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException } from '@nestjs/common';
+import { validateContactFormSettings } from '../../store-contact/contact-form-fields.util';
 import type { SectionType } from '../schemas/section.schema';
 import { isAppBlockType } from './app-block.util';
 import type {
@@ -439,6 +440,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       if (settings.showPhone !== undefined && typeof settings.showPhone !== 'boolean') {
         throw new BadRequestException('settings.showPhone must be true or false');
       }
+      validateContactFormSettings(settings);
       break;
     }
     case 'divider':
