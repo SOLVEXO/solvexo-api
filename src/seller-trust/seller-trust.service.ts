@@ -207,7 +207,7 @@ export class SellerTrustService {
     const graceDue = new Date(start.getTime() + settings.graceDays * DAY_MS);
     await this.storeModel.updateMany({ isDelete: false, createdAt: { $lt: start } }, { $set: { verificationDueAt: graceDue } });
     // Pipeline update: a store created after enforcement started is due at its own createdAt.
-    await this.storeModel.updateMany({ isDelete: false, createdAt: { $gte: start } }, [{ $set: { verificationDueAt: '$createdAt' } }] as any);
+    await this.storeModel.updateMany({ isDelete: false, createdAt: { $gte: start } }, [{ $set: { verificationDueAt: '$createdAt' } }] as any, { updatePipeline: true } as any);
     await this.syncMarketplaceHidden(now);
   }
 
