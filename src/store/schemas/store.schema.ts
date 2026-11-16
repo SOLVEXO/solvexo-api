@@ -948,6 +948,10 @@ export class Store {
   @Prop({ type: String, enum: ['dark', 'light', 'brand'], default: 'dark' })
   cookieBannerColorMode: 'dark' | 'light' | 'brand';
 
+  // Floating contact bar (call / WhatsApp / social icons) shown on every theme; validated by floating-contact.util.ts.
+  @Prop({ type: Object, default: null })
+  floatingContact?: Record<string, unknown> | null;
+
   // Real Shopify "Data sale opt-out requests" — a visitor submits their
   // email via the storefront's "Do Not Sell My Personal Information" dialog
   // (see the theme footers), the seller reviews/marks it
