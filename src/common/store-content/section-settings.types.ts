@@ -39,6 +39,12 @@ export interface BaseSectionSettings {
   backgroundOverlay?: number | null;
   anchorId?: string | null;
   customCss?: string | null;
+  /** Section look: own background colour, border, rounded corners and shadow (see `validateCommonSectionDesign`). */
+  sectionBgColor?: string | null;
+  borderWidth?: number | null;
+  borderColor?: string | null;
+  borderRadius?: number | null;
+  shadow?: 'none' | 'soft' | 'medium' | 'strong';
 }
 
 /** Shared by any block/section CTA — a nav link, footer link, or hero/image-with-text button. */

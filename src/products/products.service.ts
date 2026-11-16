@@ -32,7 +32,7 @@ import { MarketingService } from '@/marketing/marketing.service';
 import { pickPrimaryCampaignForBadge } from '@/marketing/campaign-pricing.util';
 import { EducationLevel } from './schemas/product.schema';
 import { toCsv } from '@/analytics/utils/csv.util';
-import { importProductsCsv as importProductsCsvRows } from './product-bulk-import';
+import { importProductsCsv as importProductsCsvRows, PRODUCT_SPEC_PAIRS } from './product-bulk-import';
 import { EducationLevelService } from './education-level.service';
 import { UploadService } from '@/upload/upload.service';
 import { generateUniqueSlug } from '@/common/slug.util';
@@ -1904,6 +1904,26 @@ export class ProductsService {
     const categoryNameById: Record<string, string> = {};
     for (const c of categories as any[]) categoryNameById[c._id.toString()] = c.name;
 
+    // Specs: the first 10 filled custom fields of each product (Spec N Name / Spec N Value), in field order.
+    const { metafieldDefinitionModel, metafieldValueModel } = this.databaseService.repositories;
+    const [specDefs, specValues] = await Promise.all([
+      metafieldDefinitionModel.find({ storeId, ownerResource: 'product' }).sort({ createdAt: 1 }).lean(),
+      metafieldValueModel.find({ storeId, ownerResource: 'product', ownerId: { $in: productIds } }).lean(),
+    ]);
+    const specValueByProduct = new Map<string, Map<string, string>>();
+    for (const v of specValues as any[]) {
+      const m = specValueByProduct.get(String(v.ownerId)) ?? new Map<string, string>();
+      m.set(`${v.namespace}:${v.key}`, String(v.value ?? ''));
+      specValueByProduct.set(String(v.ownerId), m);
+    }
+    const specCells = (productId: string): string[] => {
+      const m = specValueByProduct.get(productId);
+      const filled = (specDefs as any[]).map((d) => ({ name: String(d.name), value: m?.get(`${d.namespace}:${d.key}`) ?? '' })).filter((x) => x.value.trim() !== '').slice(0, PRODUCT_SPEC_PAIRS);
+      const cells: string[] = [];
+      for (let i = 0; i < PRODUCT_SPEC_PAIRS; i++) cells.push(filled[i]?.name ?? '', filled[i]?.value ?? '');
+      return cells;
+    };
+
     const rows: (string | number)[][] = [];
     for (const product of products as any[]) {
       const pVariants = variantsByProduct[product._id.toString()] || [];
@@ -1936,11 +1956,12 @@ export class ProductsService {
         product.tabs?.[0]?.content ?? '',
         product.tabs?.[1]?.title ?? '',
         product.tabs?.[1]?.content ?? '',
+        ...specCells(product._id.toString()),
       ]);
     }
 
     return toCsv(
-      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax', 'Image URL', 'Video URL', 'Short Description', 'Tab 1 Title', 'Tab 1 Content', 'Tab 2 Title', 'Tab 2 Content'],
+      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax', 'Image URL', 'Video URL', 'Short Description', 'Tab 1 Title', 'Tab 1 Content', 'Tab 2 Title', 'Tab 2 Content', ...Array.from({ length: PRODUCT_SPEC_PAIRS }, (_, i) => [`Spec ${i + 1} Name`, `Spec ${i + 1} Value`]).flat()],
       rows,
     );
   }
@@ -1955,10 +1976,10 @@ export class ProductsService {
     csvText: string,
     updateVariant: (sellerId: string, productId: string, variantId: string, dto: any) => Promise<any>,
   ) {
-    const { storeModel, categoryModel, productModel, productVariantModel } = this.databaseService.repositories;
+    const { storeModel, categoryModel, productModel, productVariantModel, metafieldDefinitionModel, metafieldValueModel } = this.databaseService.repositories;
     return importProductsCsvRows(
       {
-        repos: { storeModel, categoryModel, productModel, productVariantModel },
+        repos: { storeModel, categoryModel, productModel, productVariantModel, metafieldDefinitionModel, metafieldValueModel },
         addPhysicalProduct: (s, body) => this.addPhysicalProduct(s, body),
         editProduct: (s, body) => this.editProduct(s, body),
         updateVariant,
