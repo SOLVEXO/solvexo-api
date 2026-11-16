@@ -162,10 +162,13 @@ describe('G6.1 · one provider call per document across instances (MongoDB lease
     const x = await fresh(); const sale = await sell(x); const id = String(sale.data._id);
     const dead = new JobLeaseService(leaseModel);
     await dead.tryAcquire(`pos:fiscal:invoice:${id}`, 300); // holder dies without releasing
-    const p = new CountingProvider(0); const f = fiscal(p, new JobLeaseService(leaseModel));
+    const leases = new JobLeaseService(leaseModel);
+    const p = new CountingProvider(0); const f = fiscal(p, leases);
     expect(await f.fiscaliseSale(x.s.storeId, id)).toBeNull(); // still held: nothing sent, nothing recorded yet
     expect(p.calls).toBe(0);
-    await sleep(500);
+    // the dead holder's 300 ms lease runs out (G6.4: the lease clock moves forward instead of a real sleep — deterministic under CI load)
+    const later = new Date(Date.now() + 60_000);
+    leases.clock = () => later;
     expect(await f.fiscaliseSale(x.s.storeId, id)).toMatchObject({ status: 'confirmed', attempts: 1 });
     expect(p.calls).toBe(1);
   });
