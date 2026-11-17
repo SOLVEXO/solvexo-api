@@ -2181,7 +2181,7 @@ export class StoreService {
     } : null;
 
     // Category + sub-category names for the product card's info line: one lookup for the whole page.
-    const cardCategoryIds = [...new Set(products.flatMap((p: any) => [p.categoryId, p.subCategoryId]).filter(Boolean).map(String))];
+    const cardCategoryIds = [...new Set(products.flatMap((p: any) => [p.categoryId, p.subCategoryId]).filter(Boolean).map(String).filter((id: string) => /^[a-f0-9]{24}$/i.test(id)))];
     const cardCategoryNames = new Map<string, string>();
     if (cardCategoryIds.length) {
       const cats: any[] = await this.databaseService.repositories.categoryModel.find({ _id: { $in: cardCategoryIds }, isDelete: false }).select('name').lean();
@@ -2245,7 +2245,7 @@ export class StoreService {
       { $match: { ids: { $nin: [null, ''] } } },
       { $group: { _id: '$ids', count: { $sum: 1 } } },
     ]);
-    const categoryIds = categoryAgg.map((c) => c._id).filter(Boolean);
+    const categoryIds = categoryAgg.map((c) => c._id).filter((id) => /^[a-f0-9]{24}$/i.test(String(id ?? '')));
     const categories = categoryIds.length
       ? await categoryModel.find({ _id: { $in: categoryIds }, isDelete: false }).select('name slug').lean()
       : [];

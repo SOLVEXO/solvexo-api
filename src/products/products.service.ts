@@ -1903,7 +1903,7 @@ export class ProductsService {
       if (!variantsByProduct[v.productId]) variantsByProduct[v.productId] = [];
       variantsByProduct[v.productId].push(v);
     }
-    const categoryIds = [...new Set((products as any[]).map((p) => p.categoryId).filter(Boolean))];
+    const categoryIds = [...new Set((products as any[]).map((p) => p.categoryId).filter((id) => /^[a-f0-9]{24}$/i.test(String(id ?? ''))))];
     const categories = await categoryModel.find({ _id: { $in: categoryIds } }).lean();
     const categoryNameById: Record<string, string> = {};
     for (const c of categories as any[]) categoryNameById[c._id.toString()] = c.name;
