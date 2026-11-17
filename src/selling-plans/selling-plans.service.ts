@@ -73,12 +73,65 @@ export class SellingPlansService {
     if (typeof q?.status === 'string' && (CONTRACT_STATUSES as readonly string[]).includes(q.status)) filter.status = q.status;
     const limit = Math.min(Math.max(parseInt(q?.limit, 10) || 20, 1), 100); const page = Math.max(parseInt(q?.page, 10) || 1, 1);
     const [items, total] = await Promise.all([this.contracts.find(filter).sort({ nextBillingAt: 1 }).skip((page - 1) * limit).limit(limit).lean(), this.contracts.countDocuments(filter)]);
-    return { items, total, page, limit };
+    return { items: await this.decorate(storeId, items), total, page, limit };
   }
 
   async upcoming(storeId: string, days = 14) {
     const until = new Date(Date.now() + Math.min(Math.max(days, 1), 60) * DAY);
-    return this.contracts.find({ storeId, status: 'active', nextBillingAt: { $lte: until } }).sort({ nextBillingAt: 1 }).limit(100).lean();
+    return this.decorate(storeId, await this.contracts.find({ storeId, status: 'active', nextBillingAt: { $lte: until } }).sort({ nextBillingAt: 1 }).limit(100).lean());
+  }
+
+  /** What each subscription is FOR: the contract only stores ids and quantities, so the product name, photo, variant and the
+   *  price a renewal would use today are looked up here (one query per kind for the whole list). A product that was deleted
+   *  or archived still gets a row, flagged unavailable, so the list never breaks. */
+  async decorate(storeId: string, list: any[]): Promise<any[]> {
+    if (!list.length) return list;
+    const variantIds = [...new Set(list.flatMap((c) => (c.items ?? []).map((i: any) => String(i.variantId))))].filter(isOid);
+    const productIds = [...new Set(list.flatMap((c) => (c.items ?? []).map((i: any) => String(i.productId))))].filter(isOid);
+    const [variants, products, store]: any[] = await Promise.all([
+      variantIds.length ? (this.db.repositories.productVariantModel as any).find({ _id: { $in: variantIds }, storeId }).select('productId price options sku images isDelete').lean() : [],
+      productIds.length ? (this.db.repositories.productModel as any).find({ _id: { $in: productIds }, storeId }).select('name slug images isDelete status').lean() : [],
+      this.db.repositories.storeModel.findById(storeId).select('baseCurrency').lean(),
+    ]);
+    const vmap = new Map<string, any>(variants.map((v: any) => [String(v._id), v]));
+    const pmap = new Map<string, any>(products.map((p: any) => [String(p._id), p]));
+    const currency = store?.baseCurrency ?? 'USD';
+    return list.map((c) => {
+      const lines = (c.items ?? []).map((i: any) => {
+        const v = vmap.get(String(i.variantId)); const p = pmap.get(String(i.productId));
+        const available = !!v && !v.isDelete && !!p && !p.isDelete && p.status !== 'archived';
+        const price = v ? Number(v.price) || 0 : null;
+        const unitPrice = price == null ? null : discountedPrice(price, c.terms?.discountPercent ?? 0);
+        const label = (v?.options ?? []).map((o: any) => o?.value).filter((x: unknown) => x && String(x).toLowerCase() !== 'default title').join(' / ');
+        return {
+          productId: i.productId, variantId: i.variantId, quantity: i.quantity,
+          name: p?.name ?? 'Product no longer available', slug: p?.slug ?? null, image: v?.images?.[0] ?? p?.images?.[0] ?? null,
+          variantLabel: label || null, sku: v?.sku ?? null, available,
+          listPrice: price, unitPrice, lineTotal: unitPrice == null ? null : round2(unitPrice * i.quantity),
+        };
+      });
+      const goods = round2(lines.reduce((s: number, l: any) => s + (l.lineTotal ?? 0), 0));
+      const shipping = c.terms?.shippingAmount ?? 0;
+      const tax = round2(goods * (c.terms?.taxPercent ?? 0) / 100);
+      return { ...c, lines, currency, estimatedTotal: round2(goods + shipping + tax), estimatedShipping: shipping, estimatedTax: tax };
+    });
+  }
+
+  /** One subscription with its products and every order it has placed (for the seller's "View details"). */
+  async contractDetail(storeId: string, id: string) {
+    if (!isOid(id)) throw new NotFoundException('Subscription not found');
+    const c: any = await this.contracts.findOne({ _id: id, storeId }).lean();
+    if (!c) throw new NotFoundException('Subscription not found');
+    const [decorated] = await this.decorate(storeId, [c]);
+    const cycles: any[] = await this.cycles.find({ contractId: String(c._id), status: 'ordered' }).sort({ cycleNo: -1 }).limit(60).lean();
+    const orderIds = cycles.map((y) => y.orderId).filter((x) => isOid(x));
+    const orders: any[] = orderIds.length ? await (this.db.repositories.orderModel as any).find({ _id: { $in: orderIds } }).select('orderNumber totalAmount isPaid paymentStatus orderStatus createdAt').lean() : [];
+    const omap = new Map<string, any>(orders.map((o) => [String(o._id), o]));
+    const history = cycles.map((y) => {
+      const o = omap.get(String(y.orderId));
+      return { cycleNo: y.cycleNo, orderId: y.orderId, orderNumber: o?.orderNumber ?? null, amount: y.amount ?? o?.totalAmount ?? 0, isPaid: !!o?.isPaid, paymentStatus: o?.paymentStatus ?? null, orderStatus: o?.orderStatus ?? null, placedAt: o?.createdAt ?? y.createdAt ?? null };
+    });
+    return { ...decorated, history };
   }
 
   /** Recurring-revenue style numbers in the store currency (estimate: current variant prices, weeks counted as 52/12 per month). */
@@ -100,9 +153,10 @@ export class SellingPlansService {
     return { currency: store?.baseCurrency ?? 'USD', active: active.length, paused, cancelledLast30Days: cancelled30, total, monthlyRecurring: round2(mrr) };
   }
 
-  async sellerAction(storeId: string, actor: Actor, id: string, action: string) {
+  async sellerAction(storeId: string, actor: Actor, id: string, action: string, body?: any) {
     if (!isOid(id)) throw new NotFoundException('Subscription not found');
-    const c = await this.apply({ _id: id, storeId }, action, actor.role === 'seller' || actor.role === 'staff' ? 'store' : 'system');
+    const reason = typeof body?.reason === 'string' ? body.reason.replace(/\s+/g, ' ').trim().slice(0, 150) : '';
+    const c = await this.apply({ _id: id, storeId }, action, actor.role === 'seller' || actor.role === 'staff' ? 'store' : 'system', reason);
     await this.audit(storeId, actor, `subscription_${action}`, `Subscription ${action} (customer ${c.customerName})`, id, 'subscription');
     return c;
   }
@@ -152,7 +206,7 @@ export class SellingPlansService {
     return { contractId: String(contract._id), firstOrder: first };
   }
 
-  mine(storeId: string, userId: string) { return this.contracts.find({ storeId, userId }).sort({ createdAt: -1 }).limit(50).lean(); }
+  async mine(storeId: string, userId: string) { return this.decorate(storeId, await this.contracts.find({ storeId, userId }).sort({ createdAt: -1 }).limit(50).lean()); }
 
   async buyerAction(storeId: string, userId: string, id: string, action: string, body: any) {
     if (!isOid(id)) throw new NotFoundException('Subscription not found');
@@ -174,13 +228,13 @@ export class SellingPlansService {
   }
 
   /** skip / pause / resume / cancel, each as a conditional update on the status read (a double click does nothing twice). */
-  private async apply(filter: any, action: string, by: 'buyer' | 'store' | 'system'): Promise<any> {
+  private async apply(filter: any, action: string, by: 'buyer' | 'store' | 'system', reason = ''): Promise<any> {
     const cur: any = await this.contracts.findOne(filter).lean();
     if (!cur) throw new NotFoundException('Subscription not found');
     const now = new Date();
     let update: any; let from: string[];
     if (action === 'skip') { from = ['active']; update = { $set: { nextBillingAt: addInterval(new Date(cur.nextBillingAt), cur.terms.unit, cur.terms.count), stockFailures: 0 } }; }
-    else if (action === 'pause') { from = ['active']; update = { $set: { status: 'paused', pausedReason: by === 'store' ? 'Paused by the store' : 'Paused by the customer' } }; }
+    else if (action === 'pause') { from = ['active']; update = { $set: { status: 'paused', pausedReason: by === 'store' ? (reason ? `Paused by the store: ${reason}` : 'Paused by the store') : 'Paused by the customer' } }; }
     else if (action === 'resume') { from = ['paused']; update = { $set: { status: 'active', pausedReason: null, stockFailures: 0, dunningStage: 0, nextBillingAt: new Date(Math.max(now.getTime(), new Date(cur.nextBillingAt).getTime())) } }; }
     else if (action === 'cancel') { from = ['active', 'paused']; update = { $set: { status: 'cancelled', cancelledAt: now, pausedReason: null } }; }
     else throw new BadRequestException('Unknown action');
