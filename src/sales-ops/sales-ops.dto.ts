@@ -17,6 +17,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { LEAD_SOURCES, LEAD_STAGES, LOST_REASONS } from './sales-ops.constants';
+import { type VisitOptionGroup, optionKeys } from './field-visit.constants';
 
 export class LeadDto {
   @IsOptional() @IsString() @MaxLength(120) name?: string;
@@ -236,6 +237,12 @@ export class TargetRowDto {
   @IsNumber()
   @Min(0)
   activities?: number | null;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  visits?: number | null;
 }
 
 export class TargetsDto {
@@ -398,4 +405,101 @@ export class WaSendDto {
 export class WaListDto {
   @IsOptional() @IsString() leadId?: string;
   @IsOptional() @IsIn(['true', 'false']) unread?: string;
+}
+
+// ── Field visits ───────────────────────────────────────────────────────────
+
+const keysOf = (g: VisitOptionGroup) => optionKeys(g) as string[];
+/** An optional single choice from one of the visit option groups (null clears it). */
+const Choice = (g: VisitOptionGroup) => (target: object, key: string) => {
+  IsOptional()(target, key);
+  ValidateIf((_: unknown, v: unknown) => v !== null)(target, key);
+  IsIn(keysOf(g))(target, key);
+};
+/** An optional multi-choice list from one of the visit option groups. */
+const Choices = (g: VisitOptionGroup) => (target: object, key: string) => {
+  IsOptional()(target, key);
+  IsArray()(target, key);
+  ArrayMaxSize(20)(target, key);
+  IsIn(keysOf(g), { each: true })(target, key);
+};
+const ShortText = (max: number) => (target: object, key: string) => {
+  IsOptional()(target, key);
+  ValidateIf((_: unknown, v: unknown) => v !== null)(target, key);
+  IsString()(target, key);
+  MaxLength(max)(target, key);
+};
+
+export class VisitLocationDto {
+  @Type(() => Number) @IsNumber() lat: number;
+  @Type(() => Number) @IsNumber() lng: number;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @Type(() => Number) @IsNumber() @Min(0) accuracyM?: number | null;
+}
+
+/** The answers of a visit; shared by "save" (VisitDto) and "correct" (VisitPatchDto). */
+export class VisitAnswersDto {
+  @ShortText(80) unit?: string | null;
+  @Choice('floor') floor?: string | null;
+  @ShortText(80) area?: string | null;
+  @Choice('category') category?: string | null;
+  @ShortText(80) categoryOther?: string | null;
+  @Choice('priceRange') priceRange?: string | null;
+  @Choice('wholesale') wholesale?: string | null;
+  @ShortText(120) contactName?: string | null;
+  @Choice('contactRole') contactRole?: string | null;
+  @ShortText(30) whatsapp?: string | null;
+  @IsOptional() @IsBoolean() waPermission?: boolean;
+  @Choice('bestTime') bestTime?: string | null;
+  @ShortText(120) instagram?: string | null;
+  @ShortText(200) facebook?: string | null;
+  @ShortText(200) website?: string | null;
+  @Choices('sellsOn') sellsOn?: string[];
+  @Choice('ordersPerMonth') ordersPerMonth?: string | null;
+  @Choices('payments') payments?: string[];
+  @Choices('couriers') couriers?: string[];
+  @Choice('courierBooking') courierBooking?: string | null;
+  @Choice('billing') billing?: string | null;
+  @ShortText(80) billingSoftware?: string | null;
+  @Choice('khata') khata?: string | null;
+  @Choices('seasons') seasons?: string[];
+  @ShortText(300) bestSellers?: string | null;
+  @ShortText(1000) problem?: string | null;
+  @Choices('problemTags') problemTags?: string[];
+  @Choices('objections') objections?: string[];
+}
+
+export class VisitDto extends VisitAnswersDto {
+  /** Made by the phone; a retry with the same id is stored once. */
+  @IsString() @MaxLength(64) clientId: string;
+  @IsString() @MaxLength(160) storeName: string;
+  @IsIn(keysOf('interest')) interest: string;
+  @IsIn(keysOf('nextStep')) nextStep: string;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsDateString() nextStepAt?: string | null;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsDateString() visitedAt?: string | null;
+  @IsOptional() @ValidateIf((_, v) => v !== null) @ValidateNested() @Type(() => VisitLocationDto) location?: VisitLocationDto | null;
+  /** The shop photo as a data URL (JPEG/PNG/WebP), already shrunk by the phone. */
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(1_000_000) photoDataUrl?: string | null;
+}
+
+export class VisitPatchDto extends VisitAnswersDto {
+  @IsOptional() @IsString() @MaxLength(160) storeName?: string;
+  @IsOptional() @IsIn(keysOf('interest')) interest?: string;
+  @IsOptional() @IsIn(keysOf('nextStep')) nextStep?: string;
+}
+
+export class VisitListDto {
+  @IsOptional() @IsDateString() from?: string;
+  @IsOptional() @IsDateString() to?: string;
+  @IsOptional() @IsString() @MaxLength(40) rep?: string;
+  @IsOptional() @IsString() @MaxLength(80) area?: string;
+  @IsOptional() @IsIn(keysOf('interest')) interest?: string;
+  @IsOptional() @IsString() @MaxLength(100) q?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) page?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) limit?: number;
+}
+
+export class VisitCheckDto {
+  @IsOptional() @IsString() @MaxLength(30) phone?: string;
+  @IsOptional() @IsString() @MaxLength(160) storeName?: string;
+  @IsOptional() @IsString() @MaxLength(80) area?: string;
 }

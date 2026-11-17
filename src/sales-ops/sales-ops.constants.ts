@@ -22,6 +22,7 @@ export const LEAD_SOURCES = [
   'social',
   'referral',
   'event',
+  'field_visit',
   'other',
 ] as const;
 export type LeadSource = (typeof LEAD_SOURCES)[number];
@@ -36,6 +37,7 @@ export const SOURCE_LABELS: Record<LeadSource, string> = {
   social: 'Social media',
   referral: 'Referral',
   event: 'Event',
+  field_visit: 'Field visit',
   other: 'Other',
 };
 
@@ -54,6 +56,7 @@ export const ACTIVITY_TYPES = [
   'whatsapp',
   'meeting',
   'email',
+  'visit',
   'stage_change',
   'owner_change',
   'system',

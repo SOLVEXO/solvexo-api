@@ -181,6 +181,8 @@ export interface TargetRow {
   wonDeals: number | null;
   wonValuePKR: number | null;
   activities: number | null;
+  /** Field visits in the month. */
+  visits?: number | null;
 }
 export interface LeaderRow {
   adminId: string;
@@ -188,6 +190,7 @@ export interface LeaderRow {
   newLeads: number;
   activities: number;
   demos: number;
+  visits: number;
   won: number;
   wonValuePKR: number;
   lost: number;
@@ -201,6 +204,7 @@ export interface LeaderRow {
     wonDeals: number | null;
     wonValuePKR: number | null;
     activities: number | null;
+    visits: number | null;
   };
 }
 
@@ -210,6 +214,8 @@ export function leaderboard(
     newLeads: { ownerAdminId: string | null }[];
     activities: { adminId: string | null }[];
     demos: { ownerAdminId: string | null }[];
+    /** Field visits, by the rep who made them. */
+    visits?: { adminId: string | null }[];
     closed: {
       ownerAdminId: string | null;
       stage: string;
@@ -240,6 +246,7 @@ export function leaderboard(
       const open = data.open.filter((o) => o.ownerAdminId === r.adminId);
       const wonValuePKR = won.reduce((s, c) => s + (c.dealValuePKR ?? 0), 0);
       const activities = count(data.activities, (a) => a.adminId, r.adminId);
+      const visits = count(data.visits ?? [], (v) => v.adminId, r.adminId);
       const target = targets.find((t) => t.adminId === r.adminId) ?? null;
       return {
         adminId: r.adminId,
@@ -247,6 +254,7 @@ export function leaderboard(
         newLeads: count(data.newLeads, (l) => l.ownerAdminId, r.adminId),
         activities,
         demos: count(data.demos, (d) => d.ownerAdminId, r.adminId),
+        visits,
         won: won.length,
         wonValuePKR,
         lost,
@@ -262,6 +270,7 @@ export function leaderboard(
           wonDeals: pct(won.length, target?.wonDeals ?? null),
           wonValuePKR: pct(wonValuePKR, target?.wonValuePKR ?? null),
           activities: pct(activities, target?.activities ?? null),
+          visits: pct(visits, target?.visits ?? null),
         },
       };
     })
