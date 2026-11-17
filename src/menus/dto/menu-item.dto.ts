@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsArray, IsBoolean, IsIn, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsInt, IsObject, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { MENU_LINK_TYPES, MENU_STYLES, type MenuLinkType, type MenuStyle } from '../schemas/menu.schema';
 
@@ -16,6 +16,14 @@ export class MenuItemChildDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() highlight?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() newTab?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(2048) imageUrl?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(12) badge?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(7) badgeColor?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(12) showTo?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(40) showFrom?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(40) showUntil?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(200) showCountries?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(200) hideCountries?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(100) showLanguages?: string | null;
   @ApiProperty({ type: [MenuItemChildDto], required: false })
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MenuItemChildDto)
   children?: MenuItemChildDto[];
@@ -34,6 +42,16 @@ export class MenuItemDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() highlight?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() newTab?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(2048) imageUrl?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(12) badge?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(7) badgeColor?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(12) showTo?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(40) showFrom?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(40) showUntil?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(200) showCountries?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(200) hideCountries?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(100) showLanguages?: string | null;
+  @ApiProperty({ required: false }) @IsOptional() @IsInt() @Min(0) @Max(6) megaColumns?: number;
+  @ApiProperty({ required: false, type: 'array', items: { type: 'object' } }) @IsOptional() @IsArray() @ArrayMaxSize(2) @IsObject({ each: true }) megaPromos?: Record<string, any>[];
   @ApiProperty({ type: [MenuItemChildDto], required: false })
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MenuItemChildDto)
   children?: MenuItemChildDto[];

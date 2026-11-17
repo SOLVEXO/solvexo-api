@@ -74,6 +74,8 @@ function assertColumns(value: unknown): void {
   }
 }
 
+export const TRUST_ICONS = ['truck', 'return', 'shield', 'lock', 'headset', 'award', 'gift', 'clock', 'leaf', 'heart', 'check', 'star'] as const;
+
 function maxLen(value: unknown, max: number, field: string): void {
   if (typeof value === 'string' && value.length > max) {
     throw new BadRequestException(`${field} must be ${max} characters or fewer`);
@@ -200,6 +202,104 @@ function validateCopyOverrides(settings: Record<string, any>, prefix: string): v
   }
 }
 
+/** Design v2 (all optional): phone values, gradient/video background, text style, entrance animation, sticky, and the "show when" rules. */
+const COUNTRY_LIST = /^[A-Za-z]{2}([\s,;]+[A-Za-z]{2})*[\s,;]*$/;
+const LANGUAGE_LIST = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?([\s,;]+[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?)*[\s,;]*$/;
+function validateSectionDesignV2(settings: Record<string, any>): void {
+  const numberIn = (key: string, max: number, min = 0) => {
+    const n = settings[key];
+    if (n !== undefined && n !== null && (typeof n !== 'number' || !Number.isFinite(n) || n < min || n > max)) {
+      throw new BadRequestException(`settings.${key} must be a number between ${min} and ${max}`);
+    }
+  };
+  for (const key of ['spacingTopMobile', 'spacingBottomMobile']) numberIn(key, 160, -160); // margins: may be negative
+  for (const key of ['paddingTopMobile', 'paddingBottomMobile']) numberIn(key, 160);
+  numberIn('gradientAngle', 360);
+  numberIn('animationDelay', 2000);
+  numberIn('stickyOffset', 300);
+
+  const video = settings.backgroundVideoUrl;
+  if (video !== undefined && video !== null && video !== '') {
+    assertHttpsUrl(video, 'settings.backgroundVideoUrl');
+    maxLen(video, 2000, 'settings.backgroundVideoUrl');
+    // no spaces, quotes, brackets or backslashes: it is placed into a <video src>
+    if (!/^https:\/\/[^\s"'<>()\\]+$/i.test(video)) throw new BadRequestException('settings.backgroundVideoUrl contains characters that are not allowed in a link');
+  }
+
+  const choice = <T extends string>(key: string, allowed: readonly T[]) => {
+    if (settings[key] === null) return;
+    oneOf(settings[key], allowed, `settings.${key}`);
+  };
+  choice('textAlign', ['default', 'left', 'center', 'right'] as const);
+  choice('textAlignMobile', ['default', 'left', 'center', 'right'] as const);
+  choice('headingWeight', ['default', 'normal', 'medium', 'semibold', 'bold', 'black'] as const);
+  choice('headingCase', ['default', 'uppercase', 'capitalize', 'none'] as const);
+  choice('animation', ['none', 'fade', 'slide-up', 'slide-left', 'slide-right', 'zoom'] as const);
+  choice('animationSpeed', ['fast', 'normal', 'slow'] as const);
+
+  if (settings.sticky !== undefined && settings.sticky !== null && typeof settings.sticky !== 'boolean') {
+    throw new BadRequestException('settings.sticky must be true or false');
+  }
+  assertShowWhenRules(settings, 'settings.');
+}
+
+/** "Show when" rules (signed-in state, schedule, countries, languages): shared by sections and navigation items. All optional. */
+export function assertShowWhenRules(obj: Record<string, any>, prefix: string): void {
+  if (obj.showTo !== null) oneOf(obj.showTo, ['all', 'guests', 'customers'] as const, `${prefix}showTo`);
+  for (const key of ['showFrom', 'showUntil'] as const) {
+    const v = obj[key];
+    if (v === undefined || v === null || v === '') continue;
+    if (typeof v !== 'string' || v.length > 40 || Number.isNaN(Date.parse(v))) {
+      throw new BadRequestException(`${prefix}${key} must be a valid date and time`);
+    }
+  }
+  for (const key of ['showCountries', 'hideCountries'] as const) {
+    const v = obj[key];
+    if (v === undefined || v === null || v === '') continue;
+    if (typeof v !== 'string' || v.length > 200 || !COUNTRY_LIST.test(v)) {
+      throw new BadRequestException(`${prefix}${key} must be two-letter country codes separated by commas (e.g. PK, AE)`);
+    }
+  }
+  const langs = obj.showLanguages;
+  if (langs !== undefined && langs !== null && langs !== '') {
+    if (typeof langs !== 'string' || langs.length > 100 || !LANGUAGE_LIST.test(langs)) {
+      throw new BadRequestException(`${prefix}showLanguages must be language codes separated by commas (e.g. en, ur)`);
+    }
+  }
+}
+
+/** Rule-based product lists ("Featured products" with source "rules"): tags, vendors, price range, type, stock, sale, sort. All optional;
+ *  `hideSoldOut` also applies to every other source. The storefront turns these into the public products query, which re-checks them. */
+export const PRODUCT_RULE_SORTS = ['newest', 'oldest', 'best_selling', 'trending', 'price_asc', 'price_desc', 'title_asc', 'title_desc', 'best_rated'] as const;
+function validateProductRules(settings: Record<string, any>): void {
+  for (const key of ['hideSoldOut', 'ruleOnSale'] as const) {
+    const v = settings[key];
+    if (v !== undefined && v !== null && typeof v !== 'boolean') throw new BadRequestException(`settings.${key} must be true or false`);
+  }
+  if (settings.ruleSort !== null) oneOf(settings.ruleSort, PRODUCT_RULE_SORTS, 'settings.ruleSort');
+  if (settings.ruleType !== null) oneOf(settings.ruleType, ['all', 'physical', 'digital'] as const, 'settings.ruleType');
+  if (settings.ruleStock !== null) oneOf(settings.ruleStock, ['any', 'in_stock'] as const, 'settings.ruleStock');
+  for (const key of ['ruleTags', 'ruleVendors'] as const) {
+    const v = settings[key];
+    if (v === undefined || v === null) continue;
+    if (!Array.isArray(v) || v.length > 20) throw new BadRequestException(`settings.${key} must be a list of at most 20 values`);
+    for (const item of v) {
+      if (typeof item !== 'string' || !item.trim() || item.length > 60 || /[<>,]/.test(item)) {
+        throw new BadRequestException(`settings.${key}: each value must be 1-60 characters, without commas or < >`);
+      }
+    }
+  }
+  for (const key of ['rulePriceMin', 'rulePriceMax'] as const) {
+    const v = settings[key];
+    if (v !== undefined && v !== null && v !== '' && (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1_000_000_000)) {
+      throw new BadRequestException(`settings.${key} must be a number from 0 to 1,000,000,000`);
+    }
+  }
+  const min = settings.rulePriceMin;
+  const max = settings.rulePriceMax;
+  if (typeof min === 'number' && typeof max === 'number' && min > max) throw new BadRequestException('The lowest price can not be higher than the highest price');
+}
+
 function validateCommonSectionDesign(settings: Record<string, any>): void {
   validateCopyOverrides(settings, 'settings');
   oneOf(settings.visibility, ['all', 'desktop', 'mobile', 'tablet', 'large', 'mobile-tablet'] as const, 'settings.visibility');
@@ -214,9 +314,9 @@ function validateCommonSectionDesign(settings: Record<string, any>): void {
   if (overlay !== undefined && overlay !== null && (typeof overlay !== 'number' || !Number.isFinite(overlay) || overlay < 0 || overlay > 80)) {
     throw new BadRequestException('settings.backgroundOverlay must be a number between 0 and 80');
   }
-  for (const key of ['sectionBgColor', 'borderColor'] as const) {
+  for (const key of ['sectionBgColor', 'borderColor', 'gradientFrom', 'gradientTo', 'textColor', 'headingColor'] as const) {
     const c = settings[key];
-    if (c !== undefined && c !== null && c !== '' && (typeof c !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(c))) {
+    if (c !== undefined && c !== null && c !== '' && (typeof c !== 'string' || !/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c))) {
       throw new BadRequestException(`settings.${key} must be a colour like #AABBCC`);
     }
   }
@@ -227,6 +327,7 @@ function validateCommonSectionDesign(settings: Record<string, any>): void {
     }
   }
   oneOf(settings.shadow, ['none', 'soft', 'medium', 'strong'] as const, 'settings.shadow');
+  validateSectionDesignV2(settings);
   if (settings.anchorId !== undefined && settings.anchorId !== null && settings.anchorId !== '') {
     if (typeof settings.anchorId !== 'string' || !/^[A-Za-z0-9_-]{1,40}$/.test(settings.anchorId.trim())) {
       throw new BadRequestException('settings.anchorId may only use letters, numbers, - and _ (max 40)');
@@ -277,10 +378,12 @@ function validateThemeFields(settings: Record<string, any>, idKey: 'sectionKey' 
 
 export function validateSectionSettings(type: SectionType, settings: Record<string, any>): void {
   maxLen(settings.heading, 120, 'settings.heading');
+  // Space above/below is a margin and may be negative (pulls the section closer); inner space (padding) cannot be.
   for (const key of ['spacingTop', 'spacingBottom', 'paddingTop', 'paddingBottom'] as const) {
     const value = settings[key];
-    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 160)) {
-      throw new BadRequestException(`settings.${key} must be a number between 0 and 160`);
+    const min = key.startsWith('spacing') ? -160 : 0;
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > 160)) {
+      throw new BadRequestException(`settings.${key} must be a number between ${min} and 160`);
     }
   }
   validateCommonSectionDesign(settings);
@@ -324,7 +427,8 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'featured_products': {
       const s = settings as FeaturedProductsSectionSettings;
       required(s.source, 'settings.source');
-      oneOf(s.source, ['manual', 'category', 'collection', 'bestsellers', 'newArrivals', 'trending', 'pinned', 'onSale'] as const, 'settings.source');
+      oneOf(s.source, ['manual', 'category', 'collection', 'bestsellers', 'newArrivals', 'trending', 'pinned', 'onSale', 'rules'] as const, 'settings.source');
+      validateProductRules(settings);
       if (s.source === 'category') required(s.categoryId, 'settings.categoryId');
       if (s.source === 'collection') required(s.collectionId, 'settings.collectionId');
       // Hand-picked (or the older pin list): an empty pick is allowed while the
@@ -605,6 +709,12 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'article_content':
     case 'page_content':
       break; // core/locked sections — no section-level settings, see SECTION_TYPES's comment
+    case 'saved_section': {
+      // Only a pointer: the content lives in the saved-sections library (the entry's own settings are checked when it is saved).
+      const id = settings.savedSectionId;
+      if (typeof id !== 'string' || !/^[a-f0-9]{24}$/i.test(id)) throw new BadRequestException('settings.savedSectionId must be the id of a saved section');
+      break;
+    }
     default: {
       // Exhaustiveness guard: if a new SectionType is ever added to
       // SECTION_TYPES without a case above, `type` here is no longer `never`
@@ -639,6 +749,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       }
       oneOf(settings.menuStyle, NAV_MENU_STYLES, 'menuStyle');
       assertOptionalImageUrl(settings.imageUrl, 'imageUrl');
+      assertNavExtras(settings, '', true);
       validateNavChildren(settings, 1);
       break;
     case 'footer_column':
@@ -945,7 +1056,10 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       assertLinkTarget(settings.link, 'link');
       break;
     case 'product_variant_picker':
-      oneOf(settings.pickerStyle, ['pills', 'dropdown'] as const, 'settings.pickerStyle');
+      // pills = buttons; swatches = colour circles (only for colour-like options); images = a picture tile per value (when every value has one)
+      oneOf(settings.pickerStyle, ['pills', 'dropdown', 'swatches', 'images'] as const, 'settings.pickerStyle');
+      oneOf(settings.swatchShape, ['circle', 'square'] as const, 'settings.swatchShape');
+      oneOf(settings.swatchSize, ['sm', 'md', 'lg'] as const, 'settings.swatchSize');
       break;
     // Blocks a seller adds to Main Product (Shopify Dawn): plain text only.
     case 'product_buy_now':
@@ -982,6 +1096,34 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.heading, 40, 'settings.heading');
       break;
     case 'product_media':
+      oneOf(settings.layout, ['thumbs_left', 'thumbs_bottom', 'grid', 'stacked'] as const, 'settings.layout');
+      oneOf(settings.aspect, ['portrait', 'square', 'landscape', 'natural'] as const, 'settings.aspect');
+      if (settings.zoom !== undefined && typeof settings.zoom !== 'boolean') throw new BadRequestException('settings.zoom must be true or false');
+      break;
+    case 'product_questions':
+      maxLen(settings.heading, 60, 'settings.heading');
+      if (settings.showForm !== undefined && typeof settings.showForm !== 'boolean') throw new BadRequestException('settings.showForm must be true or false');
+      break;
+    case 'product_frequently_bought':
+      maxLen(settings.heading, 60, 'settings.heading');
+      maxLen(settings.buttonLabel, 30, 'settings.buttonLabel');
+      if (settings.maxItems !== undefined && (typeof settings.maxItems !== 'number' || !Number.isInteger(settings.maxItems) || settings.maxItems < 1 || settings.maxItems > 3)) throw new BadRequestException('settings.maxItems must be a whole number from 1 to 3');
+      break;
+    case 'product_trust_badges': {
+      maxLen(settings.heading, 60, 'settings.heading');
+      oneOf(settings.layout, ['row', 'column', 'grid'] as const, 'settings.layout');
+      oneOf(settings.style, ['plain', 'boxed'] as const, 'settings.style');
+      if (settings.items !== undefined) {
+        if (!Array.isArray(settings.items) || settings.items.length > 6) throw new BadRequestException('settings.items must be a list of at most 6 badges');
+        settings.items.forEach((it: any, i: number) => {
+          if (!it || typeof it !== 'object') throw new BadRequestException(`settings.items[${i}] must be an object`);
+          oneOf(it.icon, TRUST_ICONS, `settings.items[${i}].icon`);
+          maxLen(it.title, 40, `settings.items[${i}].title`);
+          maxLen(it.text, 120, `settings.items[${i}].text`);
+        });
+      }
+      break;
+    }
     case 'product_title':
     case 'product_price':
     case 'product_quantity':
@@ -1048,6 +1190,45 @@ function assertOptionalImageUrl(value: unknown, field: string): void {
   maxLen(value, 2048, field);
 }
 
+/** Navigation item extras: a badge ("New", "Sale"), show-when rules, and (top level only) mega-panel columns and promo cards. */
+const PROMO_KEYS = new Set(['imageUrl', 'title', 'text', 'buttonLabel', 'link']);
+function assertNavExtras(item: Record<string, any>, prefix: string, topLevel: boolean): void {
+  const badge = item.badge;
+  if (badge !== undefined && badge !== null && badge !== '') {
+    if (typeof badge !== 'string' || badge.length > 12 || /[<>]/.test(badge)) throw new BadRequestException(`${prefix}badge can be at most 12 characters, without < or >`);
+  }
+  const color = item.badgeColor;
+  if (color !== undefined && color !== null && color !== '' && (typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color))) {
+    throw new BadRequestException(`${prefix}badgeColor must be a colour like #AABBCC`);
+  }
+  assertShowWhenRules(item, prefix);
+  if (!topLevel) {
+    if (item.megaColumns !== undefined || (Array.isArray(item.megaPromos) && item.megaPromos.length)) throw new BadRequestException(`${prefix}mega menu options belong to the top-level item`);
+    return;
+  }
+  const cols = item.megaColumns;
+  if (cols !== undefined && cols !== null && (typeof cols !== 'number' || !Number.isInteger(cols) || cols < 0 || cols > 6)) {
+    throw new BadRequestException('megaColumns must be a whole number from 0 (automatic) to 6');
+  }
+  const promos = item.megaPromos;
+  if (promos === undefined || promos === null) return;
+  if (!Array.isArray(promos) || promos.length > 2) throw new BadRequestException('A mega menu can have at most 2 promo cards');
+  promos.forEach((p: any, i: number) => {
+    const at = `megaPromos[${i}]`;
+    if (!p || typeof p !== 'object' || Array.isArray(p)) throw new BadRequestException(`${at} is invalid`);
+    for (const k of Object.keys(p)) if (!PROMO_KEYS.has(k)) throw new BadRequestException(`${at}.${k} is not a promo card field`);
+    assertOptionalImageUrl(p.imageUrl, `${at}.imageUrl`);
+    for (const [k, max] of [['title', 60], ['text', 140], ['buttonLabel', 30]] as const) {
+      const v = p[k];
+      if (v === undefined || v === null || v === '') continue;
+      if (typeof v !== 'string' || v.length > max || /[<>]/.test(v)) throw new BadRequestException(`${at}.${k} can be at most ${max} characters, without < or >`);
+    }
+    if (!p.imageUrl && !p.title) throw new BadRequestException(`${at} needs a picture or a title`);
+    assertLinkTarget(p.link, `${at}.link`);
+    if (p.link) assertLinkContact(p.link, `${at}.link.`);
+  });
+}
+
 function validateNavChildren(item: Record<string, any>, depth: number): void {
   if (item.children === undefined) return;
   if (!Array.isArray(item.children)) throw new BadRequestException('children must be an array');
@@ -1064,6 +1245,7 @@ function validateNavChildren(item: Record<string, any>, depth: number): void {
     if (child?.linkType === 'product') required(child?.productId, 'children[].productId');
     assertLinkContact(child, 'children[].');
     assertOptionalImageUrl(child?.imageUrl, 'children[].imageUrl');
+    assertNavExtras(child, 'children[].', false);
     if (child?.children !== undefined) validateNavChildren(child, depth + 1);
   }
 }
@@ -1112,6 +1294,7 @@ export function validateBlocksOfType(blocks: { type: string; settings: Record<st
 
 /** Maps a section type to the block type(s) its `blocks` array is allowed to contain — empty array means the section takes no blocks. Typed against `BlockType` (not `string`) so a typo'd or retired block-type name here is a compile error, not a silent runtime gap. */
 export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
+  saved_section: [],
   hero: ['hero_slide'],
   rich_text: ['paragraph', 'heading', 'image', 'quote', 'list', 'divider'],
   featured_products: [],
@@ -1152,7 +1335,7 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   store_locations: ['location_item'],
   contact_form: [],
   related_products: [],
-  product_main: ['product_media', 'product_title', 'product_price', 'product_variant_picker', 'product_quantity', 'product_buy_buttons', 'product_description', 'product_rating', 'product_sku', 'product_wishlist', 'product_share', 'product_specs', 'product_buy_now', 'product_collapsible_tab', 'product_size_chart', 'product_text', 'product_pickup'],
+  product_main: ['product_media', 'product_title', 'product_price', 'product_variant_picker', 'product_quantity', 'product_buy_buttons', 'product_description', 'product_rating', 'product_sku', 'product_wishlist', 'product_share', 'product_specs', 'product_buy_now', 'product_collapsible_tab', 'product_size_chart', 'product_text', 'product_pickup', 'product_trust_badges', 'product_questions', 'product_frequently_bought'],
   search_results: [],
   cart_items: [],
   cart_summary: [],

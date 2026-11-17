@@ -41,8 +41,10 @@ export class SellingPlansController {
   async upcoming(@Req() req: any, @Param('storeId') s: string, @Query('days') days?: string) { await this.own(req, s); return this.svc.upcoming(s, parseInt(String(days ?? '14'), 10) || 14); }
   @Get('report') @RequirePermission('product_subscriptions.view')
   async report(@Req() req: any, @Param('storeId') s: string) { await this.own(req, s); return this.svc.report(s); }
+  @Get('contracts/:id') @RequirePermission('product_subscriptions.view')
+  async contract(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string) { await this.own(req, s); return this.svc.contractDetail(s, id); }
   @Post('contracts/:id/:action') @RequirePermission('product_subscriptions.manage')
-  async action(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string, @Param('action') action: string) { return this.svc.sellerAction(s, await this.own(req, s), id, action); }
+  async action(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string, @Param('action') action: string, @Body() b: any) { return this.svc.sellerAction(s, await this.own(req, s), id, action, b ?? {}); }
 }
 
 /** Buyer side: subscribe on a product page, manage my subscriptions. Store scope comes from the login, never the body alone. */

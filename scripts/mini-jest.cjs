@@ -31,9 +31,18 @@ function expect(actual) {
       toHaveLength: (n) => chk(actual.length === n, `expected length ${actual && actual.length} to be ${n}`),
       toContain: (x) => chk(actual.includes(x), `expected ${fmt(actual)} to contain ${fmt(x)}`),
       toMatch: (re) => chk(re.test(actual), `expected ${fmt(actual)} to match ${re}`),
-      toThrow: (m) => { let threw = false, err; try { actual(); } catch (e) { threw = true; err = e; } chk(threw && (!m || String(err.message).includes(m)), 'expected function to throw' + (m ? ' ' + m : '')); },
+      toThrow: (m) => { let threw = false, err; try { actual(); } catch (e) { threw = true; err = e; } chk(threw && (!m || (typeof m === 'function' ? err instanceof m : (m instanceof RegExp ? m.test(String(err.message)) : String(err.message).includes(m)))), 'expected function to throw' + (m ? ' ' + (m.name || m) : '')); },
+      toMatchObject: (e) => { const sub = (a, b) => (b && typeof b === 'object' ? a && typeof a === 'object' && Object.keys(b).every(k => sub(a[k], b[k])) : Object.is(a, b)); chk(sub(actual, e), `expected ${fmt(actual)} to match object ${fmt(e)}`); },
+      toBeLessThanOrEqual: (n) => chk(actual <= n, `expected ${actual} <= ${n}`),
+      toBeGreaterThanOrEqual: (n) => chk(actual >= n, `expected ${actual} >= ${n}`),
+      toBeInstanceOf: (c) => chk(actual instanceof c, `expected ${fmt(actual)} to be an instance of ${c && c.name}`),
+      toHaveProperty: (k) => chk(actual != null && Object.prototype.hasOwnProperty.call(Object(actual), k), `expected ${fmt(actual)} to have property ${k}`),
+      get resolves() {
+        return { toBeTruthy: async () => chk(!!(await actual), 'expected resolved value truthy'), toBeDefined: async () => chk((await actual) !== undefined, 'expected resolved value defined') };
+      },
       get rejects() {
-        return { toThrow: async (m) => { let threw = false, err; try { await actual; } catch (e) { threw = true; err = e; } chk(threw && (!m || String(err.message).includes(m)), `expected promise to reject${m ? ' with ' + m : ''}${threw ? ' (got: ' + err.message + ')' : ' (resolved)'}`); },
+        return { toBeInstanceOf: async (c) => { let err; try { await actual; } catch (e) { err = e; } chk(err instanceof c, `expected rejection to be an instance of ${c && c.name}${err ? ' (got ' + err.constructor.name + ': ' + err.message + ')' : ' (resolved)'}`); },
+          toThrow: async (m) => { let threw = false, err; try { await actual; } catch (e) { threw = true; err = e; } chk(threw && (!m || (typeof m === 'function' ? err instanceof m : (m instanceof RegExp ? m.test(String(err.message)) : String(err.message).includes(m)))), `expected promise to reject${m ? ' with ' + m : ''}${threw ? ' (got: ' + err.message + ')' : ' (resolved)'}`); },
           toMatchObject: async (o) => { let err; try { await actual; } catch (e) { err = e; } chk(err && Object.entries(o).every(([k, v]) => (err[k] ?? (err.getStatus && k === 'status' ? err.getStatus() : undefined)) === v), 'rejection did not match ' + fmt(o)); } };
       },
     };
@@ -43,6 +52,11 @@ function expect(actual) {
   return base;
 }
 global.expect = expect;
+if (!global.describe.skip) global.describe.skip = () => {};
+if (global.it && !global.it.skip) global.it.skip = () => {};
+const fmtName = (name, row) => { let i = 0; return String(name).replace(/%[sdifjo]/g, () => { const v = row[i++]; return typeof v === 'string' ? v : JSON.stringify(v); }); };
+if (!global.it.each) global.it.each = global.test.each = (table) => (name, fn) => table.forEach((row) => { const r = Array.isArray(row) ? row : [row]; global.it(fmtName(name, r), () => fn(...r)); });
+if (!global.describe.each) global.describe.each = (table) => (name, fn) => table.forEach((row) => { const r = Array.isArray(row) ? row : [row]; global.describe(fmtName(name, r), () => fn(...r)); });
 
 async function runSuite(s, befores, prefix, res) {
   const bs = [...befores, ...s.before];
