@@ -277,10 +277,12 @@ function validateThemeFields(settings: Record<string, any>, idKey: 'sectionKey' 
 
 export function validateSectionSettings(type: SectionType, settings: Record<string, any>): void {
   maxLen(settings.heading, 120, 'settings.heading');
+  // Space above/below is a margin and may be negative (pulls the section closer); inner space (padding) cannot be.
   for (const key of ['spacingTop', 'spacingBottom', 'paddingTop', 'paddingBottom'] as const) {
     const value = settings[key];
-    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 160)) {
-      throw new BadRequestException(`settings.${key} must be a number between 0 and 160`);
+    const min = key.startsWith('spacing') ? -160 : 0;
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > 160)) {
+      throw new BadRequestException(`settings.${key} must be a number between ${min} and 160`);
     }
   }
   validateCommonSectionDesign(settings);

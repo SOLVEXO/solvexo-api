@@ -38,7 +38,14 @@ describe('section-settings.validator', () => {
     expect(() => validateSectionSettings('rich_text', { paddingBottom: -4 })).toThrow();
   });
 
-  it.each([-1, 161, Number.NaN, '24'])('rejects invalid section spacing: %s', spacing => {
+  it('space above/below is a margin: a minus number is allowed down to -160, inner space (padding) is not', () => {
+    expect(() => validateSectionSettings('rich_text', { spacingTop: -40, spacingBottom: -160 })).not.toThrow();
+    expect(() => validateSectionSettings('rich_text', { spacingTop: -161 })).toThrow();
+    expect(() => validateSectionSettings('rich_text', { spacingBottom: -161 })).toThrow();
+    expect(() => validateSectionSettings('rich_text', { paddingTop: -1 })).toThrow();
+  });
+
+  it.each([-161, 161, Number.NaN, '24'])('rejects invalid section spacing: %s', spacing => {
     expect(() => validateSectionSettings('rich_text', { spacingTop: spacing })).toThrow();
   });
   describe('Shopify-parity library sections', () => {
