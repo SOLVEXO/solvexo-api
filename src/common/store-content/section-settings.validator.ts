@@ -502,6 +502,8 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       oneOf(settings.layout, ['grid', 'carousel'] as const, 'settings.layout');
       oneOf(settings.tileStyle, ['card', 'simple'] as const, 'settings.tileStyle');
       oneOf(settings.textAlign, ['left', 'center'] as const, 'settings.textAlign');
+      oneOf(settings.cardStyle, ['none', 'bordered', 'filled'] as const, 'settings.cardStyle');
+      oneOf(settings.buttonStyle, ['solid', 'outline', 'link'] as const, 'settings.buttonStyle');
       if (settings.showDescription !== undefined && typeof settings.showDescription !== 'boolean') {
         throw new BadRequestException('settings.showDescription must be true or false');
       }
@@ -900,6 +902,19 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       assertLinkTarget(settings.ctaLink, 'ctaLink');
       break;
 
+    // collection_list section blocks (hand-picked tiles)
+    case 'collection_item':
+      if (settings.collectionId !== undefined && settings.collectionId !== null && typeof settings.collectionId !== 'string') {
+        throw new BadRequestException('collectionId must be text');
+      }
+      if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      maxLen(settings.title, 120, 'title');
+      maxLen(settings.description, 400, 'description');
+      maxLen(settings.icon, 30, 'icon');
+      maxLen(settings.ctaText, 40, 'ctaText');
+      assertLinkTarget(settings.ctaLink, 'ctaLink');
+      break;
+
     // logo_list section blocks
     case 'logo_item':
       assertHttpsUrl(settings.imageUrl, 'imageUrl');
@@ -1127,7 +1142,7 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   marquee: ['marquee_item'],
   custom_html: [],
   image_banner: [],
-  collection_list: [],
+  collection_list: ['collection_item'],
   divider: [],
   multirow: ['multirow_row'],
   collage: ['collage_item'],
