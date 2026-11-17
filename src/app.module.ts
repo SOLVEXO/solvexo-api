@@ -112,10 +112,13 @@ import { KhataModule } from './khata/khata.module';
 import { ProductFeedsModule } from './product-feeds/product-feeds.module';
 import { MerchantApiModule } from './merchant-api/merchant-api.module';
 import { SearchDiscoveryModule } from './search-discovery/search-discovery.module';
+import { ProductQuestionsModule } from './product-questions/product-questions.module';
 import { CodProtectionModule } from './cod-protection/cod-protection.module';
 import { MessagingChannelsModule } from './messaging-channels/messaging-channels.module';
 import { CoursesModule } from './courses/courses.module';
 import { DashboardLayoutsModule } from './dashboard-layouts/dashboard-layouts.module';
+import { SavedSectionsModule } from './saved-sections/saved-sections.module';
+import { StoreSectionDefsModule } from './store-section-defs/store-section-defs.module';
 import { StoreContactModule } from './store-contact/store-contact.module';
 import { CollectionTemplateModule } from './collection-template/collection-template.module';
 import { MetafieldsModule } from './metafields/metafields.module';
@@ -263,10 +266,13 @@ import { AppI18nModule } from './i18n/i18n.module';
     ProductFeedsModule,
     MerchantApiModule,
     SearchDiscoveryModule,
+    ProductQuestionsModule,
     CodProtectionModule,
     MessagingChannelsModule,
     CoursesModule,
     DashboardLayoutsModule,
+    SavedSectionsModule,
+    StoreSectionDefsModule,
     StoreContactModule,
     CollectionTemplateModule,
     MetafieldsModule,

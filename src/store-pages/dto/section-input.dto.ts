@@ -22,4 +22,6 @@ export class SectionInputDto {
   @ApiProperty({ required: false }) @IsOptional() @IsNumber() schemaVersion?: number;
   @ApiProperty({ required: false, nullable: true, description: "References a saved ColorScheme's id — null means use the theme's own colors." })
   @IsOptional() @IsString() colorSchemeId?: string | null;
+  @ApiProperty({ required: false, description: "The seller's own lock: the editor refuses to remove, move, hide or edit a locked section." })
+  @IsOptional() @IsBoolean() locked?: boolean;
 }

@@ -4,7 +4,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { SearchConfig, SearchConfigDocument, SearchMiss, SearchMissDocument } from './search-discovery.schema';
-import { cleanFilters, cleanPinned, cleanSynonymGroups, defaultFilters, expandQuery, norm, pinnedFor, reportableQuery, termsRegexSource } from './search-discovery.util';
+import { cleanFilters, cleanPinned, cleanSorts, cleanSynonymGroups, defaultFilters, defaultSorts, expandQuery, norm, pinnedFor, reportableQuery, termsRegexSource } from './search-discovery.util';
 
 const CACHE_MS = 30_000;
 
@@ -20,7 +20,7 @@ export class SearchDiscoveryService {
   private async load(storeId: string) {
     const hit = this.cache.get(storeId);
     if (hit && Date.now() - hit.at < CACHE_MS) return hit.cfg;
-    const cfg = (await this.cfgModel.findOne({ storeId }).lean()) ?? { synonyms: [], pinned: [], filters: defaultFilters() };
+    const cfg = (await this.cfgModel.findOne({ storeId }).lean()) ?? { synonyms: [], pinned: [], filters: defaultFilters(), sorts: defaultSorts(), showCounts: true };
     if (this.cache.size > 2000) this.cache.clear();
     this.cache.set(storeId, { at: Date.now(), cfg });
     return cfg;
@@ -44,7 +44,7 @@ export class SearchDiscoveryService {
     try { await this.missModel.updateOne({ storeId, query: q }, { $inc: { count: 1 }, $set: { lastAt: new Date() }, $setOnInsert: { storeId, query: q } }, { upsert: true }); } catch { /* a report must never break a search */ }
   }
 
-  async getConfig(storeId: string) { this.cache.delete(storeId); const c: any = await this.load(storeId); return { synonyms: c.synonyms ?? [], pinned: c.pinned ?? [], filters: c.filters?.length ? c.filters : defaultFilters() }; }
+  async getConfig(storeId: string) { this.cache.delete(storeId); const c: any = await this.load(storeId); return { synonyms: c.synonyms ?? [], pinned: c.pinned ?? [], filters: c.filters?.length ? c.filters : defaultFilters(), sorts: c.sorts?.length ? c.sorts : defaultSorts(), showCounts: c.showCounts !== false }; }
 
   async save(storeId: string, body: any) {
     const set: any = {};
@@ -58,6 +58,11 @@ export class SearchDiscoveryService {
         set.pinned = pinned.map((p) => ({ query: p.query, productIds: p.productIds.filter((i) => ok.has(i)) })).filter((p) => p.productIds.length);
       }
       if (body?.filters !== undefined) set.filters = cleanFilters(body.filters);
+      if (body?.sorts !== undefined) set.sorts = cleanSorts(body.sorts);
+      if (body?.showCounts !== undefined) {
+        if (typeof body.showCounts !== 'boolean') throw new Error('showCounts must be true or false');
+        set.showCounts = body.showCounts;
+      }
     } catch (e: any) { throw new BadRequestException(e.message); }
     await this.cfgModel.updateOne({ storeId }, { $set: set, $setOnInsert: { storeId } }, { upsert: true });
     return this.getConfig(storeId);
@@ -71,6 +76,6 @@ export class SearchDiscoveryService {
   }
   async clearMiss(storeId: string, query: string) { await this.missModel.deleteOne({ storeId, query: norm(query) }); return { success: true }; }
 
-  /** Public view: only the filter settings. */
-  async publicFilters(storeId: string) { const c: any = await this.load(storeId); return { filters: c.filters?.length ? c.filters : defaultFilters() }; }
+  /** Public view: only what the storefront needs to draw its filters and sort menu. */
+  async publicFilters(storeId: string) { const c: any = await this.load(storeId); return { filters: c.filters?.length ? c.filters : defaultFilters(), sorts: c.sorts?.length ? c.sorts : defaultSorts(), showCounts: c.showCounts !== false }; }
 }

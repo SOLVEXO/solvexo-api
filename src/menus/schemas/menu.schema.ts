@@ -36,6 +36,16 @@ export class MenuItemChild {
   @Prop({ type: Boolean, default: false }) newTab: boolean;
   /** Optional mega-panel tile image (the storefront falls back to the linked category/collection image). */
   @Prop({ type: String, default: null }) imageUrl: string | null;
+  /** Small tag next to the label ("New", "Sale"), and its colour (empty = the theme's accent). */
+  @Prop({ type: String, default: '' }) badge: string;
+  @Prop({ type: String, default: '' }) badgeColor: string;
+  /** Show-when rules (see `assertShowWhenRules`): who sees this item, and when. */
+  @Prop({ type: String, default: 'all' }) showTo: string;
+  @Prop({ type: String, default: '' }) showFrom: string;
+  @Prop({ type: String, default: '' }) showUntil: string;
+  @Prop({ type: String, default: '' }) showCountries: string;
+  @Prop({ type: String, default: '' }) hideCountries: string;
+  @Prop({ type: String, default: '' }) showLanguages: string;
   @Prop({ type: [Object], default: [] }) children: MenuItemChild[];
 }
 export const MenuItemChildSchema = SchemaFactory.createForClass(MenuItemChild);
@@ -61,6 +71,20 @@ export class MenuItem {
   @Prop({ type: Boolean, default: false }) newTab: boolean;
   @Prop({ type: String, enum: MENU_STYLES, default: 'dropdown' }) menuStyle: MenuStyle;
   @Prop({ type: String, default: null }) imageUrl: string | null;
+  /** Small tag next to the label ("New", "Sale"), and its colour (empty = the theme's accent). */
+  @Prop({ type: String, default: '' }) badge: string;
+  @Prop({ type: String, default: '' }) badgeColor: string;
+  /** Show-when rules (see `assertShowWhenRules`): who sees this item, and when. */
+  @Prop({ type: String, default: 'all' }) showTo: string;
+  @Prop({ type: String, default: '' }) showFrom: string;
+  @Prop({ type: String, default: '' }) showUntil: string;
+  @Prop({ type: String, default: '' }) showCountries: string;
+  @Prop({ type: String, default: '' }) hideCountries: string;
+  @Prop({ type: String, default: '' }) showLanguages: string;
+  /** Top level only: how many columns the mega panel uses (0 = the theme's own setting). */
+  @Prop({ type: Number, default: 0 }) megaColumns: number;
+  /** Top level only: up to 2 promo cards shown beside the columns (picture, title, text, button). */
+  @Prop({ type: [Object], default: [] }) megaPromos: Record<string, any>[];
   @Prop({ type: [MenuItemChildSchema], default: [] }) children: MenuItemChild[];
 }
 export const MenuItemSchema = SchemaFactory.createForClass(MenuItem);

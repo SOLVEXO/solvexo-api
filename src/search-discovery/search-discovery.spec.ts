@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import mongoose, { Connection, Types } from 'mongoose';
-import { cleanFilters, cleanPinned, cleanSynonymGroups, expandQuery, pinnedFor, reportableQuery, termsRegexSource } from './search-discovery.util';
+import { cleanFilters, cleanPinned, cleanSorts, defaultSorts, cleanSynonymGroups, expandQuery, pinnedFor, reportableQuery, termsRegexSource } from './search-discovery.util';
 import { SearchConfigSchema, SearchMissSchema } from './search-discovery.schema';
 import { SearchDiscoveryService } from './search-discovery.service';
 
@@ -40,6 +40,53 @@ describe('filters and report', () => {
     expect(f.find((x) => x.key === 'price')!.enabled).toBe(false); expect(f.find((x) => x.key === 'tags')!.enabled).toBe(true);
   });
   it('only meaningful queries are reported', () => { expect(reportableQuery(' Red  Shoes ')).toBe('red shoes'); expect(reportableQuery('a')).toBeNull(); expect(reportableQuery('!!')).toBeNull(); });
+});
+
+describe('sort menu and filter counts', () => {
+  it('keeps the seller order, drops unknown keys, adds missing ones back on', () => {
+    const r = cleanSorts([{ key: 'price_asc', enabled: true }, { key: 'bogus' }, { key: 'trending', enabled: false }]);
+    expect(r.map((x) => x.key).slice(0, 2)).toEqual(['price_asc', 'trending']);
+    expect(r.find((x) => x.key === 'trending')!.enabled).toBe(false);
+    expect(r.find((x) => x.key === 'oldest')!.enabled).toBe(true);
+    expect(r).toHaveLength(defaultSorts().length);
+  });
+  it('"newest" (Featured) can not be switched off, so a list always opens with a valid sort', () => {
+    expect(cleanSorts([{ key: 'newest', enabled: false }]).find((x) => x.key === 'newest')).toEqual({ key: 'newest', enabled: true });
+  });
+  it('a list is required', () => { expect(() => cleanSorts('x')).toThrow(/list/); });
+});
+
+describe('SearchDiscoveryService config (in memory)', () => {
+  const makeSvc = () => {
+    const docs = new Map<string, any>();
+    const cfg: any = {
+      findOne: (f: any) => ({ lean: async () => docs.get(f.storeId) ?? null }),
+      updateOne: async (f: any, u: any) => { docs.set(f.storeId, { ...(docs.get(f.storeId) ?? {}), storeId: f.storeId, ...u.$set }); },
+    };
+    return new SearchDiscoveryService(cfg, {} as any, { repositories: {} } as any);
+  };
+  it('a store that never configured anything gets every filter and sort on, with counts', async () => {
+    const pub = await makeSvc().publicFilters('S1');
+    expect(pub.filters.every((f: any) => f.enabled)).toBe(true);
+    expect(pub.sorts.every((x: any) => x.enabled)).toBe(true);
+    expect(pub.showCounts).toBe(true);
+  });
+  it('saves the sort menu and the counts switch, and the public read returns them', async () => {
+    const svc = makeSvc();
+    await svc.save('S1', { sorts: [{ key: 'price_desc', enabled: true }, { key: 'oldest', enabled: false }], showCounts: false });
+    const pub = await svc.publicFilters('S1');
+    expect(pub.sorts[0]).toEqual({ key: 'price_desc', enabled: true });
+    expect(pub.sorts.find((x: any) => x.key === 'oldest')!.enabled).toBe(false);
+    expect(pub.showCounts).toBe(false);
+    // another store is untouched
+    expect((await svc.publicFilters('S2')).showCounts).toBe(true);
+  });
+  it('a bad value is refused and nothing is saved', async () => {
+    const svc = makeSvc();
+    await expect(svc.save('S1', { showCounts: 'no' })).rejects.toThrow(/true or false/);
+    await expect(svc.save('S1', { sorts: 'x' })).rejects.toThrow(/list/);
+    expect((await svc.publicFilters('S1')).showCounts).toBe(true);
+  });
 });
 
 const URI = process.env.MONGO_TEST_URI;
