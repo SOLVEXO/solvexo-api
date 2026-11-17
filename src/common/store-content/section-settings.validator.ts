@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException } from '@nestjs/common';
+import { validateContactFormSettings } from '../../store-contact/contact-form-fields.util';
 import type { SectionType } from '../schemas/section.schema';
 import { isAppBlockType } from './app-block.util';
 import type {
@@ -213,6 +214,19 @@ function validateCommonSectionDesign(settings: Record<string, any>): void {
   if (overlay !== undefined && overlay !== null && (typeof overlay !== 'number' || !Number.isFinite(overlay) || overlay < 0 || overlay > 80)) {
     throw new BadRequestException('settings.backgroundOverlay must be a number between 0 and 80');
   }
+  for (const key of ['sectionBgColor', 'borderColor'] as const) {
+    const c = settings[key];
+    if (c !== undefined && c !== null && c !== '' && (typeof c !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(c))) {
+      throw new BadRequestException(`settings.${key} must be a colour like #AABBCC`);
+    }
+  }
+  for (const [key, max] of [['borderWidth', 8], ['borderRadius', 80]] as const) {
+    const n = settings[key];
+    if (n !== undefined && n !== null && (typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > max)) {
+      throw new BadRequestException(`settings.${key} must be a number between 0 and ${max}`);
+    }
+  }
+  oneOf(settings.shadow, ['none', 'soft', 'medium', 'strong'] as const, 'settings.shadow');
   if (settings.anchorId !== undefined && settings.anchorId !== null && settings.anchorId !== '') {
     if (typeof settings.anchorId !== 'string' || !/^[A-Za-z0-9_-]{1,40}$/.test(settings.anchorId.trim())) {
       throw new BadRequestException('settings.anchorId may only use letters, numbers, - and _ (max 40)');
@@ -283,7 +297,9 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       oneOf(s.mobileTextLayout, ['overlay', 'below'] as const, 'settings.mobileTextLayout');
       oneOf(s.pagination, ['dots', 'counter', 'none'] as const, 'settings.pagination');
       oneOf(s.transition, ['slide', 'fade'] as const, 'settings.transition');
-      for (const key of ['autoplay', 'showArrows', 'showPauseButton'] as const) {
+      oneOf((s as any).arrowStyle, ['circle', 'square', 'plain'] as const, 'settings.arrowStyle');
+      oneOf((s as any).paginationPosition, ['auto', 'left', 'center', 'right'] as const, 'settings.paginationPosition');
+      for (const key of ['autoplay', 'showArrows', 'showPauseButton', 'arrowsOnPhone', 'pauseOnHover'] as const) {
         if (s[key] !== undefined && typeof s[key] !== 'boolean') {
           throw new BadRequestException(`settings.${key} must be true or false`);
         }
@@ -439,6 +455,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       if (settings.showPhone !== undefined && typeof settings.showPhone !== 'boolean') {
         throw new BadRequestException('settings.showPhone must be true or false');
       }
+      validateContactFormSettings(settings);
       break;
     }
     case 'divider':
@@ -699,6 +716,8 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.subheading, 200, 'subheading');
       maxLen(settings.ctaText, 40, 'ctaText');
       assertLinkTarget(settings.ctaLink, 'ctaLink');
+      if (settings.slideLinkOn !== undefined && typeof settings.slideLinkOn !== 'boolean') throw new BadRequestException('slideLinkOn must be true or false');
+      assertLinkTarget(settings.slideLink, 'slideLink');
       oneOf(settings.focalPoint, FOCAL_POINTS, 'focalPoint');
       oneOf(settings.contentAlign, ['left', 'center', 'right'] as const, 'contentAlign');
       if (settings.overlayOpacity !== undefined && settings.overlayOpacity !== null
@@ -954,7 +973,11 @@ export function validateBlockSettings(blockType: string, settings: Record<string
     case 'product_rating':
     case 'product_sku':
     case 'product_wishlist':
+      break;
     case 'product_specs':
+      if (settings.showAsTab !== undefined && typeof settings.showAsTab !== 'boolean') throw new BadRequestException('settings.showAsTab must be true or false');
+      maxLen(settings.title, 40, 'settings.title');
+      oneOf(settings.tableStyle, ['lines', 'striped', 'boxed'] as const, 'settings.tableStyle');
       break;
     case 'product_share':
       for (const n of SHARE_NETWORKS) oneOf(settings[n], ['show', 'hide'] as const, `settings.${n}`);

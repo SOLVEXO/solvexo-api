@@ -39,6 +39,12 @@ export interface BaseSectionSettings {
   backgroundOverlay?: number | null;
   anchorId?: string | null;
   customCss?: string | null;
+  /** Section look: own background colour, border, rounded corners and shadow (see `validateCommonSectionDesign`). */
+  sectionBgColor?: string | null;
+  borderWidth?: number | null;
+  borderColor?: string | null;
+  borderRadius?: number | null;
+  shadow?: 'none' | 'soft' | 'medium' | 'strong';
 }
 
 /** Shared by any block/section CTA — a nav link, footer link, or hero/image-with-text button. */
@@ -205,6 +211,21 @@ export interface ContactFormSectionSettings extends BaseSectionSettings {
   buttonLabel?: string;
   successMessage?: string;
   showPhone?: boolean;
+  /** The seller-built field list (see store-contact/contact-form-fields.util.ts). Missing = the old fixed form. */
+  fields?: unknown[];
+  /** Shown in the inbox so answers of different forms can be told apart. */
+  formName?: string;
+  /** 'message' (default) shows successMessage; 'redirect' sends the visitor to redirectUrl. */
+  successAction?: 'message' | 'redirect';
+  redirectUrl?: string;
+  /** 'inline' (default) draws the form on the page; 'popup' shows a button that opens it in a dialog. */
+  display?: 'inline' | 'popup';
+  popupButtonLabel?: string;
+  /** Up to 5 addresses (comma / line separated) that get an email with every answer. */
+  notifyEmails?: string;
+  autoReplyEnabled?: boolean;
+  autoReplySubject?: string;
+  autoReplyBody?: string;
 }
 
 // ── Shopify-parity section library ──────────────────────────────────────────

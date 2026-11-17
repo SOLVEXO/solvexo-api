@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { compileSegmentFilter, normalizeSegmentFilter, type CompiledSegment } from '../customer-segments/segment-filter.util';
+import { normalizeFloatingContact } from './floating-contact.util';
 import {
   Injectable,
   Optional,
@@ -1231,7 +1232,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, taxId, taxRegistered, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts, timezone, currencyDisplay, defaultLanguage } = body;
+    const { name, logo, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, taxId, taxRegistered, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, floatingContact, customerAccounts, timezone, currencyDisplay, defaultLanguage } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1458,6 +1459,8 @@ export class StoreService {
       updateData.cookieBannerColorMode = cookieBannerColorMode;
     }
 
+    if (floatingContact !== undefined) updateData.floatingContact = normalizeFloatingContact(floatingContact);
+
     // productTypes change ho to enabledTools bhi refresh
     if (productTypes !== undefined) {
       updateData.productTypes = productTypes;
@@ -1661,6 +1664,7 @@ export class StoreService {
         cookieBannerPosition: store.cookieBannerPosition ?? 'bottom_bar',
         cookieBannerColorMode: store.cookieBannerColorMode ?? 'dark',
         showDoNotSellLink: !!store.showDoNotSellLink,
+        floatingContact: store.floatingContact?.enabled ? store.floatingContact : null,
         announcementBar: announcementActive && visibleAnnouncements.length ? {
           message: visibleAnnouncements[0].message, type: bar.type, ctaLabel: visibleAnnouncements[0].ctaLabel, ctaLink: visibleAnnouncements[0].ctaLink,
           moreMessages: visibleAnnouncements.slice(1), rotateSeconds: bar.rotateSeconds ?? 5, closable: bar.closable !== false,

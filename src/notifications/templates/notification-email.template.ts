@@ -18,6 +18,8 @@ export interface EmailStoreBrand {
   /** #rrggbb */
   accent?: string | null;
   footerText?: string | null;
+  /** Leave out the "you are receiving this because of your order" line (replies to a contact form, newsletters...). */
+  hideReceivingNotice?: boolean;
   /** Language of the email ('ur', ...): sets lang/dir, a suitable font stack and the footer wording. */
   locale?: string | null;
 }
@@ -44,7 +46,7 @@ export function notificationEmailShell(
   const lang = esc(String(b?.locale ?? 'en').toLowerCase().split('-')[0] || 'en');
   const footerHtml = b
     ? `${b.footerText ? `<p>${esc(b.footerText)}</p>` : ''}<p>&copy; ${new Date().getFullYear()} ${brand}. ${ui.rightsReserved}</p>
-    <p>${ui.receivingBecause.replace('{brand}', brand)}</p>`
+    ${b.hideReceivingNotice ? '' : `<p>${ui.receivingBecause.replace('{brand}', brand)}</p>`}`
     : `<p>&copy; ${new Date().getFullYear()} ${APP_NAME}. All rights reserved.</p>
     <p>You're receiving this because of activity on your ${APP_NAME} account. Manage preferences in the app under Notifications.</p>`;
   return `
