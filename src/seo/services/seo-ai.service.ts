@@ -45,6 +45,11 @@ export class SeoAiService {
    * `options.apply` (default false): when false the suggestion is only PREVIEWED - nothing on the product/store changes and the
    * seller decides with `accept()`; the bulk job passes `apply: true` (it exists to fill many products in one go).
    */
+  /** True once an Anthropic key is configured. The seller UI hides the whole AI tab until then (SEO never depends on AI). */
+  isAvailable(): boolean {
+    return this.aiProvider.isConfigured !== false;
+  }
+
   async generate(
     entityType: 'product' | 'category' | 'store',
     entityId: string,

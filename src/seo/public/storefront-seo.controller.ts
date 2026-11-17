@@ -130,12 +130,14 @@ export class StorefrontSeoController {
     if (collectionMatch) {
       const segment = collectionMatch[1];
       const idOrSlug = /^[a-f0-9]{24}$/i.test(segment) ? [{ slug: segment }, { _id: segment }] : [{ slug: segment }];
-      const collection = await this.db.repositories.collectionModel.findOne({ storeId, status: 'active', isDelete: false, $or: idOrSlug }).select('name description slug translations').lean() as any;
+      const collection = await this.db.repositories.collectionModel.findOne({ storeId, status: 'active', isDelete: false, $or: idOrSlug }).select('name description slug image seo translations').lean() as any;
       if (!collection) throw new NotFoundException('Collection not found');
       const url = `${getCanonicalOrigin(store)}/collections/${encodeURIComponent(collection.slug)}`;
-      const title = collection.name || (store as any).name;
-      const description = collection.description || '';
-      return { title, description, canonicalUrl: url, url, ogTitle: title, ogDescription: description, ogImage: null, noindex: false, jsonLd: [], _translations: collection.translations };
+      // The seller's own SEO title/description (collection form and SEO > Collections tab) wins over the plain name/description.
+      const seo = collection.seo ?? {};
+      const title = seo.metaTitle || collection.name || (store as any).name;
+      const description = seo.metaDescription || collection.description || '';
+      return { title, description, canonicalUrl: url, url, ogTitle: title, ogDescription: description, ogImage: collection.image ?? null, noindex: false, jsonLd: [], _translations: collection.translations };
     }
 
     const categoryMatch = routePath.match(/^\/category\/([^/]+)$/);

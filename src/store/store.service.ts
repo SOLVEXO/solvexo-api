@@ -1473,6 +1473,9 @@ export class StoreService {
       { new: true },
     );
 
+    // The store's home title/description/logo/domain feed the crawler view: clear it so a rename shows up at once.
+    void this.redisService.del(`seo:meta:store:${String(store._id)}`).catch(() => undefined);
+
     return {
       success: true,
       message: 'Store updated successfully',
