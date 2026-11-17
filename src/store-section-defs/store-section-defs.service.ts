@@ -71,7 +71,7 @@ export class StoreSectionDefsService {
   /** How many pages / templates / saved sections use each of the store's designs. */
   private async usageCounts(storeId: string): Promise<Map<string, number>> {
     const repos = this.databaseService.repositories;
-    const filter = { storeId, $or: [{ 'sections.type': 'theme_section' }, { 'draft.sections.type': 'theme_section' }] };
+    const filter: Record<string, any> = { storeId, $or: [{ 'sections.type': 'theme_section' }, { 'draft.sections.type': 'theme_section' }] };
     const [pages, templates, saved] = await Promise.all([
       repos.storePageModel.find(filter).select('sections draft.sections').lean(),
       repos.collectionTemplateModel.find(filter).select('sections draft.sections').lean(),

@@ -75,7 +75,7 @@ export class SavedSectionsService {
   /** How many pages / templates (live or draft) use each entry: one pass over the documents that hold a reference at all. */
   private async usageCounts(storeId: string): Promise<Map<string, number>> {
     const repos = this.databaseService.repositories;
-    const filter = { storeId, $or: [{ 'sections.type': 'saved_section' }, { 'draft.sections.type': 'saved_section' }] };
+    const filter: Record<string, any> = { storeId, $or: [{ 'sections.type': 'saved_section' }, { 'draft.sections.type': 'saved_section' }] };
     const [pages, templates] = await Promise.all([
       repos.storePageModel.find(filter).select('sections draft.sections').lean(),
       repos.collectionTemplateModel.find(filter).select('sections draft.sections').lean(),
