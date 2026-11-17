@@ -40,7 +40,8 @@ export class SubscriptionContract {
   /** Terms frozen at subscribe time (a later edit of the plan never changes a running contract, except the buyer picking another frequency). */
   @Prop({ type: { _id: false, name: String, unit: String, count: Number, discountPercent: Number, shippingAmount: Number, taxPercent: Number, maxCycles: { type: Number, default: null } }, required: true })
   terms: { name: string; unit: 'week' | 'month'; count: number; discountPercent: number; shippingAmount: number; taxPercent: number; maxCycles: number | null };
-  @Prop({ type: [{ _id: false, productId: String, variantId: String, quantity: Number }], default: [] }) items: { productId: string; variantId: string; quantity: number }[];
+  /** `lockedPrice` = the variant's price (before the plan discount) when the customer subscribed. Renewals use it, so a later price change never surprises the customer; null on older contracts (they follow the current price). */
+  @Prop({ type: [{ _id: false, productId: String, variantId: String, quantity: Number, lockedPrice: { type: Number, default: null } }], default: [] }) items: { productId: string; variantId: string; quantity: number; lockedPrice?: number | null }[];
   @Prop({ type: Object, required: true }) shippingAddress: { recipientName: string; addressLine1: string; addressLine2?: string; city: string; state?: string; zipCode?: string; phoneNumber: string };
   @Prop({ type: String, default: '' }) customerName: string;
   @Prop({ type: String, default: null }) customerEmail: string | null;

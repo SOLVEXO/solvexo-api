@@ -100,7 +100,10 @@ export class SellingPlansService {
       const lines = (c.items ?? []).map((i: any) => {
         const v = vmap.get(String(i.variantId)); const p = pmap.get(String(i.productId));
         const available = !!v && !v.isDelete && !!p && !p.isDelete && p.status !== 'archived';
-        const price = v ? Number(v.price) || 0 : null;
+        const today = v ? Number(v.price) || 0 : null;
+        const locked = i.lockedPrice != null ? Number(i.lockedPrice) : null;
+        // the price a renewal charges: the one locked at subscribe time, else (older contracts) today's
+        const price = locked ?? today;
         const unitPrice = price == null ? null : discountedPrice(price, c.terms?.discountPercent ?? 0);
         const label = (v?.options ?? []).map((o: any) => o?.value).filter((x: unknown) => x && String(x).toLowerCase() !== 'default title').join(' / ');
         return {
@@ -108,6 +111,7 @@ export class SellingPlansService {
           name: p?.name ?? 'Product no longer available', slug: p?.slug ?? null, image: v?.images?.[0] ?? p?.images?.[0] ?? null,
           variantLabel: label || null, sku: v?.sku ?? null, available,
           listPrice: price, unitPrice, lineTotal: unitPrice == null ? null : round2(unitPrice * i.quantity),
+          priceLocked: locked != null, todayPrice: today, priceChanged: locked != null && today != null && round2(locked) !== round2(today),
         };
       });
       const goods = round2(lines.reduce((s: number, l: any) => s + (l.lineTotal ?? 0), 0));
@@ -147,7 +151,7 @@ export class SellingPlansService {
     const prices = new Map<string, number>((await (this.db.repositories.productVariantModel as any).find({ _id: { $in: variantIds }, storeId }).select('price').lean()).map((v: any) => [String(v._id), Number(v.price) || 0]));
     let mrr = 0;
     for (const c of active as any[]) {
-      const goods = c.items.reduce((s: number, i: any) => s + discountedPrice(prices.get(i.variantId) ?? 0, c.terms.discountPercent) * i.quantity, 0);
+      const goods = c.items.reduce((s: number, i: any) => s + discountedPrice(i.lockedPrice ?? prices.get(i.variantId) ?? 0, c.terms.discountPercent) * i.quantity, 0);
       mrr += (goods + (c.terms.shippingAmount ?? 0)) * monthlyFactor(c.terms.unit, c.terms.count);
     }
     return { currency: store?.baseCurrency ?? 'USD', active: active.length, paused, cancelledLast30Days: cancelled30, total, monthlyRecurring: round2(mrr) };
@@ -155,10 +159,25 @@ export class SellingPlansService {
 
   async sellerAction(storeId: string, actor: Actor, id: string, action: string, body?: any) {
     if (!isOid(id)) throw new NotFoundException('Subscription not found');
+    if (action === 'reprice') return this.reprice(storeId, actor, id);
     const reason = typeof body?.reason === 'string' ? body.reason.replace(/\s+/g, ' ').trim().slice(0, 150) : '';
     const c = await this.apply({ _id: id, storeId }, action, actor.role === 'seller' || actor.role === 'staff' ? 'store' : 'system', reason);
     await this.audit(storeId, actor, `subscription_${action}`, `Subscription ${action} (customer ${c.customerName})`, id, 'subscription');
     return c;
+  }
+
+  /** The seller moves a subscription's locked prices to today's prices (the customer's next renewal then charges the new price). */
+  private async reprice(storeId: string, actor: Actor, id: string) {
+    const cur: any = await this.contracts.findOne({ _id: id, storeId, status: { $in: ['active', 'paused'] } }).lean();
+    if (!cur) throw new NotFoundException('Subscription not found');
+    const variants: any[] = await (this.db.repositories.productVariantModel as any).find({ _id: { $in: cur.items.map((i: any) => i.variantId) }, storeId, isDelete: false }).select('price').lean();
+    const price = new Map(variants.map((v) => [String(v._id), Number(v.price)]));
+    if (cur.items.some((i: any) => !price.has(String(i.variantId)))) throw new BadRequestException('A product of this subscription is no longer available');
+    const items = cur.items.map((i: any) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity, lockedPrice: price.get(String(i.variantId)) }));
+    const c: any = await this.contracts.findOneAndUpdate({ _id: id, storeId, status: { $in: ['active', 'paused'] } }, { $set: { items } }, { new: true }).lean();
+    if (!c) throw new NotFoundException('Subscription not found');
+    await this.audit(storeId, actor, 'subscription_repriced', `Subscription prices updated to today's prices (customer ${c.customerName})`, id, 'subscription');
+    return (await this.decorate(storeId, [c]))[0];
   }
 
   // ── storefront (buyer) ────────────────────────────────────────────────────
@@ -187,7 +206,7 @@ export class SellingPlansService {
     const g: any = await this.groups.findOne({ _id: body.groupId, storeId, status: 'active' }).lean();
     if (!g) throw new NotFoundException('This plan is not available');
     const opt = g.options.find((o: any) => o.id === body?.optionId); if (!opt) throw new BadRequestException('Choose a delivery frequency');
-    const variant: any = await (this.db.repositories.productVariantModel as any).findOne({ _id: body.variantId, storeId, isDelete: false }).select('productId type').lean();
+    const variant: any = await (this.db.repositories.productVariantModel as any).findOne({ _id: body.variantId, storeId, isDelete: false }).select('productId type price').lean();
     const product: any = variant ? await (this.db.repositories.productModel as any).findOne({ _id: variant.productId, storeId, isDelete: false, status: 'active' }).select('_id').lean() : null;
     if (!variant || !product) throw new NotFoundException('Product not available');
     if (variant.type === 'digital') throw new BadRequestException('Digital products cannot be subscribed to');
@@ -196,7 +215,7 @@ export class SellingPlansService {
     const contract: any = await this.contracts.create({
       storeId, userId, groupId: String(g._id), optionId: opt.id,
       terms: { name: g.name, unit: opt.unit, count: opt.count, discountPercent: opt.discountPercent, shippingAmount: g.shippingAmount ?? 0, taxPercent: g.taxPercent ?? 0, maxCycles: g.maxCycles ?? null },
-      items: [{ productId: String(variant.productId), variantId: String(variant._id), quantity: qty }],
+      items: [{ productId: String(variant.productId), variantId: String(variant._id), quantity: qty, lockedPrice: Number.isFinite(Number(variant.price)) ? Number(variant.price) : null }],
       shippingAddress: address, customerName: user.name ?? address.recipientName, customerEmail: user.email ?? user.contactEmail ?? null,
       nextBillingAt: new Date(Date.now() + (g.trialDays ?? 0) * DAY),
     });
@@ -264,7 +283,7 @@ export class SellingPlansService {
       const variants: any[] = await (this.db.repositories.productVariantModel as any).find({ _id: { $in: variantIds }, storeId: c.storeId, isDelete: false }).select('price').lean();
       const price = new Map(variants.map((v) => [String(v._id), Number(v.price)]));
       if (c.items.some((i: any) => !price.has(i.variantId))) throw new Error('A product of this subscription is no longer available');
-      const items = c.items.map((i: any) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity, unitPrice: discountedPrice(price.get(i.variantId) as number, c.terms.discountPercent) }));
+      const items = c.items.map((i: any) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity, unitPrice: discountedPrice((i.lockedPrice ?? price.get(i.variantId)) as number, c.terms.discountPercent) }));
       const goods = items.reduce((s: number, i: any) => s + i.unitPrice * i.quantity, 0);
       const drafts = this.moduleRef.get(DraftOrdersService, { strict: false });
       const a = c.shippingAddress;

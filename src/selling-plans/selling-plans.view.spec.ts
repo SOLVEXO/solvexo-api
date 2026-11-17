@@ -132,3 +132,50 @@ describe('seller pause with a reason', () => {
     expect(updates[0].$set.pausedReason).toBe('Paused by the customer');
   });
 });
+
+describe('price lock (the price at subscribe time)', () => {
+  it('a line charges the locked price, and says when today\'s price is different', async () => {
+    const { svc, variants, products, stored } = build();
+    stored.items = [{ productId: OID(1), variantId: OID(11), quantity: 2, lockedPrice: 800 } as any];
+    variants[0]._id = OID(11); products[0]._id = OID(1); // today the variant costs 1000
+    const [c]: any[] = await svc.decorate('s1', [stored]);
+    expect(c.lines[0]).toMatchObject({ priceLocked: true, listPrice: 800, unitPrice: 720, lineTotal: 1440, todayPrice: 1000, priceChanged: true });
+    expect(c.estimatedTotal).toBe(1440 + 100 + 72); // goods + plan shipping + 5% tax on goods
+  });
+
+  it('no change when the price is the same, and older contracts without a lock follow today\'s price', async () => {
+    const { svc, variants, products, stored } = build();
+    variants[0]._id = OID(11); variants[0].productId = OID(1); products[0]._id = OID(1);
+    stored.items = [{ productId: OID(1), variantId: OID(11), quantity: 1, lockedPrice: 1000 } as any];
+    expect(((await svc.decorate('s1', [stored]))[0] as any).lines[0]).toMatchObject({ priceLocked: true, priceChanged: false, unitPrice: 900 });
+    stored.items = [{ productId: OID(1), variantId: OID(11), quantity: 1 }];
+    expect(((await svc.decorate('s1', [stored]))[0] as any).lines[0]).toMatchObject({ priceLocked: false, priceChanged: false, unitPrice: 900, listPrice: 1000 });
+  });
+
+  it('the seller can move a subscription to today\'s prices', async () => {
+    const { svc, variants, products, stored, updates } = build();
+    const ID = 'c1'.padEnd(24, '0');
+    (stored as any)._id = ID;
+    stored.items = [{ productId: OID(1), variantId: OID(11), quantity: 2, lockedPrice: 800 } as any];
+    variants[0]._id = OID(11); products[0]._id = OID(1);
+    (svc as any).contracts.findOne = (f: any) => q(String(f._id) === ID ? stored : null);
+    const res: any = await svc.sellerAction('s1', { id: 'sel1', role: 'seller' }, ID, 'reprice');
+    expect(updates[0].$set.items).toEqual([{ productId: OID(1), variantId: OID(11), quantity: 2, lockedPrice: 1000 }]);
+    expect(res.lines[0].priceChanged).toBe(false);
+  });
+
+  it('subscribing remembers the variant price', async () => {
+    const G = new (require('mongoose').Types.ObjectId)().toHexString(); const V = new (require('mongoose').Types.ObjectId)().toHexString(); const P = new (require('mongoose').Types.ObjectId)().toHexString();
+    let created: any = null;
+    const groups: any = { findOne: () => q({ _id: G, name: 'Coffee', options: [{ id: 'o1', unit: 'month', count: 1, discountPercent: 10 }], trialDays: 3, shippingAmount: 0, taxPercent: 0, maxCycles: null, status: 'active', productIds: [P], variantIds: [] }) };
+    const contracts: any = { countDocuments: async () => 0, create: async (d: any) => { created = d; return { _id: 'new', ...d }; } };
+    const repos: any = {
+      userModel: { findOne: () => q({ name: 'Umer', email: 'u@x.co', isGuest: false }) },
+      productVariantModel: { findOne: () => q({ _id: V, productId: P, type: 'physical', price: 1250 }) },
+      productModel: { findOne: () => q({ _id: P }) },
+    };
+    const svc = new SellingPlansService(groups, contracts, {} as any, { repositories: repos } as any, { log: async () => undefined } as any, {} as any);
+    await svc.subscribe('s1', 'u1', { groupId: G, optionId: 'o1', variantId: V, quantity: 2, address: { recipientName: 'Umer', addressLine1: '12 Road', city: 'Lahore', phoneNumber: '0300111222' } });
+    expect(created.items).toEqual([{ productId: P, variantId: V, quantity: 2, lockedPrice: 1250 }]);
+  });
+});
