@@ -862,22 +862,6 @@ export class StoreService {
     return ['User-agent: *', 'Allow: /', 'Disallow: /account', 'Disallow: /cart', 'Disallow: /checkout'].join('\n') + '\n';
   }
 
-  /** Platform-plan-gated: only stores on a plan with `whiteLabelAllowed` may hide Solvexo branding. */
-  async setWhiteLabel(sellerId: string, storeId: string, enabled: boolean) {
-    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
-    if (!store) throw new NotFoundException('Store not found');
-    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
-
-    if (enabled) {
-      await this.entitlementsService.assertFeatureAllowed(storeId, 'whiteLabelAllowed', 'White-label branding');
-    }
-
-    store.whiteLabelEnabled = enabled;
-    await store.save();
-
-    return { success: true, message: 'White-label setting updated', data: { whiteLabelEnabled: store.whiteLabelEnabled } };
-  }
-
   /**
    * Solvexo POS is a single, already-built Google Play listing (Android) —
    * a *paid* listing, so Google Play collects payment directly from the

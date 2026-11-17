@@ -317,6 +317,9 @@ export class StorefrontFooter {
   @Prop({ type: Boolean, default: true }) showPolicyLinks: boolean;
   @Prop({ type: Boolean, default: false }) showCurrency: boolean;
   @Prop({ type: Boolean, default: false }) showBackToTop: boolean;
+  @Prop({ type: Boolean, default: true }) showPoweredBy: boolean;
+  @Prop({ type: String, default: null }) poweredByText: string | null;  // own wording; null = 'Powered by Solvexo'
+  @Prop({ type: String, default: null }) poweredByUrl: string | null;   // own https link; null = the Solvexo site
   // Footer shape: 'panel' = the theme's rounded panel inside the page width; 'full' = edge to edge, no rounded corners. null = theme default.
   @Prop({ type: String, enum: ['panel', 'full'], default: null }) footerShape: 'panel' | 'full' | null;
   // A big logo/wordmark across the very bottom of the footer. 'store' = the store logo, 'custom' = wordmarkUrl.

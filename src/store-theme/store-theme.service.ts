@@ -868,7 +868,7 @@ export class StoreThemeService {
     }
     const footerKeys = ['logoSource', 'logoUrl', 'logoWidth', 'showNewsletter', 'newsletterHeading', 'newsletterText',
       'showDefaultColumns', 'shopColumnHeading', 'accountColumnHeading', 'blogLinkLabel', 'bgColor', 'textColor', 'blockLayout', 'paddingY', 'bgImageUrl', 'bgOverlay', 'align', 'headingUppercase', 'socialStyle', 'socialColor', 'socialCustomColor', 'socialFilled', 'socialSize',
-      'newsletterTop', 'mobileAccordion', 'showPolicyLinks', 'showCurrency', 'showBackToTop', 'footerShape', 'wordmarkSource', 'wordmarkUrl', 'wordmarkWidth', 'bottomLayout', 'preset'] as const;
+      'newsletterTop', 'mobileAccordion', 'showPolicyLinks', 'showCurrency', 'showBackToTop', 'showPoweredBy', 'poweredByText', 'poweredByUrl', 'footerShape', 'wordmarkSource', 'wordmarkUrl', 'wordmarkWidth', 'bottomLayout', 'preset'] as const;
     for (const key of footerKeys) {
       if (dto[key] === undefined) continue;
       const v = dto[key];
