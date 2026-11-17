@@ -2,7 +2,7 @@
 import { searchStoreCustomers } from '../common/store-customer-search.util';
 import { emailUiStrings, isRtlLocale } from '../notifications/customer-email-locales';
 import { buildInvoiceItemsHtml, buildInvoicePdf, invoiceNumber } from './draft-order-invoice.util';
-import { Injectable, BadRequestException, NotFoundException, ForbiddenException, Optional } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Optional } from '@nestjs/common';
 import { B2BContextService, type BuyerContext } from '../b2b/b2b-context.service';
 import { buildOrderB2B } from '../b2b/b2b-order.util';
 import { toStripeAmount } from '@/common/stripe-amount.util';
@@ -603,7 +603,7 @@ export class DraftOrdersService {
     return searchStoreCustomers(this.repos as any, storeId, q);
   }
 
-  /** Converts an `open` draft with a registered customer attached into a
+  /** Converts an `open` draft (a registered customer, or a guest with an email — the account is created here) into a
    *  real `Order` + `SellerOrder` — real stock decrement (same atomic
    *  guarded pattern PaymentService uses for a normal checkout), real
    *  purchaseCount increment, real ActivityLog entry. Deliberately does NOT
@@ -620,10 +620,14 @@ export class DraftOrdersService {
   ) {
     const draft = await this.getOwned(storeId, sellerId, id);
     if (draft.status !== 'open') throw new BadRequestException('This draft order was already completed or cancelled.');
-    if (!draft.customerId) {
-      throw new ForbiddenException('Attach a registered customer account to this draft order before completing it.');
-    }
     if (draft.items.length === 0) throw new BadRequestException('This draft order has no items.');
+    // A guest draft (typed name + email, no account) gets its customer account now, so the order has an owner.
+    if (!(draft as any).customerId) {
+      if (!EMAIL_RX.test(String(draft.customerEmail ?? '').trim())) {
+        throw new BadRequestException("Add the customer's email address (or pick a registered customer) before completing this order.");
+      }
+      await this.ensureCustomerForDraft(draft);
+    }
 
     const physicalItems = draft.items.filter((i: any) => i.type === 'physical');
     const digitalItems = draft.items.filter((i: any) => i.type !== 'physical');
@@ -727,7 +731,7 @@ export class DraftOrdersService {
     const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 9000 + 1000)}`;
     const order = await this.repos.orderModel.create({
       orderNumber,
-      userId: draft.customerId,
+      userId: String((draft as any).customerId), // set above: the draft's own customer, or the one just created for a guest
       // No real Checkout doc backs a manually-created draft order — this is
       // a stable, clearly-prefixed reference back to the draft it came from,
       // never confused with a real Checkout ObjectId.

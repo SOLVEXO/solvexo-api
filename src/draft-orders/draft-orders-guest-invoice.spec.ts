@@ -16,6 +16,7 @@ function build(draftOverrides: Record<string, unknown> = {}, existingUser: any =
   const metaUpserts: any[] = [];
   const draftUpdates: any[] = [];
   const sent: any[] = [];
+  const orders: any[] = [];
   const repos: any = {
     storeModel: {
       findOne: () => chain({ _id: 's1', sellerId: 'sel1', name: 'Amara', defaultLanguage: 'en' }),
@@ -30,20 +31,22 @@ function build(draftOverrides: Record<string, unknown> = {}, existingUser: any =
       create: async (doc: any) => { const u = { _id: 'u-new', ...doc }; users.push(u); return u; },
     },
     storeCustomerMetaModel: { updateOne: async (...a: any[]) => { metaUpserts.push(a); return {}; } },
+    productModel: { find: () => chain([]), updateOne: async () => ({}) },
+    orderModel: { create: async (d: any) => { orders.push(d); return { _id: 'o1', ...d }; } },
   };
   const service = new DraftOrdersService(
     { repositories: repos } as any,
     { log: async () => undefined } as any,
-    {} as any,
+    { buildSnapshots: async () => [] } as any,
     { sendMail: async () => true } as any,
     { get: () => undefined } as any,
     {} as any,
     {} as any,
     { sendCustomerEmail: async (args: any) => { sent.push(args); return 'sent'; } } as any,
-    {} as any,
+    { recordSale: async () => undefined } as any,
   );
   // getOwned checks store ownership + loads the draft; the store mock above satisfies both.
-  return { service, draft, users, metaUpserts, draftUpdates, sent };
+  return { service, draft, users, metaUpserts, draftUpdates, sent, orders };
 }
 
 describe('guest draft invoices', () => {
@@ -114,5 +117,31 @@ describe('paying a guest invoice', () => {
     await service.finalizeInvoicePayment({ id: 'pi_1', metadata: { draftOrderId: 'd1' } });
     expect(order.length).toBe(1);
     expect(order[0]).toBe('complete:d1:users=1'); // the account existed by the time complete() ran
+  });
+});
+
+describe('completing a guest draft yourself', () => {
+  const digital = [{ productId: 'p1', variantId: 'v1', name: 'Ebook', quantity: 1, unitPrice: 500, options: [], sku: null, type: 'digital' }];
+
+  it('creates the customer from the typed email and puts the order under them', async () => {
+    const { service, users, orders } = build({ items: digital, subtotal: 500, total: 500 });
+    const res: any = await service.complete('s1', 'sel1', 'd1');
+    expect(res.orderId).toBe('o1');
+    expect(users.length).toBe(1);
+    expect(users[0].email).toBe('uzair@example.com');
+    expect(orders[0].userId).toBe('u-new');
+  });
+
+  it('asks for an email (not a registered customer) when the guest has none', async () => {
+    const { service, users } = build({ items: digital, customerEmail: '' });
+    await expect(service.complete('s1', 'sel1', 'd1')).rejects.toThrow('email');
+    expect(users.length).toBe(0);
+  });
+
+  it('a registered customer is completed as before, without creating anyone', async () => {
+    const { service, users, orders } = build({ items: digital, customerId: 'u1' });
+    await service.complete('s1', 'sel1', 'd1');
+    expect(users.length).toBe(0);
+    expect(orders[0].userId).toBe('u1');
   });
 });
