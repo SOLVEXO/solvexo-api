@@ -68,6 +68,9 @@ describe('section-settings.validator', () => {
       expect(() => validateBlockSettings('multicolumn_column', { imageUrl: 'http://insecure' })).toThrow(BadRequestException);
       expect(() => validateBlockSettings('logo_item', { imageUrl: 'https://x.test/l.png' })).not.toThrow();
       expect(() => validateBlockSettings('logo_item', {})).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('collection_item', { collectionId: 'abc', title: 'Pre-Primary', icon: 'book', ctaText: 'Shop', ctaLink: { linkType: 'home' } })).not.toThrow();
+      expect(() => validateBlockSettings('collection_item', { imageUrl: 'http://insecure' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('collection_item', { title: 'x'.repeat(121) })).toThrow(BadRequestException);
       expect(() => validateBlockSettings('marquee_item', { text: 'Free shipping' })).not.toThrow();
       expect(() => validateBlockSettings('marquee_item', { text: '' })).toThrow(BadRequestException);
     });

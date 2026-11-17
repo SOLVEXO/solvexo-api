@@ -60,6 +60,9 @@ export class UpdateFooterDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showPolicyLinks?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showCurrency?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showBackToTop?: boolean;
+  @ApiProperty({ required: false, description: "Show the 'Powered by Solvexo' link in the footer's bottom bar (default on)" }) @IsOptional() @IsBoolean() showPoweredBy?: boolean;
+  @ApiProperty({ required: false, nullable: true, description: "Own wording for the bottom-bar credit link; null = 'Powered by Solvexo'" }) @IsOptional() @IsString() @MaxLength(1000) poweredByText?: string | null;
+  @ApiProperty({ required: false, nullable: true, description: 'Where the credit link goes (https only); null = the Solvexo site' }) @ValidateIf((_, v) => v !== null && v !== undefined && v !== '') @Matches(/^https:\/\//i, { message: 'Link must be an https:// URL' }) @MaxLength(2048) poweredByUrl?: string | null;
   @ApiProperty({ required: false, nullable: true, enum: ['panel', 'full'], description: 'Rounded panel inside the page width, or edge to edge. null = theme default' })
   @ValidateIf((_, v) => v !== null && v !== undefined) @IsIn(['panel', 'full']) footerShape?: 'panel' | 'full' | null;
   @ApiProperty({ required: false, enum: ['none', 'store', 'custom'], description: 'A big logo across the very bottom of the footer' })

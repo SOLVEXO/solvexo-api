@@ -6,8 +6,10 @@ import {
 } from 'class-validator';
 
 class SeoMetaTemplateDto {
-  @ApiProperty({ example: 'product' }) @IsString() key: string;
-  @ApiProperty({ example: '{{productName}} — {{storeName}} | Solvexo' }) @IsString() titleTemplate: string;
+  // Only the platform's own marketplace category pages take an admin template. A seller's store and product pages are
+  // written by the seller alone (Shopify), so 'store' / 'product' templates are refused rather than silently ignored.
+  @ApiProperty({ example: 'category', enum: ['category'] }) @IsIn(['category']) key: string;
+  @ApiProperty({ example: '{{categoryName}} | Solvexo Marketplace' }) @IsString() titleTemplate: string;
   @ApiProperty({ required: false }) @IsOptional() @IsString() descriptionTemplate?: string;
 }
 

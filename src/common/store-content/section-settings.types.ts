@@ -190,6 +190,10 @@ export interface CollectionListSectionSettings extends BaseSectionSettings {
   limit?: number;
   imageRatio?: 'default' | 'adapt' | 'portrait' | 'square' | 'landscape';
   showDescription?: boolean;
+  /** Card around each tile: none (default) / thin border / filled background. */
+  cardStyle?: 'none' | 'bordered' | 'filled';
+  /** Look of each tile's button (only tiles that have button text show one). */
+  buttonStyle?: 'solid' | 'outline' | 'link';
 }
 export interface StoreLocationsSectionSettings extends BaseSectionSettings {}
 export interface RelatedProductsSectionSettings extends BaseSectionSettings {
@@ -549,6 +553,18 @@ export type ProductShareBlockSettings = { [K in (typeof SHARE_NETWORKS)[number]]
 export interface ThemeSectionSettings { sectionKey: string; [field: string]: unknown }
 export interface ThemeBlockSettings { blockKey: string; [field: string]: unknown }
 
+/** One hand-picked tile of a Collection List. Every field is optional: a picked collection supplies name/description/image/link, anything typed here wins over it. */
+export interface CollectionItemBlockSettings {
+  collectionId?: string;
+  title?: string;
+  description?: string;
+  imageUrl?: string;
+  /** Key of a built-in icon shown above the title when there is no image. */
+  icon?: string;
+  ctaText?: string;
+  ctaLink?: LinkTarget;
+}
+
 export const BLOCK_TYPES = [
   'nav_link',
   'footer_column',
@@ -579,6 +595,7 @@ export const BLOCK_TYPES = [
   'multicolumn_column',
   'logo_item',
   'marquee_item',
+  'collection_item',
   'location_item',
   'product_media',
   'product_title',
@@ -632,6 +649,7 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   multicolumn_column: MulticolumnColumnBlockSettings;
   logo_item: LogoItemBlockSettings;
   marquee_item: MarqueeItemBlockSettings;
+  collection_item: CollectionItemBlockSettings;
   location_item: LocationItemBlockSettings;
   product_media: ProductMediaBlockSettings;
   product_title: ProductTitleBlockSettings;

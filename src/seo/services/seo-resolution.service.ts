@@ -23,7 +23,9 @@ export interface ResolvedSeoMeta {
 }
 
 const PLATFORM_ORIGIN = 'https://solvexo.store';
-const CACHE_TTL_SECONDS = 600; // 10 min — same order of magnitude as analytics-cache.util's convention
+// Short on purpose: product, variant (price/stock) and store edits made outside the SEO module cannot all reach invalidate(),
+// so a minute is the longest a crawler can see an old title. SEO-module saves still invalidate immediately.
+const CACHE_TTL_SECONDS = 60;
 
 /**
  * The meta-delivery engine (see architecture plan Refinement #1). Given
@@ -91,31 +93,24 @@ export class SeoResolutionService {
     ]);
     const defaultVariant = (variants as any[]).find((v) => v.isDefault) ?? (variants as any[])[0] ?? null;
 
-    const settings = await this.platformSeoService.getSettings();
-    const template = settings.metaTemplates?.find((t: any) => t.key === 'product');
-
     const seo = (product).seo ?? {};
-    const categorySeo = (category as any)?.seo ?? {};
     const storeSeo = (store as any)?.seo ?? {};
     const storeName = (store as any)?.name ?? '';
 
+    // Shopify behaviour: a product with no SEO of its own gets "Product – Store" and its own description.
+    // The category's or the store's meta title/description, and the platform admin's meta templates, must never
+    // shape a seller's storefront: only the seller writes it. An emptied field ("") counts as unset, hence `||` not `??`.
     const title = seo.metaTitle
-      ?? categorySeo.metaTitle
-      ?? storeSeo.metaTitle
-      ?? renderTemplate(template?.titleTemplate, { productName: product.name, storeName, categoryName: (category as any)?.name })
-      ?? (storeName ? `${product.name} – ${storeName}` : product.name);
+      || (storeName ? `${product.name} – ${storeName}` : product.name);
 
     const description = seo.metaDescription
-      ?? categorySeo.metaDescription
-      ?? storeSeo.metaDescription
-      ?? renderTemplate(template?.descriptionTemplate, { productName: product.name, storeName })
-      ?? truncate(product.description, 160);
+      || truncate(product.description, 160);
 
-    const ogImage = seo.ogImage ?? product.images?.[0] ?? storeSeo.ogImage ?? null;
+    const ogImage = seo.ogImage || product.images?.[0] || storeSeo.ogImage || null;
     // Product pages belong to the merchant storefront domain, not the
     // platform marketplace host. This is also the URL crawlers must index.
     const storefrontOrigin = getStorefrontOrigin(store as any);
-    const canonicalUrl = seo.canonicalUrlOverride ?? `${storefrontOrigin}/product/${product.slug}`;
+    const canonicalUrl = seo.canonicalUrlOverride || `${storefrontOrigin}/product/${product.slug}`;
 
     const jsonLd = [
       this.schemaGenerator.buildProductSchema({
@@ -146,8 +141,8 @@ export class SeoResolutionService {
       description,
       canonicalUrl,
       noindex: !!seo.noindex,
-      ogTitle: seo.ogTitle ?? title,
-      ogDescription: seo.ogDescription ?? description,
+      ogTitle: seo.ogTitle || title,
+      ogDescription: seo.ogDescription || description,
       ogImage,
       twitterCard: seo.twitterCard ?? 'summary_large_image',
       jsonLd,
@@ -164,12 +159,12 @@ export class SeoResolutionService {
     const seo = (category as any).seo ?? {};
 
     const title = seo.metaTitle
-      ?? renderTemplate(template?.titleTemplate, { categoryName: (category as any).name })
-      ?? `${(category as any).name} | Solvexo Marketplace`;
+      || renderTemplate(template?.titleTemplate, { categoryName: (category as any).name })
+      || `${(category as any).name} | Solvexo Marketplace`;
     const description = seo.metaDescription
-      ?? renderTemplate(template?.descriptionTemplate, { categoryName: (category as any).name })
-      ?? `Shop ${(category as any).name} on Solvexo.`;
-    const canonicalUrl = seo.canonicalUrlOverride ?? `${PLATFORM_ORIGIN}/marketplace?category=${(category as any)._id}`;
+      || renderTemplate(template?.descriptionTemplate, { categoryName: (category as any).name })
+      || `Shop ${(category as any).name} on Solvexo.`;
+    const canonicalUrl = seo.canonicalUrlOverride || `${PLATFORM_ORIGIN}/marketplace?category=${(category as any)._id}`;
 
     return {
       entityType: 'category',
@@ -179,9 +174,9 @@ export class SeoResolutionService {
       description,
       canonicalUrl,
       noindex: !!seo.noindex,
-      ogTitle: seo.ogTitle ?? title,
-      ogDescription: seo.ogDescription ?? description,
-      ogImage: seo.ogImage ?? (category as any).image ?? null,
+      ogTitle: seo.ogTitle || title,
+      ogDescription: seo.ogDescription || description,
+      ogImage: seo.ogImage || (category as any).image || null,
       twitterCard: seo.twitterCard ?? 'summary_large_image',
       jsonLd: [this.schemaGenerator.buildBreadcrumbSchema([
         { name: 'Marketplace', url: `${PLATFORM_ORIGIN}/marketplace` },
@@ -195,17 +190,12 @@ export class SeoResolutionService {
     const store = await this.findByIdOrSlug(storeModel, idOrSlug, 'slug');
     if (!store) throw new NotFoundException('Store not found.');
 
-    const settings = await this.platformSeoService.getSettings();
-    const template = settings.metaTemplates?.find((t: any) => t.key === 'store');
     const seo = (store).seo ?? {};
 
-    const title = seo.metaTitle
-      ?? renderTemplate(template?.titleTemplate, { storeName: store.name })
-      ?? store.name;
-    const description = seo.metaDescription
-      ?? renderTemplate(template?.descriptionTemplate, { storeName: store.name })
-      ?? truncate(store.description ?? '', 160);
-    const canonicalUrl = seo.canonicalUrlOverride ?? getStorefrontOrigin(store as any);
+    // Only the seller sets a store's title/description (Shopify): the platform admin's meta templates never apply here.
+    const title = seo.metaTitle || store.name;
+    const description = seo.metaDescription || truncate(store.description ?? '', 160);
+    const canonicalUrl = seo.canonicalUrlOverride || getStorefrontOrigin(store as any);
 
     return {
       entityType: 'store',
@@ -215,9 +205,9 @@ export class SeoResolutionService {
       description,
       canonicalUrl,
       noindex: !!seo.noindex,
-      ogTitle: seo.ogTitle ?? title,
-      ogDescription: seo.ogDescription ?? description,
-      ogImage: seo.ogImage ?? store.logo ?? null,
+      ogTitle: seo.ogTitle || title,
+      ogDescription: seo.ogDescription || description,
+      ogImage: seo.ogImage || store.logo || null,
       twitterCard: seo.twitterCard ?? 'summary_large_image',
       jsonLd: [this.schemaGenerator.buildStoreSchema({
         storeId: store._id.toString(),

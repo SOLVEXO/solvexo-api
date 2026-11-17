@@ -862,22 +862,6 @@ export class StoreService {
     return ['User-agent: *', 'Allow: /', 'Disallow: /account', 'Disallow: /cart', 'Disallow: /checkout'].join('\n') + '\n';
   }
 
-  /** Platform-plan-gated: only stores on a plan with `whiteLabelAllowed` may hide Solvexo branding. */
-  async setWhiteLabel(sellerId: string, storeId: string, enabled: boolean) {
-    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
-    if (!store) throw new NotFoundException('Store not found');
-    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
-
-    if (enabled) {
-      await this.entitlementsService.assertFeatureAllowed(storeId, 'whiteLabelAllowed', 'White-label branding');
-    }
-
-    store.whiteLabelEnabled = enabled;
-    await store.save();
-
-    return { success: true, message: 'White-label setting updated', data: { whiteLabelEnabled: store.whiteLabelEnabled } };
-  }
-
   /**
    * Solvexo POS is a single, already-built Google Play listing (Android) —
    * a *paid* listing, so Google Play collects payment directly from the
@@ -1472,6 +1456,9 @@ export class StoreService {
       updateData,
       { new: true },
     );
+
+    // The store's home title/description/logo/domain feed the crawler view: clear it so a rename shows up at once.
+    void this.redisService.del(`seo:meta:store:${String(store._id)}`).catch(() => undefined);
 
     return {
       success: true,
@@ -2193,10 +2180,20 @@ export class StoreService {
       endDate: primaryCampaign.endDate,
     } : null;
 
+    // Category + sub-category names for the product card's info line: one lookup for the whole page.
+    const cardCategoryIds = [...new Set(products.flatMap((p: any) => [p.categoryId, p.subCategoryId]).filter(Boolean).map(String))];
+    const cardCategoryNames = new Map<string, string>();
+    if (cardCategoryIds.length) {
+      const cats: any[] = await this.databaseService.repositories.categoryModel.find({ _id: { $in: cardCategoryIds }, isDelete: false }).select('name').lean();
+      for (const c of cats) cardCategoryNames.set(String(c._id), c.name);
+    }
+
     const enrichedProducts = products.map((p: any) => {
       const variant = cheapestByProduct.get(p._id.toString());
       const base: any = {
         ...p,
+        categoryName:        p.categoryId ? cardCategoryNames.get(String(p.categoryId)) ?? '' : '',
+        subCategoryName:     p.subCategoryId ? cardCategoryNames.get(String(p.subCategoryId)) ?? '' : '',
         variants:            variantsByProduct.get(p._id.toString()) ?? [],
         sellerName:          seller ? seller.name : null,
         sellerVerified:      seller ? !!seller.isVerified : false,

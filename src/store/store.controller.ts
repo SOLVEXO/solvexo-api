@@ -105,14 +105,6 @@ export class StoreController {
     return this.storeService.updateStoreRobotsTxt(actingSellerId(req.user), storeId, body?.robotsTxtOverride ?? null);
   }
 
-  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
-  @Roles('seller', 'staff')
-  @RequirePermission('settings.general.manage')
-  @Patch(':storeId/white-label')
-  async setWhiteLabel(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { enabled: boolean }) {
-    return this.storeService.setWhiteLabel(actingSellerId(req.user), storeId, !!body.enabled);
-  }
-
   // Solvexo POS is a single, already-published, PAID Google Play listing —
   // Google Play collects payment directly from the merchant on install, so
   // there is nothing to sell or gate on our side. This just hands back the

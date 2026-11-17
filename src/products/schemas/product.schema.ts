@@ -237,6 +237,14 @@ export class Product {
   @Prop({ type: String, default: '', trim: true, maxlength: 100 })
   vendor: string;
 
+  // Optional label the seller puts on this product's card ("New", "Grade-3", "Bestseller"). Empty = no badge.
+  @Prop({ type: String, default: '', trim: true, maxlength: 30 })
+  cardBadgeText: string;
+
+  // A preset key (accent | dark | green | red | blue | amber) or a #RRGGBB colour. Empty = the theme's accent.
+  @Prop({ type: String, default: '', trim: true, maxlength: 20 })
+  cardBadgeColor: string;
+
   @Prop({ type: Number, default: 1 })
   orderMinQuantity: number;
 

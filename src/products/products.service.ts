@@ -1770,6 +1770,8 @@ export class ProductsService {
       } as any);
     }
 
+    void this.redisService.del(`seo:meta:product:${String(productId)}`).catch(() => undefined); // crawler title/description/price follow the edit
+
     return {
       success: true,
       message: 'Product updated successfully',
@@ -1802,6 +1804,8 @@ export class ProductsService {
       targetId: String(productId),
       targetType: 'product',
     } as any);
+
+    void this.redisService.del(`seo:meta:product:${String(productId)}`).catch(() => undefined);
 
     return { success: true, message: 'Product deleted successfully', data: null };
   }
