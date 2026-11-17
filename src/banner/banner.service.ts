@@ -24,7 +24,7 @@ const HERO_MIN_SOURCE_WIDTH = 1280;
 
 /** A row is "visible" whether it was migrated to the new `status` field or is a
  * pre-migration legacy row that only ever had `isActive`. */
-const VISIBLE_FILTER = { $or: [{ status: 'active' }, { status: { $exists: false }, isActive: true }] };
+const VISIBLE_FILTER = { $or: [{ status: 'active' as const }, { status: { $exists: false }, isActive: true }] };
 
 /** Matches both the new multi-placement `placements` array and the legacy
  * scalar `placement` field (pre-migration rows have an empty `placements`

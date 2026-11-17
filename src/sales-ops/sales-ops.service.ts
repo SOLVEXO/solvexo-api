@@ -760,7 +760,8 @@ export class SalesOpsService {
       );
   }
 
-  private async refreshFollowUp(leadId: string) {
+  /** Keeps the lead's next follow-up date in step with its earliest open task. Used by SalesVisitsService too. */
+  async refreshFollowUp(leadId: string) {
     const next: any = await this.tasks
       .findOne({ leadId, doneAt: null })
       .sort({ dueAt: 1 })

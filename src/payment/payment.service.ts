@@ -47,6 +47,7 @@ import { PaymentProviderRegistry } from '../integrations/payment-provider.regist
 import { creditLimitCheck, isPaymentMethodAllowed } from '../b2b/b2b-pricing.util';
 import { buildOrderB2B, companyOutstanding, notifyB2BOrderChanged } from '../b2b/b2b-order.util';
 import { CodProtectionService } from '../cod-protection/cod-protection.service';
+import type { StoreIntegrationProvider } from '../integrations/schemas/store-integration.schema';
 
 /** Thrown by createOrder when the atomic stock reservation loses (the last unit was sold between the buyer paying
  *  and the order being created). Distinct type so the payment-finalize paths can auto-refund instead of retrying forever. */
@@ -206,7 +207,7 @@ export class PaymentService {
       return { status: 'manual', note: `${money} was paid with ${label}, which cannot refund automatically - refund it in your ${label} account` };
     }
     const registry = this.moduleRef?.get(PaymentProviderRegistry, { strict: false });
-    const integration: any = await storeIntegrationModel.findOne({ storeId, type: 'payment', provider: type });
+    const integration: any = await storeIntegrationModel.findOne({ storeId, type: 'payment', provider: type as StoreIntegrationProvider });
     if (!registry || !integration || !registry.isSupported(type as any) || !integration.credentialsEncrypted) {
       return { status: 'manual', note: `${money} was paid with ${label}, which is not connected any more - refund it in your ${label} account` };
     }
@@ -1750,7 +1751,7 @@ export class PaymentService {
    */
   async reconcileGatewaySession(storeId: string, providerKey: string, sessionId: string, source: string): Promise<'paid' | 'failed' | 'pending'> {
     const registry = this.moduleRef?.get(PaymentProviderRegistry, { strict: false });
-    const integration: any = await this.databaseService.repositories.storeIntegrationModel.findOne({ storeId, type: 'payment', provider: providerKey });
+    const integration: any = await this.databaseService.repositories.storeIntegrationModel.findOne({ storeId, type: 'payment', provider: providerKey as StoreIntegrationProvider });
     if (!registry || !integration || !registry.isSupported(integration.provider)) return 'pending';
     const status = await registry.resolve(integration.provider).verifyPayment(sessionId, toDecryptedPaymentConfig(integration)).catch(() => null);
     if (status?.status === 'paid') {
@@ -3034,8 +3035,8 @@ export class PaymentService {
         );
       } else {
         const couponScope = checkout.couponStoreId
-          ? { storeId: checkout.couponStoreId, code: checkout.couponCode, scope: 'seller' }
-          : { code: checkout.couponCode, scope: 'platform' };
+          ? { storeId: checkout.couponStoreId, code: checkout.couponCode, scope: 'seller' as const }
+          : { code: checkout.couponCode, scope: 'platform' as const };
         // Atomic: count the use ONLY while the limit still has room, so two orders racing for the last use can
         // never both be counted past `usageLimit` (Shopify: a limited coupon stops working the moment it is used up).
         const counted: any = await this.databaseService.repositories.couponModel.updateOne(

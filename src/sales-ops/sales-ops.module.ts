@@ -61,6 +61,9 @@ import {
 } from '../contact/schemas/contact-submission.schema';
 import { SalesOpsService } from './sales-ops.service';
 import { SalesLead, SalesLeadSchema } from './schemas/sales-lead.schema';
+import { SalesVisit, SalesVisitSchema } from './schemas/sales-visit.schema';
+import { SalesVisitsService } from './sales-visits.service';
+import { UploadModule } from '../upload/upload.module';
 import {
   SalesActivity,
   SalesActivitySchema,
@@ -79,6 +82,7 @@ import {
     AdminAnalyticsModule,
     ExchangeRateModule,
     AiTextModule,
+    UploadModule,
     MongooseModule.forFeature([
       { name: SalesLead.name, schema: SalesLeadSchema },
       { name: SalesActivity.name, schema: SalesActivitySchema },
@@ -96,6 +100,7 @@ import {
       { name: SalesChatSession.name, schema: SalesChatSessionSchema },
       { name: SalesWaConversation.name, schema: SalesWaConversationSchema },
       { name: SalesWaMessage.name, schema: SalesWaMessageSchema },
+      { name: SalesVisit.name, schema: SalesVisitSchema },
     ]),
   ],
   controllers: [
@@ -110,6 +115,7 @@ import {
     SalesPartnersService,
     SalesAgentService,
     SalesWhatsAppService,
+    SalesVisitsService,
     EmailService,
   ],
   exports: [SalesOpsService, SalesCaptureService],

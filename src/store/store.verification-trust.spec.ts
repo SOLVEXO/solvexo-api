@@ -18,7 +18,7 @@ function build(store: any) {
   const service: any = Object.create(StoreService.prototype);
   service.databaseService = { repositories: { storeModel } };
   service.sellerTrust = { recomputeStore: jest.fn().mockResolvedValue(null), deadlineFor: jest.fn().mockResolvedValue({ dueAt: null, limited: false, enforcementStarted: false }) };
-  service.uploadService = { generateSignedUrl: jest.fn().mockReturnValue('https://signed') };
+  service.uploadService = { generateSignedUrl: jest.fn().mockReturnValue('https://signed'), generateExpiringPrivateUrl: jest.fn().mockReturnValue('https://signed') };
   service.notificationsService = { notifyAdmins: jest.fn().mockResolvedValue(0) };
   service.marketingService = { getActiveCampaignsForStores: jest.fn().mockResolvedValue(new Map()) };
   return { service, storeModel };

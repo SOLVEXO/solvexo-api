@@ -296,7 +296,7 @@ export class CollectionsService {
    *  (Phase 11) needs to resolve either, exactly like `/category/:slugOrId`
    *  already does for categories. */
   async getPublicBySlug(storeId: string, slugOrId: string, locale?: string) {
-    const base = { storeId, isDelete: false, status: 'active' };
+    const base = { storeId, isDelete: false, status: 'active' as const };
     const select = 'name slug description image type templateKey seo defaultSort translations';
     let collection = await this.r.collectionModel
       .findOne({ ...base, $or: isValidObjectId(slugOrId) ? [{ slug: slugOrId }, { _id: slugOrId }] : [{ slug: slugOrId }] })

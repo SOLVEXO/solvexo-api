@@ -27,6 +27,7 @@ import { SalesGrowthService } from './sales-growth.service';
 import { SalesPartnersService } from './sales-partners.service';
 import { SalesAgentService } from './sales-agent.service';
 import { SalesWhatsAppService } from './sales-whatsapp.service';
+import { SalesVisitsService } from './sales-visits.service';
 import { salesActor } from './sales-ops.util';
 import {
   ActivityDto,
@@ -57,6 +58,10 @@ import {
   TaskListDto,
   TaskPatchDto,
   TemplateDto,
+  VisitCheckDto,
+  VisitDto,
+  VisitListDto,
+  VisitPatchDto,
 } from './sales-ops.dto';
 
 /** Super Admin → Sales Ops. `sales.access` = a rep (own leads only); `sales.manage` = every lead and the settings. */
@@ -75,6 +80,7 @@ export class SalesOpsController {
     private readonly partners: SalesPartnersService,
     private readonly agent: SalesAgentService,
     private readonly whatsapp: SalesWhatsAppService,
+    private readonly visits: SalesVisitsService,
   ) {}
 
   // ── WhatsApp (Solvexo's own number) ────────────────────────────────────────
@@ -390,6 +396,30 @@ export class SalesOpsController {
   @Post('stalled/sync')
   syncStalled() {
     return this.capture.syncStalled();
+  }
+
+  // ── Field visits ───────────────────────────────────────────────────────────
+
+  @Get('visits') listVisits(@Req() req: any, @Query() q: VisitListDto) {
+    return this.visits.list(salesActor(req.user), q);
+  }
+  @Get('visits/areas') visitAreas() {
+    return this.visits.areas();
+  }
+  /** Earlier visits to the same shop, for the form's "already visited" warning. */
+  @Get('visits/check') checkVisit(@Query() q: VisitCheckDto) {
+    return this.visits.check(q.phone, q.storeName, q.area);
+  }
+  // A synced queue can send several visits in a row; 60 a minute is far above what a rep can fill by hand.
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @Post('visits') createVisit(@Req() req: any, @Body() dto: VisitDto) {
+    return this.visits.create(salesActor(req.user), dto);
+  }
+  @Get('visits/:id') getVisit(@Req() req: any, @Param('id') id: string) {
+    return this.visits.get(salesActor(req.user), id);
+  }
+  @Patch('visits/:id') updateVisit(@Req() req: any, @Param('id') id: string, @Body() dto: VisitPatchDto) {
+    return this.visits.update(salesActor(req.user), id, dto);
   }
 
   @Get('leads') list(@Req() req: any, @Query() q: LeadListDto) {

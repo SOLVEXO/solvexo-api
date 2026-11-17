@@ -308,7 +308,7 @@ export class MarketingService {
     let eligibleStoreIds: string[] | null = null;
     if (storeType) {
       const stores = await this.r.storeModel
-        .find({ productTypes: storeType, isDelete: false, status: 'active' }, '_id')
+        .find({ productTypes: storeType as any, isDelete: false, status: 'active' }, '_id')
         .lean();
       eligibleStoreIds = stores.map((s) => String(s._id));
     }
