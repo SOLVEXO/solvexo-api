@@ -59,6 +59,8 @@ export class StorefrontColors {
   @Prop({ type: String, enum: ['pill', 'square'], default: 'pill' }) badgeStyle: string;
   @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) cardRating: string;
   @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) cardTag: string;
+  @Prop({ type: String, enum: ['vendor', 'category', 'subcategory', 'subcategory_category', 'category_subcategory'], default: 'vendor' }) cardInfoLine: string;
+  @Prop({ type: String, enum: ['top-left', 'top-right', 'bottom-left', 'bottom-right'], default: 'top-left' }) cardBadgePosition: string;
   @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) cardButton: string;
   @Prop({ type: String, enum: ['small', 'medium', 'large', 'xlarge'], default: 'medium' }) headingScale: string;
   @Prop({ type: String, enum: ['small', 'medium', 'large'], default: 'medium' }) bodyScale: string;

@@ -2180,10 +2180,20 @@ export class StoreService {
       endDate: primaryCampaign.endDate,
     } : null;
 
+    // Category + sub-category names for the product card's info line: one lookup for the whole page.
+    const cardCategoryIds = [...new Set(products.flatMap((p: any) => [p.categoryId, p.subCategoryId]).filter(Boolean).map(String))];
+    const cardCategoryNames = new Map<string, string>();
+    if (cardCategoryIds.length) {
+      const cats: any[] = await this.databaseService.repositories.categoryModel.find({ _id: { $in: cardCategoryIds }, isDelete: false }).select('name').lean();
+      for (const c of cats) cardCategoryNames.set(String(c._id), c.name);
+    }
+
     const enrichedProducts = products.map((p: any) => {
       const variant = cheapestByProduct.get(p._id.toString());
       const base: any = {
         ...p,
+        categoryName:        p.categoryId ? cardCategoryNames.get(String(p.categoryId)) ?? '' : '',
+        subCategoryName:     p.subCategoryId ? cardCategoryNames.get(String(p.subCategoryId)) ?? '' : '',
         variants:            variantsByProduct.get(p._id.toString()) ?? [],
         sellerName:          seller ? seller.name : null,
         sellerVerified:      seller ? !!seller.isVerified : false,

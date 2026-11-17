@@ -2,11 +2,16 @@ import { BadRequestException } from '@nestjs/common';
 
 export interface SellingOptions {
   vendor: string;
+  cardBadgeText: string;
+  cardBadgeColor: string;
   orderMinQuantity: number;
   orderMaxQuantity: number | null;
   orderQuantityStep: number;
   preorder: { enabled: boolean; availableOn: Date | null };
 }
+
+/** Colour names a seller can pick for a card badge; anything else must be a #RRGGBB hex. */
+export const CARD_BADGE_COLOR_KEYS = ['accent', 'dark', 'green', 'red', 'blue', 'amber'] as const;
 
 const toInt = (v: unknown): number | null => {
   if (v === null || v === undefined || v === '') return null;
@@ -24,6 +29,18 @@ export function parseSellingOptions(body: any, current?: Partial<SellingOptions>
     const v = String(body.vendor ?? '').trim();
     if (v.length > 100) throw new BadRequestException('Vendor / brand must be 100 characters or less');
     out.vendor = v;
+  }
+  if (body?.cardBadgeText !== undefined) {
+    const t = String(body.cardBadgeText ?? '').trim();
+    if (t.length > 30) throw new BadRequestException('Card badge must be 30 characters or less');
+    out.cardBadgeText = t;
+  }
+  if (body?.cardBadgeColor !== undefined) {
+    const c = String(body.cardBadgeColor ?? '').trim();
+    if (c && !(CARD_BADGE_COLOR_KEYS as readonly string[]).includes(c) && !/^#[0-9a-fA-F]{6}$/.test(c)) {
+      throw new BadRequestException('Card badge colour must be one of the presets or a #RRGGBB colour');
+    }
+    out.cardBadgeColor = c;
   }
   const touched = ['orderMinQuantity', 'orderMaxQuantity', 'orderQuantityStep'].some((k) => body?.[k] !== undefined);
   if (touched) {
