@@ -7,6 +7,7 @@ import { CreateDefinitionDto } from './dto/create-definition.dto';
 import { UpdateDefinitionDto } from './dto/update-definition.dto';
 import { SetValuesDto } from './dto/set-values.dto';
 import { ReorderDefinitionsDto } from './dto/reorder-definitions.dto';
+import { MEASURE_UNITS, isMeasureType, parseMeasure } from './metafield-units';
 import { importMetafieldDefinitionsCsv } from './metafield-definitions-bulk-import';
 import { MetafieldOwnerResource, MetafieldType } from './schemas/metafield-definition.schema';
 
@@ -44,6 +45,11 @@ export function assertValueMatchesType(type: MetafieldType, value: string, field
       break;
     case 'color':
       if (!/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(value)) throw new BadRequestException(`${fieldPath} must be a hex color, e.g. #FF5500`);
+      break;
+    case 'dimension':
+    case 'weight':
+    case 'volume':
+      if (isMeasureType(type) && !parseMeasure(type, value)) throw new BadRequestException(fieldPath + ' must be a number and a unit, e.g. "12.5 ' + MEASURE_UNITS[type][1] + '" (units: ' + MEASURE_UNITS[type].join(', ') + ')');
       break;
     case 'json':
       try { JSON.parse(value); } catch { throw new BadRequestException(`${fieldPath} must be valid JSON`); }

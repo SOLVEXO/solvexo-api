@@ -33,6 +33,9 @@ export const METAFIELD_TYPES = [
   'date',
   'url',
   'color',
+  'dimension',
+  'weight',
+  'volume',
   'json',
 ] as const;
 export type MetafieldType = (typeof METAFIELD_TYPES)[number];

@@ -183,3 +183,21 @@ describe('MetafieldsService: field order and categories', () => {
     await expect(service.reorderDefinitions(STORE_A, 'sel1', { ownerResource: 'product', ids: ['a'] } as any)).rejects.toThrow('Access denied');
   });
 });
+
+describe('assertValueMatchesType: measurements (dimension, weight, volume)', () => {
+  const { assertValueMatchesType } = require('./metafields.service');
+  it('accepts a number and one of the type\'s units', () => {
+    expect(() => assertValueMatchesType('dimension', '12.5 cm', 'Width')).not.toThrow();
+    expect(() => assertValueMatchesType('weight', '2 kg', 'Weight')).not.toThrow();
+    expect(() => assertValueMatchesType('weight', '-0.5 lb', 'Weight')).not.toThrow();
+    expect(() => assertValueMatchesType('volume', '8 fl oz', 'Capacity')).not.toThrow();
+  });
+  it('treats an empty value as cleared', () => {
+    expect(() => assertValueMatchesType('dimension', '', 'Width')).not.toThrow();
+  });
+  it('rejects a missing unit, a wrong unit, a non-number, or a unit of another type', () => {
+    for (const [type, value] of [['dimension', '12'], ['dimension', 'cm'], ['dimension', 'abc cm'], ['dimension', '12 kg'], ['weight', '2 cm'], ['volume', '3 ml extra'], ['weight', '2kg']] as const) {
+      expect(() => assertValueMatchesType(type, value, 'X')).toThrow(BadRequestException);
+    }
+  });
+});
