@@ -192,6 +192,18 @@ describe('section-settings.validator', () => {
       expect(() => validateSectionSettings('image_banner', { overlayOpacity: 90 })).toThrow(BadRequestException);
     });
 
+    it('"make the whole image a link": a switch plus a real link target, on every image section', () => {
+      const good = { imageLinkOn: true, imageLink: { linkType: 'collection', collectionId: 'c1' } };
+      expect(() => validateSectionSettings('image_banner', good)).not.toThrow();
+      for (const type of ['multirow_row', 'multicolumn_column', 'image_text_pair'] as const) {
+        expect(() => validateBlockSettings(type, good)).not.toThrow();
+        expect(() => validateBlockSettings(type, { imageLinkOn: 'yes' })).toThrow(BadRequestException);
+        expect(() => validateBlockSettings(type, { imageLinkOn: true, imageLink: { linkType: 'external', url: 'javascript:alert(1)' } })).toThrow(BadRequestException);
+        expect(() => validateBlockSettings(type, { imageLinkOn: true, imageLink: { linkType: 'collection' } })).toThrow(BadRequestException);
+      }
+      expect(() => validateSectionSettings('image_banner', { imageLinkOn: 1 })).toThrow(BadRequestException);
+    });
+
     it('custom_html rejects scripts, iframes, forms, event handlers and javascript: links', () => {
       expect(() => validateSectionSettings('custom_html', { html: '<h2 style="color:red">Hi</h2><p>ok</p>' })).not.toThrow();
       for (const html of ['<script>alert(1)</script>', '<iframe src="https://x"></iframe>', '<form></form>', '<img src=x onerror=alert(1)>', '<a href="javascript:alert(1)">x</a>']) {

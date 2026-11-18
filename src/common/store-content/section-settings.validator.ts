@@ -168,6 +168,12 @@ export function collectDynamicSourceBindings(sections: { type: string; settings?
   return out;
 }
 
+/** "Make the whole image a link" (Image Banner, Image with Text, Multicolumn, Multirow): an on/off switch and where it goes. */
+function assertImageLink(settings: Record<string, any>): void {
+  if (settings.imageLinkOn !== undefined && typeof settings.imageLinkOn !== 'boolean') throw new BadRequestException('imageLinkOn must be true or false');
+  assertLinkTarget(settings.imageLink, 'imageLink');
+}
+
 export function assertLinkTarget(link: unknown, field: string): void {
   if (link === undefined || link === null) return;
   if (typeof link !== 'object') throw new BadRequestException(`${field} is invalid`);
@@ -653,6 +659,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       break;
     }
     case 'image_banner': {
+      assertImageLink(settings);
       if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'settings.imageUrl');
       oneOf(settings.focalPoint, FOCAL_POINTS, 'settings.focalPoint');
       maxLen(settings.subheading, 200, 'settings.subheading');
@@ -884,6 +891,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
 
     // image_with_text section blocks
     case 'image_text_pair':
+      assertImageLink(settings);
       assertHttpsUrl(settings.imageUrl, 'imageUrl');
       maxLen(settings.heading, 120, 'heading');
       assertSafeRichText(settings.body, 'body');
@@ -1006,6 +1014,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
 
     // multicolumn section blocks
     case 'multicolumn_column':
+      assertImageLink(settings);
       if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'imageUrl');
       maxLen(settings.heading, 120, 'heading');
       assertSafeRichText(settings.body, 'body');
@@ -1044,6 +1053,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
     // enable/disable + reorder of an already-real, already-rendered piece
     // of the product page. See `core-sections.util.ts`.
     case 'multirow_row':
+      assertImageLink(settings);
       if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'imageUrl');
       maxLen(settings.heading, 120, 'heading');
       assertSafeRichText(settings.body, 'body');
