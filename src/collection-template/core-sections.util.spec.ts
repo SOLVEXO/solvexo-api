@@ -43,7 +43,7 @@ describe('core-sections.util', () => {
       for (const required of PRODUCT_MAIN_BLOCK_TYPES) expect(types).toContain(required);
       expect((sections[0].blocks as Array<{ type: string; enabled?: boolean }>).filter(b => (PRODUCT_MAIN_BLOCK_TYPES as readonly string[]).includes(b.type)).every(b => b.enabled === true)).toBe(true);
       const enabled = Object.fromEntries(sections[0].blocks.map(b => [b.type, b.enabled]));
-      expect(enabled).toMatchObject({ product_rating: true, product_sku: false, product_wishlist: false, product_share: false, product_specs: false });
+      expect(enabled).toMatchObject({ product_rating: true, product_sku: false, product_wishlist: false, product_share: false, product_specs: true });
       // the rating is seeded right after the title, where it always showed
       expect(types.indexOf('product_rating')).toBe(types.indexOf('product_title') + 1);
     });

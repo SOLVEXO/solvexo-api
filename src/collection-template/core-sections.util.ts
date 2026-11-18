@@ -53,9 +53,9 @@ const PRODUCT_MAIN_OPTIONAL_LABELS: Record<ProductMainOptionalBlockType, string>
   product_share: 'Share button',
   product_specs: 'Specifications',
 };
-/** Only the rating was always on before; the new ones start off. */
+/** The rating was always on before; the SKU, wishlist and share start off. Specifications start ON: a seller who types specs on a product expects the table to show (it draws nothing when a product has none). */
 const PRODUCT_MAIN_OPTIONAL_DEFAULT_ENABLED: Record<ProductMainOptionalBlockType, boolean> = {
-  product_rating: true, product_sku: false, product_wishlist: false, product_share: false, product_specs: false,
+  product_rating: true, product_sku: false, product_wishlist: false, product_share: false, product_specs: true,
 };
 /** Seeded order of the full block list (required + optional). */
 const PRODUCT_MAIN_SEED_ORDER: (ProductMainBlockType | ProductMainOptionalBlockType)[] = [
