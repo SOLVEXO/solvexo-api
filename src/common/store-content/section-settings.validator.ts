@@ -233,7 +233,7 @@ function validateSectionDesignV2(settings: Record<string, any>): void {
   choice('textAlign', ['default', 'left', 'center', 'right'] as const);
   choice('textAlignMobile', ['default', 'left', 'center', 'right'] as const);
   choice('headingWeight', ['default', 'normal', 'medium', 'semibold', 'bold', 'black'] as const);
-  choice('headingCase', ['default', 'uppercase', 'capitalize', 'none'] as const);
+  choice('headingCase', ['default', 'uppercase', 'lowercase', 'capitalize', 'sentence', 'none'] as const);
   choice('animation', ['none', 'fade', 'slide-up', 'slide-left', 'slide-right', 'zoom'] as const);
   choice('animationSpeed', ['fast', 'normal', 'slow'] as const);
 

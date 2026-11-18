@@ -78,6 +78,8 @@ describe('section-settings.validator', () => {
       ok({ textAlign: 'center', textAlignMobile: 'default', headingWeight: 'bold', headingCase: 'none', textColor: '#111111', headingColor: '#222222' });
       bad({ textAlign: 'justify' });
       bad({ headingWeight: 'heavy' });
+      ok({ headingCase: 'lowercase' });
+      ok({ headingCase: 'sentence' });
       bad({ headingCase: 'lower' });
       bad({ textColor: 'blue' });
     });

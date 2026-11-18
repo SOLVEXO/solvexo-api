@@ -59,7 +59,7 @@ export interface BaseSectionSettings {
   textColor?: string | null;
   headingColor?: string | null;
   headingWeight?: 'default' | 'normal' | 'medium' | 'semibold' | 'bold' | 'black';
-  headingCase?: 'default' | 'uppercase' | 'capitalize' | 'none';
+  headingCase?: 'default' | 'uppercase' | 'lowercase' | 'capitalize' | 'sentence' | 'none';
   animation?: 'none' | 'fade' | 'slide-up' | 'slide-left' | 'slide-right' | 'zoom';
   animationSpeed?: 'fast' | 'normal' | 'slow';
   animationDelay?: number | null;
