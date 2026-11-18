@@ -72,6 +72,21 @@ describe('guest draft invoices', () => {
     expect(sent.length).toBe(1);
   });
 
+  it('refuses to invoice a draft that is already marked as paid, and sends nothing', async () => {
+    const { service, sent, draftUpdates } = build({ isPaid: true });
+    await expect(service.sendInvoice('s1', 'sel1', 'd1')).rejects.toThrow('already marked as paid');
+    expect(sent.length).toBe(0);
+    expect(draftUpdates.length).toBe(0); // no pay link was created either
+  });
+
+  it('the invoice goes out with a PDF branded from the store (logo / colour lookups can fail without stopping it)', async () => {
+    const { service, sent } = build();
+    (service as any).databaseService.repositories.storeNotificationSettingsModel = { findOne: () => { throw new Error('settings down'); } };
+    await service.sendInvoice('s1', 'sel1', 'd1');
+    expect(sent.length).toBe(1);
+    expect(sent[0].attachments[0].contentType).toBe('application/pdf');
+  });
+
   // Regression: the address pattern once lost its backslashes and rejected every email that contained the letter "s".
   it('accepts ordinary addresses, including ones with the letter s, dots, plus and digits', async () => {
     for (const email of ['uzairhasan.fsd@gmail.com', 'sara@shop.com', 'Mrs.Stone+orders@sales.example.co.uk', 'user_1@s2.pk', 'ali.hassan@solvexo.store']) {

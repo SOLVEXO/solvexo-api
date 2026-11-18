@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { searchStoreCustomers } from '../common/store-customer-search.util';
 import { emailUiStrings, isRtlLocale } from '../notifications/customer-email-locales';
-import { buildInvoiceItemsHtml, buildInvoicePdf, invoiceNumber } from './draft-order-invoice.util';
+import { buildInvoiceItemsHtml, buildInvoicePdf, fetchInvoiceLogo, invoiceNumber, type InvoiceStore } from './draft-order-invoice.util';
 import { Injectable, BadRequestException, NotFoundException, Optional } from '@nestjs/common';
 import { B2BContextService, type BuyerContext } from '../b2b/b2b-context.service';
 import { buildOrderB2B } from '../b2b/b2b-order.util';
@@ -309,6 +309,8 @@ export class DraftOrdersService {
   async sendInvoice(storeId: string, sellerId: string, id: string) {
     const draft = await this.getOwned(storeId, sellerId, id);
     if (draft.status !== 'open') throw new BadRequestException('Only an open draft order can be invoiced.');
+    // An invoice asks for payment. A draft already marked as paid has nothing to ask for: turn it into an order instead.
+    if (draft.isPaid) throw new BadRequestException('This draft order is already marked as paid, so there is nothing to invoice. Use Complete Order to turn it into an order.');
     // Like Shopify: an invoice can go to a typed-in (guest) email too — the customer account is created
     // when they actually pay (see ensureCustomerForDraft), not before.
     if (!draft.customerEmail) throw new BadRequestException("Add the customer's email address to send the invoice to.");
@@ -342,9 +344,11 @@ export class DraftOrdersService {
       items: draft.items.map((i: any) => ({ name: i.name, options: i.options ?? [], sku: i.sku ?? null, quantity: i.quantity, unitPrice: i.unitPrice })),
       subtotal: draft.subtotal, discountAmount: draft.discountAmount, shippingAmount: draft.shippingAmount, taxAmount: draft.taxAmount, total: draft.total,
       notes: draft.notes, dueText,
+      paid: !!draft.isPaid, paidAt: (draft as any).paidAt ?? null, customerPhone: draft.customerPhone ?? null,
+      address: ((a: any) => (a ? [a.recipientName, a.addressLine1, a.addressLine2, [a.city, a.state, a.zipCode].filter(Boolean).join(', '), a.phoneNumber] : []))((draft as any).shippingAddress),
     };
     let invoicePdf: Buffer | null = null;
-    try { invoicePdf = await buildInvoicePdf(invoiceDraft, { name: (store as any).name }, symbol, invoiceUrl); } catch { /* the mail still goes out without the PDF */ }
+    try { invoicePdf = await buildInvoicePdf(invoiceDraft, await this.invoiceBranding(storeId, store), symbol, invoiceUrl); } catch { /* the mail still goes out without the PDF */ }
     // The store's Customer-notification settings decide on/off, text, sender and reply-to (see NotificationsService).
     const sent = await this.notificationsService.sendCustomerEmail({
       to: draft.customerEmail, storeId, event: 'draft_order_invoice',
@@ -367,6 +371,22 @@ export class DraftOrdersService {
     });
 
     return { success: true, message: 'Invoice sent', data: { invoiceUrl } };
+  }
+
+  /** The store's brand for the invoice PDF: the same logo / accent colour the seller set for their customer emails
+   *  (Settings > Notifications), else the active theme's main colour. Anything that fails just leaves that part out. */
+  private async invoiceBranding(storeId: string, store: any): Promise<InvoiceStore> {
+    const out: InvoiceStore = { name: store.name, contactEmail: store.contactEmail ?? null, contactPhone: store.contactPhone ?? null };
+    try {
+      const r: any = this.repos;
+      const [settings, theme]: any[] = await Promise.all([
+        r.storeNotificationSettingsModel?.findOne({ storeId, isDelete: false }).select('showLogo accentColor').lean(),
+        r.storeThemeModel?.findOne({ storeId, status: 'active' }).select('theme.primaryColor').lean(),
+      ]);
+      out.accent = settings?.accentColor || theme?.theme?.primaryColor || null;
+      if (settings?.showLogo !== false) out.logo = await fetchInvoiceLogo(store.logo);
+    } catch { /* the PDF is branded as far as it can be */ }
+    return out;
   }
 
   /** Called once daily by SchedulerService (`runLocked`) — real automated
