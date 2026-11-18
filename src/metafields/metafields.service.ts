@@ -6,6 +6,7 @@ import { collectDynamicSourceBindings } from '../common/store-content/section-se
 import { CreateDefinitionDto } from './dto/create-definition.dto';
 import { UpdateDefinitionDto } from './dto/update-definition.dto';
 import { SetValuesDto } from './dto/set-values.dto';
+import { ReorderDefinitionsDto } from './dto/reorder-definitions.dto';
 import { importMetafieldDefinitionsCsv } from './metafield-definitions-bulk-import';
 import { MetafieldOwnerResource, MetafieldType } from './schemas/metafield-definition.schema';
 
@@ -70,7 +71,7 @@ export class MetafieldsService {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const filter: Record<string, unknown> = { storeId };
     if (ownerResource) filter.ownerResource = ownerResource;
-    const definitions = await this.definitionModel.find(filter).sort({ createdAt: 1 }).lean();
+    const definitions = await this.definitionModel.find(filter).sort({ position: 1, createdAt: 1 }).lean();
     return { success: true, data: definitions };
   }
 
@@ -78,7 +79,9 @@ export class MetafieldsService {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const existing = await this.definitionModel.findOne({ storeId, ownerResource: dto.ownerResource, namespace: 'custom', key: dto.key });
     if (existing) throw new ConflictException(`A "${dto.key}" field already exists for ${dto.ownerResource}s`);
-    const created = await this.definitionModel.create({ ...dto, storeId, namespace: 'custom' });
+    // New fields go to the end, after every field that already has a place.
+    const position = await this.definitionModel.countDocuments({ storeId, ownerResource: dto.ownerResource });
+    const created = await this.definitionModel.create({ ...dto, storeId, namespace: 'custom', position });
     return { success: true, message: 'Metafield definition created', data: created };
   }
 
@@ -104,6 +107,19 @@ export class MetafieldsService {
       storeId, ownerResource: definition.ownerResource, namespace: definition.namespace, key: definition.key, value: { $nin: ['', null] },
     });
     return { success: true, data: { used: used.length } };
+  }
+
+  /** Saves the order the seller dragged the fields into (first id = first field). Ids of other stores / resources are ignored. */
+  async reorderDefinitions(storeId: string, sellerId: string, dto: ReorderDefinitionsDto) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const own = await this.definitionModel.find({ storeId, ownerResource: dto.ownerResource }).select('_id').lean();
+    const ownIds = new Set(own.map((d: any) => String(d._id)));
+    const ids = [...new Set(dto.ids.filter(id => ownIds.has(String(id))))];
+    // Fields the caller did not list keep their relative order, after the listed ones.
+    const rest = own.map((d: any) => String(d._id)).filter(id => !ids.includes(id));
+    const order = [...ids, ...rest];
+    await this.definitionModel.bulkWrite(order.map((id, i) => ({ updateOne: { filter: { _id: id, storeId, ownerResource: dto.ownerResource }, update: { $set: { position: i } } } })));
+    return { success: true, message: 'Order saved' };
   }
 
   async deleteDefinition(storeId: string, sellerId: string, definitionId: string) {
@@ -135,7 +151,7 @@ export class MetafieldsService {
     // Public reads only expose definitions with Storefronts access enabled
     // (strict true: legacy docs without the field stay private).
     const [definitions, values] = await Promise.all([
-      this.definitionModel.find({ storeId, ownerResource, ...(publicOnly ? { storefrontAccess: true } : {}) }).lean(),
+      this.definitionModel.find({ storeId, ownerResource, ...(publicOnly ? { storefrontAccess: true } : {}) }).sort({ position: 1, createdAt: 1 }).lean(),
       this.valueModel.find({ storeId, ownerResource, ownerId }).lean(),
     ]);
     const valueByKey = new Map(values.map(v => [`${v.namespace}:${v.key}`, v.value]));
@@ -147,6 +163,7 @@ export class MetafieldsService {
       type: def.type,
       required: def.required,
       storefrontAccess: def.storefrontAccess === true,
+      categoryIds: def.categoryIds ?? [],
       value: valueByKey.get(`${def.namespace}:${def.key}`) ?? '',
     }));
     return { success: true, data };

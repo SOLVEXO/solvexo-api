@@ -86,6 +86,15 @@ export class MetafieldDefinition {
   @Prop({ type: Boolean, default: false })
   storefrontAccess: boolean;
 
+  // Which categories this field is for (a product's category or sub-category id). Empty = every product, as before.
+  // Shopify suggests different fields per product category; here the seller picks them.
+  @Prop({ type: [String], default: [] })
+  categoryIds: string[];
+
+  // Where the field sits in the form and on the product page's table (smaller = earlier). Missing (older fields) sorts first, by creation date.
+  @Prop({ type: Number, default: null })
+  position: number | null;
+
   createdAt?: Date;
   updatedAt?: Date;
 }

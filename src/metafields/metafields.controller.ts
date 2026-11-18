@@ -11,6 +11,7 @@ import { MetafieldsService } from './metafields.service';
 import { CreateDefinitionDto } from './dto/create-definition.dto';
 import { UpdateDefinitionDto } from './dto/update-definition.dto';
 import { SetValuesDto } from './dto/set-values.dto';
+import { ReorderDefinitionsDto } from './dto/reorder-definitions.dto';
 import type { MetafieldOwnerResource } from './schemas/metafield-definition.schema';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -49,6 +50,11 @@ export class MetafieldsController {
   @Post(':storeId/definitions')
   createDefinition(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: CreateDefinitionDto) {
     return this.metafieldsService.createDefinition(storeId, actingSellerId(req.user), dto);
+  }
+
+  @Put(':storeId/definitions/reorder')
+  reorderDefinitions(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: ReorderDefinitionsDto) {
+    return this.metafieldsService.reorderDefinitions(storeId, actingSellerId(req.user), dto);
   }
 
   @Patch(':storeId/definitions/:definitionId')

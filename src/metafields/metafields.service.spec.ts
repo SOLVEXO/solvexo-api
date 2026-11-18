@@ -131,3 +131,55 @@ describe('MetafieldsService: deleting a spec and counting where it is used', () 
     await expect(service.getDefinitionUsage(STORE_A, 'sel1', 'd1')).rejects.toThrow('Access denied');
   });
 });
+
+describe('MetafieldsService: field order and categories', () => {
+  const rows = () => [
+    { _id: 'a', storeId: STORE_A, ownerResource: 'product', key: 'size' },
+    { _id: 'b', storeId: STORE_A, ownerResource: 'product', key: 'fabric' },
+    { _id: 'c', storeId: STORE_A, ownerResource: 'product', key: 'season' },
+    { _id: 'x', storeId: STORE_B, ownerResource: 'product', key: 'size' },
+  ];
+  let writes: any[];
+  let created: any[];
+  let service: MetafieldsService;
+  beforeEach(() => {
+    writes = []; created = [];
+    const data = rows();
+    const db = {
+      repositories: {
+        storeModel: { findById: async () => ({ sellerId: 'sel1', isDelete: false }) },
+        metafieldDefinitionModel: {
+          find: (f: any) => ({ select: () => ({ lean: async () => data.filter(r => r.storeId === f.storeId && r.ownerResource === f.ownerResource) }) }),
+          findOne: async () => null,
+          countDocuments: async (f: any) => data.filter(r => r.storeId === f.storeId && r.ownerResource === f.ownerResource).length,
+          create: async (d: any) => { created.push(d); return { _id: 'n', ...d }; },
+          bulkWrite: async (ops: any[]) => { writes.push(...ops); },
+        },
+        metafieldValueModel: {},
+      },
+    } as unknown as DatabaseService;
+    service = new MetafieldsService(db);
+  });
+
+  it('saves the dragged order as positions 0,1,2...', async () => {
+    await service.reorderDefinitions(STORE_A, 'sel1', { ownerResource: 'product', ids: ['c', 'a', 'b'] } as any);
+    expect(writes.map(w => [w.updateOne.filter._id, w.updateOne.update.$set.position])).toEqual([['c', 0], ['a', 1], ['b', 2]]);
+  });
+
+  it('ignores ids of another store, and keeps unlisted fields after the listed ones', async () => {
+    await service.reorderDefinitions(STORE_A, 'sel1', { ownerResource: 'product', ids: ['x', 'b'] } as any);
+    expect(writes.map(w => w.updateOne.filter._id)).toEqual(['b', 'a', 'c']);
+    expect(writes.every(w => w.updateOne.filter.storeId === STORE_A)).toBe(true);
+  });
+
+  it('a new field goes to the end', async () => {
+    await service.createDefinition(STORE_A, 'sel1', { ownerResource: 'product', key: 'care', name: 'Care', type: 'single_line_text_field', categoryIds: ['cat1'] } as any);
+    expect(created[0].position).toBe(3);
+    expect(created[0].categoryIds).toEqual(['cat1']);
+  });
+
+  it('refuses another seller', async () => {
+    (service as any).databaseService.repositories.storeModel.findById = async () => ({ sellerId: 'other', isDelete: false });
+    await expect(service.reorderDefinitions(STORE_A, 'sel1', { ownerResource: 'product', ids: ['a'] } as any)).rejects.toThrow('Access denied');
+  });
+});
