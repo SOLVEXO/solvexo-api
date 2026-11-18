@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { searchStoreCustomers } from '../common/store-customer-search.util';
 import { emailUiStrings, isRtlLocale } from '../notifications/customer-email-locales';
+import { resolveStoreAccent } from '../common/store-brand-accent.util';
 import { buildInvoiceItemsHtml, buildInvoicePdf, fetchInvoiceLogo, invoiceNumber, type InvoiceStore } from './draft-order-invoice.util';
 import { Injectable, BadRequestException, NotFoundException, Optional } from '@nestjs/common';
 import { B2BContextService, type BuyerContext } from '../b2b/b2b-context.service';
@@ -379,11 +380,8 @@ export class DraftOrdersService {
     const out: InvoiceStore = { name: store.name, contactEmail: store.contactEmail ?? null, contactPhone: store.contactPhone ?? null };
     try {
       const r: any = this.repos;
-      const [settings, theme]: any[] = await Promise.all([
-        r.storeNotificationSettingsModel?.findOne({ storeId, isDelete: false }).select('showLogo accentColor').lean(),
-        r.storeThemeModel?.findOne({ storeId, status: 'active' }).select('theme.primaryColor').lean(),
-      ]);
-      out.accent = settings?.accentColor || theme?.theme?.primaryColor || null;
+      const settings: any = await r.storeNotificationSettingsModel?.findOne({ storeId, isDelete: false }).select('showLogo accentColor').lean();
+      out.accent = await resolveStoreAccent(r, storeId, settings?.accentColor);
       if (settings?.showLogo !== false) out.logo = await fetchInvoiceLogo(store.logo);
     } catch { /* the PDF is branded as far as it can be */ }
     return out;
@@ -472,8 +470,15 @@ export class DraftOrdersService {
     if (draft.status !== 'open') throw new BadRequestException('This invoice is no longer open for payment.');
 
     const store = await this.repos.storeModel.findOne({ _id: draft.storeId, isDelete: false }).select('name logo').lean();
+    // the store's brand colour for the pay page (same rule as its customer emails and the PDF)
+    let accentColor: string | null = null;
+    try {
+      const s: any = await (this.repos as any).storeNotificationSettingsModel?.findOne({ storeId: draft.storeId, isDelete: false }).select('accentColor').lean();
+      accentColor = await resolveStoreAccent(this.repos as any, draft.storeId, s?.accentColor);
+    } catch { /* the page then uses the default colour */ }
 
     return {
+      accentColor,
       customerName: draft.customerName,
       storeName: (store as any)?.name ?? 'Store',
       storeLogo: (store as any)?.logo ?? null,

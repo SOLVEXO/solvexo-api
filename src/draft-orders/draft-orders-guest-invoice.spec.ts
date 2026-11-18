@@ -110,6 +110,23 @@ describe('guest draft invoices', () => {
   });
 });
 
+describe('the pay page carries the store brand colour', () => {
+  const publicSetup = (settingsAccent: string | null, themePrimary: string | null) => {
+    const b = build({ invoiceToken: 'tok', status: 'open' });
+    const repos = (b.service as any).databaseService.repositories;
+    repos.draftOrderModel.findOne = () => ({ lean: async () => b.draft });
+    repos.storeNotificationSettingsModel = { findOne: () => ({ select: () => ({ lean: async () => ({ accentColor: settingsAccent }) }) }) };
+    repos.storeThemeModel = { findOne: () => ({ select: () => ({ lean: async () => (themePrimary ? { theme: { primaryColor: themePrimary } } : null) }) }) };
+    return b.service;
+  };
+
+  it('uses the notification colour the seller picked, else the theme colour, else none', async () => {
+    expect(((await publicSetup('#6B2D44', '#0156FF').getPublicInvoice('tok')) as any).accentColor).toBe('#6b2d44');
+    expect(((await publicSetup(null, '#0156FF').getPublicInvoice('tok')) as any).accentColor).toBe('#0156ff');
+    expect(((await publicSetup(null, null).getPublicInvoice('tok')) as any).accentColor).toBeNull();
+  });
+});
+
 describe('ensureCustomerForDraft', () => {
   it('creates a store-scoped customer (lower-cased email, no password) and links the draft', async () => {
     const { service, draft, users, metaUpserts, draftUpdates } = build();
