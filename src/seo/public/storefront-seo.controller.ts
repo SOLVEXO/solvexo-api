@@ -31,7 +31,8 @@ export class StorefrontSeoController {
   async document(@Query('host') host: string, @Query('path') path: string) {
     const [meta, store] = await Promise.all([this.documentMeta(host, path), this.resolveStore(host)]);
     // The tab icon is ONLY the seller's uploaded favicon (never the logo or the platform icon).
-    return (meta as any).redirect ? meta : { ...(meta as any), favicon: (store as any).faviconUrl || null };
+    // `googleSiteVerification`: the seller's Google Merchant / Search Console token, rendered into <head> by the Vercel shell.
+    return (meta as any).redirect ? meta : { ...(meta as any), favicon: (store as any).faviconUrl || null, googleSiteVerification: (store as any).seo?.googleSiteVerification || null };
   }
 
   /** Crawler view of a page, in the language its URL asks for (`/ur/product/x`), with hreflang alternates. */

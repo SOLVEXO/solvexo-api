@@ -167,6 +167,11 @@ export class StoreSeo {
   // only affects that seller's own store's crawling, never another store's.
   @Prop({ type: String, default: null, maxlength: 5000 })
   robotsTxtOverride: string | null;
+
+  // Google site-verification token (the `content` of the verification meta tag), rendered into this store's <head>
+  // for Google Merchant Center / Search Console. Only the token is stored, never markup.
+  @Prop({ type: String, default: null, maxlength: 200 })
+  googleSiteVerification: string | null;
 }
 export const StoreSeoSchema = SchemaFactory.createForClass(StoreSeo);
 

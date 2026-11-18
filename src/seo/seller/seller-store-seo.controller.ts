@@ -10,7 +10,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { actingSellerId } from '@/common/acting-seller-id.util';
 import { StoreSeoService } from '../services/store-seo.service';
-import { UpdateSeoMetaDto } from '../dto/update-seo-meta.dto';
+import { UpdateStoreSeoDto } from '../dto/update-store-seo.dto';
 import { UpdateStoreChecklistItemDto } from '../dto/update-store-checklist.dto';
 import { SeoResponseInterceptor } from '../seo-response.interceptor';
 
@@ -42,7 +42,7 @@ export class SellerStoreSeoController {
 
   @RequirePermission('seo.manage')
   @Patch('store')
-  async updateStoreSeo(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateSeoMetaDto) {
+  async updateStoreSeo(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateStoreSeoDto) {
     await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, actingSellerId(req.user));
     return this.storeSeo.updateStoreSeo(storeId, dto, { id: req.user.userId, role: req.user.role });
   }
