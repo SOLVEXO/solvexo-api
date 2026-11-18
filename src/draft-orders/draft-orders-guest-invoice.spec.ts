@@ -71,6 +71,28 @@ describe('guest draft invoices', () => {
     await service.sendInvoice('s1', 'sel1', 'd1');
     expect(sent.length).toBe(1);
   });
+
+  // Regression: the address pattern once lost its backslashes and rejected every email that contained the letter "s".
+  it('accepts ordinary addresses, including ones with the letter s, dots, plus and digits', async () => {
+    for (const email of ['uzairhasan.fsd@gmail.com', 'sara@shop.com', 'Mrs.Stone+orders@sales.example.co.uk', 'user_1@s2.pk', 'ali.hassan@solvexo.store']) {
+      const { service, sent } = build({ customerEmail: email });
+      const res: any = await service.sendInvoice('s1', 'sel1', 'd1');
+      expect(res.success).toBe(true);
+      expect(sent[0].to).toBe(email);
+    }
+  });
+
+  it('still rejects things that are not email addresses', async () => {
+    for (const email of ['nope', 'a@b', 'a b@c.com', '@c.com', 'a@@c.com', 'a@c.', 'plainly wrong']) {
+      await expect(build({ customerEmail: email }).service.sendInvoice('s1', 'sel1', 'd1')).rejects.toThrow('valid email');
+    }
+  });
+
+  it('a guest with such an address becomes a customer when they pay or when the seller completes the order', async () => {
+    const { service, draft, users } = build({ customerEmail: 'Uzairhasan.FSD@gmail.com' });
+    expect(await service.ensureCustomerForDraft(draft)).toBe('u-new');
+    expect(users[0].email).toBe('uzairhasan.fsd@gmail.com');
+  });
 });
 
 describe('ensureCustomerForDraft', () => {

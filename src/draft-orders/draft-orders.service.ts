@@ -24,7 +24,7 @@ import { FinanceService } from '../finance/finance.service';
 import { CreateDraftOrderDto } from './dto/create-draft-order.dto';
 import { UpdateDraftOrderDto } from './dto/update-draft-order.dto';
 
-const EMAIL_RX = /^[^s@]+@[^s@]+.[^s@]{2,}$/;
+const EMAIL_RX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 function round(n: number) {
   return Math.round(n * 100) / 100;
