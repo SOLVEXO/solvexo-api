@@ -95,6 +95,17 @@ export class MetafieldsService {
     return { success: true, message: 'Metafield definition updated', data: updated };
   }
 
+  /** How many resources (products ...) have a real value for this field: what deleting the field would wipe. Blank values do not count. */
+  async getDefinitionUsage(storeId: string, sellerId: string, definitionId: string) {
+    await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
+    const definition = await this.definitionModel.findOne({ _id: definitionId, storeId });
+    if (!definition) throw new NotFoundException('Metafield definition not found');
+    const used = await this.valueModel.distinct('ownerId', {
+      storeId, ownerResource: definition.ownerResource, namespace: definition.namespace, key: definition.key, value: { $nin: ['', null] },
+    });
+    return { success: true, data: { used: used.length } };
+  }
+
   async deleteDefinition(storeId: string, sellerId: string, definitionId: string) {
     await verifyStoreOwnershipStrict(this.storeModel, storeId, sellerId);
     const definition = await this.definitionModel.findOne({ _id: definitionId, storeId });

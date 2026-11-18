@@ -56,6 +56,11 @@ export class MetafieldsController {
     return this.metafieldsService.updateDefinition(storeId, actingSellerId(req.user), definitionId, dto);
   }
 
+  @Get(':storeId/definitions/:definitionId/usage')
+  getDefinitionUsage(@Req() req: any, @Param('storeId') storeId: string, @Param('definitionId') definitionId: string) {
+    return this.metafieldsService.getDefinitionUsage(storeId, actingSellerId(req.user), definitionId);
+  }
+
   @Delete(':storeId/definitions/:definitionId')
   deleteDefinition(@Req() req: any, @Param('storeId') storeId: string, @Param('definitionId') definitionId: string) {
     return this.metafieldsService.deleteDefinition(storeId, actingSellerId(req.user), definitionId);

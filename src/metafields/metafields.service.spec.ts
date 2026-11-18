@@ -74,3 +74,60 @@ describe('MetafieldsService.assertDynamicSourceBindingsValid (Phase 9)', () => {
     await expect(service.assertDynamicSourceBindingsValid(STORE_A, 'collection', sections)).resolves.toBeUndefined();
   });
 });
+
+describe('MetafieldsService: deleting a spec and counting where it is used', () => {
+  const def = { _id: 'd1', storeId: STORE_A, ownerResource: 'product', namespace: 'custom', key: 'fabric', name: 'Fabric', type: 'single_line_text_field', deleteOne: jest.fn() };
+  let values: any[];
+  let service: MetafieldsService;
+  const build = (definition: any = def) => {
+    values = [
+      { storeId: STORE_A, ownerResource: 'product', ownerId: 'p1', namespace: 'custom', key: 'fabric', value: 'Cotton' },
+      { storeId: STORE_A, ownerResource: 'product', ownerId: 'p2', namespace: 'custom', key: 'fabric', value: 'Silk' },
+      { storeId: STORE_A, ownerResource: 'product', ownerId: 'p3', namespace: 'custom', key: 'fabric', value: '' }, // blank: not "used"
+      { storeId: STORE_A, ownerResource: 'product', ownerId: 'p1', namespace: 'custom', key: 'season', value: 'Winter' }, // another spec
+      { storeId: STORE_B, ownerResource: 'product', ownerId: 'x1', namespace: 'custom', key: 'fabric', value: 'Wool' }, // another store
+    ];
+    const match = (f: any) => (r: any) => r.storeId === f.storeId && r.ownerResource === f.ownerResource && r.namespace === f.namespace && r.key === f.key;
+    const db = {
+      repositories: {
+        storeModel: { findById: async () => ({ sellerId: 'sel1', isDelete: false }) },
+        metafieldDefinitionModel: { findOne: async (f: any) => (definition && f._id === definition._id && f.storeId === definition.storeId ? definition : null) },
+        metafieldValueModel: {
+          distinct: async (field: string, f: any) => [...new Set(values.filter(match(f)).filter(r => !(f.value?.$nin ?? []).includes(r.value)).map((r: any) => r[field]))],
+          deleteMany: jest.fn(async (f: any) => { const before = values.length; values = values.filter(r => !match(f)(r)); return { deletedCount: before - values.length }; }),
+        },
+      },
+    } as unknown as DatabaseService;
+    service = new MetafieldsService(db);
+    return db;
+  };
+
+  it('counts the products that have a real value, ignoring blanks, other specs and other stores', async () => {
+    build();
+    const res: any = await service.getDefinitionUsage(STORE_A, 'sel1', 'd1');
+    expect(res.data.used).toBe(2);
+  });
+
+  it('says 0 when no product has a value, and 404s for a spec of another store', async () => {
+    build();
+    values = [];
+    expect(((await service.getDefinitionUsage(STORE_A, 'sel1', 'd1')) as any).data.used).toBe(0);
+    await expect(service.getDefinitionUsage(STORE_B, 'sel1', 'd1')).rejects.toThrow('not found');
+  });
+
+  it('deleting the spec removes its values everywhere in this store and nothing else', async () => {
+    const db: any = build();
+    await service.deleteDefinition(STORE_A, 'sel1', 'd1');
+    expect((def.deleteOne as any).mock.calls.length).toBe(1);
+    expect(db.repositories.metafieldValueModel.deleteMany.mock.calls.length).toBe(1);
+    expect(values.some(r => r.storeId === STORE_A && r.key === 'fabric')).toBe(false);
+    expect(values.some(r => r.storeId === STORE_A && r.key === 'season')).toBe(true);
+    expect(values.some(r => r.storeId === STORE_B && r.key === 'fabric')).toBe(true);
+  });
+
+  it('refuses another seller', async () => {
+    const db: any = build();
+    db.repositories.storeModel.findById = async () => ({ sellerId: 'someone-else', isDelete: false });
+    await expect(service.getDefinitionUsage(STORE_A, 'sel1', 'd1')).rejects.toThrow('Access denied');
+  });
+});
