@@ -211,7 +211,7 @@ export class CollectionTemplateService implements OnModuleInit {
 
   /** A product template saved before the optional blocks (rating, SKU, wishlist, share, specifications) existed gets them
    *  added to its `product_main` — live and draft, never twice. The rating goes right after the title (where it always
-   *  showed); the others are appended, switched off. */
+   *  showed); the SKU, wishlist and share are appended switched off, the specifications table switched on. */
   private async backfillProductOptionalBlocks(doc: any) {
     let current = doc;
     for (const field of ['sections', 'draft.sections'] as const) {
