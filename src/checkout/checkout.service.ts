@@ -1757,6 +1757,13 @@ export class CheckoutService {
    *  coupon's own store (a coupon never discounts another seller's items in
    *  a mixed-store cart). Replacing an already-applied coupon reverts the
    *  old one first so discounts never compound. */
+  /** True when this buyer already has a (not deleted) order that used this coupon code at this store. */
+  private async hasUsedCouponBefore(userId: string, coupon: any): Promise<boolean> {
+    const filter: any = { userId, couponCode: coupon.code, isDelete: false };
+    if (coupon.storeId) filter['sellerOrders.storeId'] = String(coupon.storeId);
+    return !!(await (this.databaseService.repositories as any).orderModel.exists(filter));
+  }
+
   async applyCoupon(userId: string, body: any) {
     const { checkoutId, code } = body;
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
@@ -1819,6 +1826,11 @@ export class CheckoutService {
       if (!member) throw new BadRequestException('This coupon is not available for your account');
     }
 
+    // "One use per customer": a buyer who already placed an order with this code cannot use it again.
+    if ((coupon as any).oncePerCustomer && (await this.hasUsedCouponBefore(userId, coupon))) {
+      throw new BadRequestException('You have already used this coupon.');
+    }
+
     // Revert any previously-applied coupon first so re-applying (or
     // switching codes) always computes from a clean, undiscounted baseline.
     this.revertCouponFromItems(items);
@@ -1876,6 +1888,13 @@ export class CheckoutService {
       throw new BadRequestException(
         "This coupon can't be combined with the active sale on these items.",
       );
+    }
+    // Minimum quantity of items (counted on the items the coupon can actually discount).
+    if ((coupon as any).minQuantity != null) {
+      const qty = eligibleItems.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+      if (qty < (coupon as any).minQuantity) {
+        throw new BadRequestException(`This coupon requires at least ${(coupon as any).minQuantity} item${(coupon as any).minQuantity === 1 ? '' : 's'} in your cart.`);
+      }
     }
     const eligibleSubtotal = isPlatformCoupon
       ? this.convertedSubtotal(eligibleItems, couponStoreCurrency, checkout.fxSnapshots as any)

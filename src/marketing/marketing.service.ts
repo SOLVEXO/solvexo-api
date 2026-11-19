@@ -55,6 +55,8 @@ export class MarketingService {
       discountValue: dto.discountValue,
       minOrderAmount: dto.minOrderAmount ?? null,
       usageLimit: dto.usageLimit ?? null,
+      minQuantity: dto.minQuantity ?? null,
+      oncePerCustomer: dto.oncePerCustomer === true,
       posEnabled: dto.posEnabled === true,
       customerSegmentId: dto.customerSegmentId ?? null,
       startsAt: dto.startsAt ? new Date(dto.startsAt) : null,
@@ -95,6 +97,8 @@ export class MarketingService {
 
     const filter: any = { storeId, isDelete: false };
     if (query.isActive !== undefined) filter.isActive = query.isActive === 'true';
+    const search = typeof query.search === 'string' ? query.search.trim().slice(0, 60) : '';
+    if (search) filter.code = { $regex: search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
 
     const total = await this.r.couponModel.countDocuments(filter);
     const coupons = await this.r.couponModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
@@ -121,6 +125,8 @@ export class MarketingService {
     if (dto.discountValue !== undefined) update.discountValue = dto.discountValue;
     if (dto.minOrderAmount !== undefined) update.minOrderAmount = dto.minOrderAmount;
     if (dto.usageLimit !== undefined) update.usageLimit = dto.usageLimit;
+    if (dto.minQuantity !== undefined) update.minQuantity = dto.minQuantity;
+    if (dto.oncePerCustomer !== undefined) update.oncePerCustomer = dto.oncePerCustomer;
     if (dto.posEnabled !== undefined) update.posEnabled = dto.posEnabled;
     if (dto.customerSegmentId !== undefined) {
       if (dto.customerSegmentId && !(await this.r.customerSegmentModel.exists({ _id: dto.customerSegmentId, storeId }))) {

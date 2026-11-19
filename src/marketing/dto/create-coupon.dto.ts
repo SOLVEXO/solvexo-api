@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsEnum, IsNumber, IsOptional, IsDateString, IsBoolean, Min } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsNumber, IsOptional, IsDateString, IsBoolean, IsInt, Min } from 'class-validator';
 import { IsMongoId } from 'class-validator';
 
 export class CreateCouponDto {
@@ -34,6 +34,17 @@ export class CreateCouponDto {
   @IsNumber()
   @Min(1)
   usageLimit?: number;
+
+  @ApiProperty({ required: false, description: 'Minimum quantity of items (instead of / as well as a minimum amount)' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  minQuantity?: number | null;
+
+  @ApiProperty({ required: false, description: 'One use per customer' })
+  @IsOptional()
+  @IsBoolean()
+  oncePerCustomer?: boolean;
 
   @ApiProperty({ required: false, description: 'Saved customer segment id — only its members can redeem (null = everyone)' })
   @IsOptional()

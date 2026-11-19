@@ -1939,6 +1939,13 @@ export class PaymentService {
     if (coupon.usageLimit != null && (coupon.usageCount ?? 0) >= coupon.usageLimit) {
       throw new BadRequestException('This coupon has reached its usage limit — remove it to continue.');
     }
+    if (coupon.oncePerCustomer && checkout.userId) {
+      const filter: any = { userId: checkout.userId, couponCode: coupon.code, isDelete: false };
+      if (coupon.storeId) filter['sellerOrders.storeId'] = String(coupon.storeId);
+      if (await (this.databaseService.repositories as any).orderModel.exists(filter)) {
+        throw new BadRequestException('You have already used this coupon — remove it to continue.');
+      }
+    }
   }
 
   /**
