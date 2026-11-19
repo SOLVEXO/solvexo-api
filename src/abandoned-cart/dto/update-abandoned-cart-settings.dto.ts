@@ -1,12 +1,17 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsBoolean, IsOptional, IsNumber, IsString, Min, Max, MaxLength } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsNumber, IsString, Min, Max, MaxLength } from 'class-validator';
 
 export class UpdateAbandonedCartSettingsDto {
   @ApiProperty({ required: false })
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+
+  @ApiProperty({ required: false, enum: ['subscribed', 'all'] })
+  @IsOptional()
+  @IsIn(['subscribed', 'all'])
+  audience?: 'subscribed' | 'all';
 
   @ApiProperty({ required: false, example: 60 })
   @IsOptional()

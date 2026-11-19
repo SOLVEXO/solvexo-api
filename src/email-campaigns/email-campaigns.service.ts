@@ -85,6 +85,38 @@ export class EmailCampaignsService {
     return { success: true, message: 'Campaign', data: campaign };
   }
 
+  /** The campaign's report: delivery, opens, clicks and the links people clicked. Sales come from Growth (the campaign's UTM tag). */
+  async getReport(sellerId: string, storeId: string, campaignId: string) {
+    const campaign: any = await this.getOwnedCampaign(storeId, sellerId, campaignId);
+    const links: { _id: string; clicks: number }[] = await this.r.emailCampaignSendModel.aggregate([
+      { $match: { campaignId: String(campaign._id), clickedUrl: { $ne: null } } },
+      { $group: { _id: '$clickedUrl', clicks: { $sum: 1 } } },
+      { $sort: { clicks: -1 } },
+      { $limit: 10 },
+    ]);
+    const sent = campaign.sentCount ?? 0;
+    const rate = (n: number) => (sent > 0 ? Math.round((n / sent) * 10000) / 100 : 0);
+    return {
+      success: true,
+      data: {
+        _id: String(campaign._id),
+        name: campaign.name,
+        subject: campaign.subject,
+        status: campaign.status,
+        sentAt: campaign.sentAt ?? null,
+        recipients: campaign.recipientCount ?? 0,
+        sent,
+        failed: campaign.failedCount ?? 0,
+        opens: campaign.openCount ?? 0,
+        clicks: campaign.clickCount ?? 0,
+        openRate: rate(campaign.openCount ?? 0),
+        clickRate: rate(campaign.clickCount ?? 0),
+        utmCampaign: slugifyCampaignName(campaign.name),
+        topLinks: links.map((l) => ({ url: l._id, clicks: l.clicks })),
+      },
+    };
+  }
+
   async update(sellerId: string, storeId: string, campaignId: string, dto: UpdateEmailCampaignDto) {
     const campaign = await this.getOwnedCampaign(storeId, sellerId, campaignId);
     if (campaign.status !== 'draft') throw new BadRequestException('Only a draft campaign can be edited');
@@ -489,7 +521,11 @@ export class EmailCampaignsService {
     const campaign: any = send ? await this.r.emailCampaignModel.findById(send.campaignId).select('message name').lean().catch(() => null) : null;
     // Visits that come from an email are tagged (utm_source / medium / campaign) so Growth can credit the sales to it.
     const tag = slugifyCampaignName(campaign?.name ?? '');
-    if (send && target && campaign && campaignLinkTargets(campaign.message).has(target)) return withEmailUtm(target, storeUrl, tag);
+    if (send && target && campaign && campaignLinkTargets(campaign.message).has(target)) {
+      // Remember the first link each recipient clicked (never an arbitrary URL — only one that is in the campaign).
+      await this.r.emailCampaignSendModel.updateOne({ _id: send._id, clickedUrl: null }, { $set: { clickedUrl: target.slice(0, 500) } }).catch(() => undefined);
+      return withEmailUtm(target, storeUrl, tag);
+    }
 
     return storeUrl ? withEmailUtm(storeUrl, storeUrl, tag) : PLATFORM_ORIGIN;
   }

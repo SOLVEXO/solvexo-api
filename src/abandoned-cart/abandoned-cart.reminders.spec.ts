@@ -2,18 +2,20 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
 import { AbandonedCartService } from './abandoned-cart.service';
 import { FakeModel } from '../digital-access/testing/fake-db.kit-spec';
 
-/** First reminder (discount code, plan allowance, unsubscribe) and the optional second reminder. */
+/** First reminder (discount code, who it is sent to, unsubscribe) and the optional second reminder. */
 
 const HOUR = 3_600_000;
 const oid = (i: number) => i.toString(16).padStart(24, '0');
 
-function setup(opts: { room?: number; settings?: any; allowed?: boolean } = {}) {
+function setup(opts: { room?: number; settings?: any; allowed?: boolean; subscribed?: boolean } = {}) {
   const m = {
     checkoutModel: new FakeModel(), storeModel: new FakeModel(), userModel: new FakeModel(), couponModel: new FakeModel(),
     abandonedCartSettingsModel: new FakeModel(), newsletterSubscriberModel: new FakeModel(),
   };
   m.storeModel.rows.push({ _id: 's1', name: 'Shop One', contactEmail: null, isDelete: false });
   m.userModel.rows.push({ _id: 'u1', name: 'Sana', email: 'sana@x.com', isDelete: false });
+  // "Send to: subscribed customers" is the default, so Sana has agreed to marketing emails unless a test says otherwise.
+  if (opts.subscribed !== false) m.newsletterSubscriberModel.rows.push({ storeId: 's1', email: 'sana@x.com', isActive: true });
   if (opts.settings) m.abandonedCartSettingsModel.rows.push({ storeId: 's1', isDelete: false, ...opts.settings });
   const sent: { to: string; subject: string; html: string; headers: any }[] = [];
   const email: any = { sendMail: async (to: string, subject: string, html: string, _r: any, headers: any) => { sent.push({ to, subject, html, headers }); return true; } };
@@ -29,7 +31,7 @@ function setup(opts: { room?: number; settings?: any; allowed?: boolean } = {}) 
 const cart = (over: any = {}) => ({
   _id: oid(1), userId: 'u1', status: 'pending', isDelete: false, recoveredAt: null, items: [{ storeId: 's1', quantity: 1 }],
   abandonedEmailSentAt: null, abandonedSecondEmailSentAt: null, abandonedEmailSuppressedAt: null, abandonedRecoveryToken: null, abandonedEmailStoreId: null,
-  updatedAt: new Date(Date.now() - 2 * HOUR), ...over,
+  updatedAt: new Date(Date.now() - 12 * HOUR), ...over, // older than Shopify's 10 hour default delay
 });
 
 describe('first reminder', () => {
@@ -54,12 +56,36 @@ describe('first reminder', () => {
     expect(k.sent[0].html.includes('/api/abandoned-cart/unsubscribe/')).toBe(true);
     expect(String(k.sent[0].headers?.['List-Unsubscribe'] ?? '').includes('/api/abandoned-cart/unsubscribe/')).toBe(true);
   });
-  it('is not sent when the plan allowance is used up; the checkout stays untouched for a later run', async () => {
+  it('is free: it goes out even when the plan\'s monthly marketing emails are used up', async () => {
     const k = setup({ room: 0 });
     k.m.checkoutModel.rows.push(cart());
     await k.svc.processAbandonedCarts();
+    expect(k.sent.length).toBe(1);
+  });
+  it('default "send to subscribed customers": a shopper who never agreed to marketing is not mailed', async () => {
+    const k = setup({ subscribed: false });
+    k.m.checkoutModel.rows.push(cart());
+    await k.svc.processAbandonedCarts();
     expect(k.sent.length).toBe(0);
-    expect(k.m.checkoutModel.rows[0].abandonedEmailSentAt).toBeNull();
+  });
+  it('"send to all customers" also reaches a shopper who never subscribed', async () => {
+    const k = setup({ subscribed: false, settings: { enabled: true, audience: 'all', delayMinutes: 5, subject: 'Hi', message: 'Back {{cartUrl}}' } });
+    k.m.checkoutModel.rows.push(cart());
+    await k.svc.processAbandonedCarts();
+    expect(k.sent.length).toBe(1);
+  });
+  it('"send to all customers" still never mails someone who unsubscribed', async () => {
+    const k = setup({ subscribed: false, settings: { enabled: true, audience: 'all', delayMinutes: 5, subject: 'Hi', message: 'Back {{cartUrl}}' } });
+    k.m.newsletterSubscriberModel.rows.push({ storeId: 's1', email: 'sana@x.com', isActive: false });
+    k.m.checkoutModel.rows.push(cart());
+    await k.svc.processAbandonedCarts();
+    expect(k.sent.length).toBe(0);
+  });
+  it('waits for Shopify\'s 10 hour default delay', async () => {
+    const k = setup();
+    k.m.checkoutModel.rows.push(cart({ updatedAt: new Date(Date.now() - 2 * HOUR) }));
+    await k.svc.processAbandonedCarts();
+    expect(k.sent.length).toBe(0);
   });
   it('remembers which store the mail counts against', async () => {
     const k = setup();
@@ -112,11 +138,10 @@ describe('second reminder', () => {
     k.m.checkoutModel.rows.push(firstSent(30));
     expect(await k.svc.processSecondReminders()).toBe(0);
   });
-  it('respects the plan allowance', async () => {
+  it('is free too: it is sent even when the plan\'s monthly marketing emails are used up', async () => {
     const k = setup({ settings: on, room: 0 });
     k.m.checkoutModel.rows.push(firstSent(30));
-    expect(await k.svc.processSecondReminders()).toBe(0);
-    expect(k.m.checkoutModel.rows[0].abandonedSecondEmailSentAt).toBeNull();
+    expect(await k.svc.processSecondReminders()).toBe(1);
   });
   it('stops when the plan no longer includes recovery', async () => {
     const k = setup({ settings: on, allowed: false });

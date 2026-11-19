@@ -21,8 +21,13 @@ export class AbandonedCartSettings {
   // A multi-seller cart is evaluated against every participating store's own
   // setting — see AbandonedCartService.processAbandonedCarts — so one
   // seller's shorter delay can trigger the single reminder email sooner.
-  @Prop({ type: Number, default: 60, min: 5 })
+  @Prop({ type: Number, default: 600, min: 5 })
   delayMinutes: number;
+
+  // Who gets the reminder — same choice as Shopify's "To:" field: only customers who agreed to marketing emails (default), or
+  // every shopper who left a checkout (people who unsubscribed are never mailed either way).
+  @Prop({ type: String, enum: ['subscribed', 'all'], default: 'subscribed' })
+  audience: 'subscribed' | 'all';
 
   @Prop({ type: String, default: "You left something in your cart" })
   subject: string;

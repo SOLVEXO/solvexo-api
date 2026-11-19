@@ -326,19 +326,18 @@ export class EntitlementsService {
   }
 
   /**
-   * Marketing emails this store has used this calendar month (UTC): campaign emails (queued), automation emails (welcome, back in
-   * stock, price drop, win-back: delivered ones) and abandoned-cart reminders. Order and account mails are not marketing and not counted.
+   * Marketing emails this store has used this calendar month (UTC): campaign emails (queued) and automation emails (welcome, back in
+   * stock, price drop, win-back: delivered ones). Abandoned-checkout emails are free and not counted (as on Shopify); order and
+   * account mails are not marketing and not counted either.
    */
   async getMonthlyEmailUsage(storeId: string, now = new Date()): Promise<number> {
     const from = startOfMonthUTC(now);
     const r = this.db.repositories as any;
-    const [campaign, automation, abandoned, abandonedSecond] = await Promise.all([
+    const [campaign, automation] = await Promise.all([
       r.emailCampaignSendModel.countDocuments({ storeId, createdAt: { $gte: from } }),
       r.automationSendLogModel ? r.automationSendLogModel.countDocuments({ storeId, delivered: true, createdAt: { $gte: from } }) : 0,
-      r.checkoutModel ? r.checkoutModel.countDocuments({ abandonedEmailStoreId: storeId, abandonedEmailSentAt: { $gte: from } }) : 0,
-      r.checkoutModel ? r.checkoutModel.countDocuments({ abandonedEmailStoreId: storeId, abandonedSecondEmailSentAt: { $gte: from } }) : 0,
     ]);
-    return campaign + automation + abandoned + abandonedSecond;
+    return campaign + automation;
   }
 
   /** How many more marketing emails this store may send this month (0 when the plan has no marketing emails or the allowance is used up). */

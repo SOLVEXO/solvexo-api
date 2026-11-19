@@ -11,6 +11,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { UpdateAbandonedCartSettingsDto } from './dto/update-abandoned-cart-settings.dto';
+import { SendAbandonedCartTestDto } from './dto/send-abandoned-cart-test.dto';
 
 const PLATFORM_ORIGIN = 'https://solvexo.store';
 
@@ -47,6 +48,16 @@ export class AbandonedCartController {
   @Patch(':storeId/settings')
   updateSettings(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: UpdateAbandonedCartSettingsDto) {
     return this.abandonedCartService.updateSettings(actingSellerId(req.user), storeId, dto);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('orders.abandoned_checkouts')
+  @Post(':storeId/test')
+  @HttpCode(200)
+  sendTest(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: SendAbandonedCartTestDto) {
+    return this.abandonedCartService.sendTest(actingSellerId(req.user), storeId, dto?.email);
   }
 
   @ApiBearerAuth()

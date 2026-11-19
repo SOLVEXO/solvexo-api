@@ -39,6 +39,10 @@ export class EmailCampaignSend {
   @Prop({ type: Date, default: null })
   clickedAt: Date | null;
 
+  /** The link this recipient clicked first (only ever a link that is really in the campaign) — for the "top links" report. */
+  @Prop({ type: String, default: null })
+  clickedUrl: string | null;
+
   @Prop({ type: String, default: null })
   error: string | null;
 }

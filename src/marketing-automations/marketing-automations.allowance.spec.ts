@@ -119,8 +119,8 @@ describe('the monthly marketing email count', () => {
     svc.getLimits = async () => ({ emailCampaignsAllowed: true, abandonedCartRecoveryAllowed: true, monthlyEmailSends: 10 });
     return svc as EntitlementsService;
   }
-  it('adds campaigns, delivered automation mails and abandoned-cart reminders of this month', async () => {
-    expect(await counted({ campaigns: 2, automations: 3, abandoned: 4 }).getMonthlyEmailUsage('s1')).toBe(9);
+  it('adds campaigns and delivered automation mails of this month; abandoned-checkout mails are free and not counted', async () => {
+    expect(await counted({ campaigns: 2, automations: 3, abandoned: 4 }).getMonthlyEmailUsage('s1')).toBe(5);
   });
   it('does not count undelivered ones, last month, or another store', async () => {
     expect(await counted({ automations: 1, undelivered: 5, oldMonth: 5, otherStore: 5 }).getMonthlyEmailUsage('s1')).toBe(1);
