@@ -17,6 +17,7 @@ export { ShippingZone, ShippingZoneDocument, ShippingZoneSchema, ShippingProfile
 export { Checkout, CheckoutDocument, CheckoutSchema } from '../checkout/checkout.schema';
 export { Order, OrderDocument, OrderSchema } from '../orders/schemas/order.schema';
 export { CustomerSegment, CustomerSegmentDocument, CustomerSegmentSchema } from '../customer-segments/schemas/customer-segment.schema';
+export { MarketingCampaign, MarketingCampaignDocument, MarketingCampaignSchema } from '../marketing-campaigns/schemas/marketing-campaign.schema';
 export { CourierBooking, CourierBookingDocument, CourierBookingSchema } from '../integrations/couriers/schemas/courier-booking.schema';
 export { OrderPaymentRecord, OrderPaymentRecordDocument, OrderPaymentRecordSchema } from '../orders/schemas/order-payment-record.schema';
 export { SavedReport, SavedReportDocument, SavedReportSchema } from '../analytics/schemas/saved-report.schema';

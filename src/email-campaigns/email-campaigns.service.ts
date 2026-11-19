@@ -13,7 +13,8 @@ import { EmailCampaignAudience, EmailCampaignSegment } from './schemas/email-cam
 import { newsletterUnsubscribeUrl } from '@/newsletter/newsletter-consent.util';
 import { storePublicUrl } from '@/newsletter/marketing-email.util';
 import { EmailService } from '@/otp/services/email.service';
-import { campaignLinkTargets, renderCampaignEmail } from './campaign-email.util';
+import { campaignLinkTargets, renderCampaignEmail, withEmailUtm } from './campaign-email.util';
+import { slugifyCampaignName } from '../marketing-campaigns/marketing-campaigns.service';
 import { SUB_ORDER_SPEND_EXPR } from '../store/customer-spend.util';
 import { pickFields } from '@/common/pick-fields.util';
 
@@ -479,15 +480,17 @@ export class EmailCampaignsService {
       // malformed/unknown id — fall through to the platform default below
     }
 
-    if (send && target) {
-      const campaign = await this.r.emailCampaignModel.findById(send.campaignId).select('message').lean().catch(() => null);
-      if (campaign && campaignLinkTargets((campaign as any).message).has(target)) return target;
-    }
-
     const storeId = send?.storeId;
     // The store's own storefront (custom domain or subdomain) — there is no
     // `/store/:slug` route on the platform site.
     const store = storeId ? await this.r.storeModel.findById(storeId).select('slug customDomain customDomainStatus').lean().catch(() => null) : null;
-    return storePublicUrl(store as any) ?? PLATFORM_ORIGIN;
+    const storeUrl = storePublicUrl(store as any);
+
+    const campaign: any = send ? await this.r.emailCampaignModel.findById(send.campaignId).select('message name').lean().catch(() => null) : null;
+    // Visits that come from an email are tagged (utm_source / medium / campaign) so Growth can credit the sales to it.
+    const tag = slugifyCampaignName(campaign?.name ?? '');
+    if (send && target && campaign && campaignLinkTargets(campaign.message).has(target)) return withEmailUtm(target, storeUrl, tag);
+
+    return storeUrl ? withEmailUtm(storeUrl, storeUrl, tag) : PLATFORM_ORIGIN;
   }
 }

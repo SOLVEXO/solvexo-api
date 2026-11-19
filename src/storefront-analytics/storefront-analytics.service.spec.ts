@@ -16,6 +16,11 @@ describe('storefront analytics utils', () => {
     expect(classifyTrafficSource({ referrerHost: 'blog.example.org' })).toBe('referral');
     expect(classifyTrafficSource({ referrerHost: 'google.com', utmMedium: 'cpc' })).toBe('paid');
     expect(classifyTrafficSource({ utmMedium: 'email' })).toBe('email');
+    // an ad platform's click id means a paid visit even without UTMs; a UTM medium still wins
+    expect(classifyTrafficSource({ clickIdType: 'fbclid' })).toBe('paid');
+    expect(classifyTrafficSource({ clickIdType: 'gclid', referrerHost: 'google.com' })).toBe('paid');
+    expect(classifyTrafficSource({ clickIdType: 'fbclid', utmMedium: 'email' })).toBe('email');
+    expect(classifyTrafficSource({ clickIdType: 'nope' })).toBe('direct');
   });
 
   it('detects device type and bots', () => {

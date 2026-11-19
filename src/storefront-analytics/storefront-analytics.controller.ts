@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Body, Controller, HttpCode, Post, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { IsMongoId, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { IsIn, IsMongoId, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 import { OptionalJwtAuthGuard } from '@/auth/guards/optional-jwt-auth.guard';
 import { StorefrontAnalyticsService } from './storefront-analytics.service';
 
@@ -21,6 +21,9 @@ export class StorefrontPageViewDto {
   @IsOptional() @IsString() @MaxLength(100) utmSource?: string;
   @IsOptional() @IsString() @MaxLength(100) utmMedium?: string;
   @IsOptional() @IsString() @MaxLength(100) utmCampaign?: string;
+  @IsOptional() @IsString() @MaxLength(100) utmTerm?: string;
+  @IsOptional() @IsString() @MaxLength(100) utmContent?: string;
+  @IsOptional() @IsIn(['gclid', 'fbclid', 'ttclid', 'msclkid']) clickIdType?: string;
   @IsOptional() @IsString() @MaxLength(64) timeZone?: string;
 }
 

@@ -4,6 +4,7 @@ import { isValidObjectId } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { isAnalyticsId, markStorefrontSession } from '../common/storefront-session.util';
 import {
+  CLICK_ID_TYPES,
   classifyTrafficSource,
   cleanPath,
   countryFromSignals,
@@ -21,6 +22,10 @@ export interface PageViewInput {
   utmSource?: string;
   utmMedium?: string;
   utmCampaign?: string;
+  utmTerm?: string;
+  utmContent?: string;
+  /** Which ad platform's click id was in the landing URL (the id itself is never stored). */
+  clickIdType?: string;
   timeZone?: string;
 }
 
@@ -134,10 +139,13 @@ export class StorefrontAnalyticsService implements OnModuleInit {
         landingPath: path,
         currentPath: path,
         referrerHost,
-        trafficSource: classifyTrafficSource({ referrerHost, utmMedium: input.utmMedium, utmSource: input.utmSource }),
+        trafficSource: classifyTrafficSource({ referrerHost, utmMedium: input.utmMedium, utmSource: input.utmSource, clickIdType: input.clickIdType }),
         utmSource: clip(input.utmSource),
         utmMedium: clip(input.utmMedium),
         utmCampaign: clip(input.utmCampaign),
+        utmTerm: clip(input.utmTerm),
+        utmContent: clip(input.utmContent),
+        clickIdType: (CLICK_ID_TYPES as readonly string[]).includes(String(input.clickIdType)) ? input.clickIdType : null,
         deviceType: deviceTypeFromUserAgent(signals.userAgent),
         country: countryFromSignals(signals.geoCountry, input.timeZone),
         returningVisitor,

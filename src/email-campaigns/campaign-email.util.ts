@@ -27,6 +27,27 @@ export function trackLinks(html: string, track: (href: string) => string): strin
   return html.replace(/href="(https?:\/\/[^"]+)"/gi, (_m, href: string) => `href="${escapeHtml(track(decodeEntities(href)))}"`);
 }
 
+/**
+ * Adds Shopify-style UTM tags (utm_source / utm_medium / utm_campaign) to a link that points at the store's own storefront, so
+ * the visits and sales an email brings in show up in Growth → Attribution. Links to other sites, and links the seller already
+ * tagged themselves, are left exactly as they are.
+ */
+export function withEmailUtm(url: string, storeUrl: string | null, campaignTag: string): string {
+  if (!storeUrl) return url;
+  try {
+    const u = new URL(url);
+    const own = new URL(storeUrl);
+    if (u.hostname.replace(/^www\./, '') !== own.hostname.replace(/^www\./, '')) return url;
+    if ([...u.searchParams.keys()].some((k) => k.toLowerCase().startsWith('utm_'))) return url;
+    u.searchParams.set('utm_source', 'solvexo_email');
+    u.searchParams.set('utm_medium', 'email');
+    if (campaignTag) u.searchParams.set('utm_campaign', campaignTag);
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 /** Every http(s) link target present in a campaign's HTML — the allow-list
  *  the click-tracking redirect checks against (no open redirect). */
 export function campaignLinkTargets(html: string): Set<string> {
