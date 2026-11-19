@@ -6,7 +6,15 @@ import { CreateCouponDto } from './dto/create-coupon.dto';
 import { UpdateCouponDto } from './dto/update-coupon.dto';
 import { ActiveCampaignForStore } from './campaign-pricing.util';
 import { generateUniqueSlug } from '@/common/slug.util';
-import { importCouponsCsv } from './coupons-bulk-import';
+import { importCouponsCsv } from './coupons-bulk-import';
+
+/**
+ * Platform-wide sale campaigns (admin-created, applied to every store / opt-in by sellers) belong to the marketplace days.
+ * Every seller now runs their own store and sets their own prices, exactly like Shopify, so a platform campaign must not
+ * change a seller's prices or show badges on their products. The campaign code and data are kept; flip this back on only
+ * if a platform-wide sale is ever wanted again.
+ */
+const PLATFORM_SALES_ENABLED = false;
 
 @Injectable()
 export class MarketingService {
@@ -261,7 +269,7 @@ export class MarketingService {
    *  result-set size. */
   async getActiveCampaignsForStores(storeIds: string[]): Promise<Map<string, ActiveCampaignForStore[]>> {
     const map = new Map<string, ActiveCampaignForStore[]>();
-    if (storeIds.length === 0) return map;
+    if (!PLATFORM_SALES_ENABLED || storeIds.length === 0) return map;
 
     const uniqueIds = [...new Set(storeIds)];
     const now = new Date();
@@ -313,6 +321,7 @@ export class MarketingService {
   // physical/digital-only seller's campaign never shows there. Platform-
   // sponsored campaigns are unaffected: they apply store-wide regardless.
   async getPublicActiveCampaigns(storeType?: string) {
+    if (!PLATFORM_SALES_ENABLED) return { success: true, data: [] };
     const now = new Date();
 
     let eligibleStoreIds: string[] | null = null;
