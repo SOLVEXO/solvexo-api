@@ -8,7 +8,6 @@ import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 import { FinanceModule } from '../finance/finance.module';
 import { RedisModule } from '../redis/redis.module';
 import { SeoModule } from '../seo/seo.module';
-import { AdminMarketingModule } from '../admin-marketing/admin-marketing.module';
 import { PromotionsModule } from '../promotions/promotions.module';
 import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 import { AdminFinanceModule } from '../admin-finance/admin-finance.module';
@@ -31,7 +30,7 @@ import { GiftCardsModule } from '../gift-cards/gift-cards.module';
 import { SellerTrustModule } from '../seller-trust/seller-trust.module';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), MerchandisingModule, SubscriptionsModule, FinanceModule, RedisModule, SeoModule, AdminMarketingModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, AnalyticsModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule, AdminAnnouncementsModule, AuthModule, StoreModule, StorePagesModule, GiftCardsModule, MembershipsModule, FbrDiModule, SellerTrustModule],
+  imports: [ScheduleModule.forRoot(), MerchandisingModule, SubscriptionsModule, FinanceModule, RedisModule, SeoModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, AnalyticsModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule, AdminAnnouncementsModule, AuthModule, StoreModule, StorePagesModule, GiftCardsModule, MembershipsModule, FbrDiModule, SellerTrustModule],
   providers: [SchedulerService],
 })
 export class SchedulerModule {}

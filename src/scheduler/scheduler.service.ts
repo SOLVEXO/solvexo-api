@@ -25,7 +25,6 @@ import { TransactionFeeBillingService } from '@/platform-plans/transaction-fee-b
 import { SeoSitemapService } from '@/seo/services/seo-sitemap.service';
 import { SeoMonitoringService } from '@/seo/services/seo-monitoring.service';
 import { SeoAuditService } from '@/seo/services/seo-audit.service';
-import { AdminMarketingService } from '@/admin-marketing/admin-marketing.service';
 import { PromotionsService } from '@/promotions/promotions.service';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
@@ -71,7 +70,6 @@ export class SchedulerService {
     private readonly seoSitemapService: SeoSitemapService,
     private readonly seoMonitoringService: SeoMonitoringService,
     private readonly seoAuditService: SeoAuditService,
-    private readonly adminMarketingService: AdminMarketingService,
     private readonly promotionsService: PromotionsService,
     private readonly exchangeRateService: ExchangeRateService,
     private readonly activityLogService: ActivityLogService,
@@ -417,26 +415,7 @@ export class SchedulerService {
     });
   }
 
-  // Runs every minute (same cadence as activateScheduledProducts above, for
-  // the same reason — a time-based state flip) — moves platform sale
-  // Campaigns whose endDate has passed from 'active' to 'ended' and compacts
-  // the remaining active campaigns' rotation `order` values so there's never
-  // a gap where an expired campaign's slot used to be. This is just the
-  // backstop for when nobody's actively viewing the admin list — the list
-  // read itself (AdminMarketingService.listCampaigns) also self-heals on
-  // every load, which is what actually makes this feel instant rather than
-  // capped at a 1-minute lag.
-  @Cron('* * * * *')
-  async expireCampaigns() {
-    await this.runLocked('campaign-expiry', 50_000, async () => {
-      const result = await this.adminMarketingService.expireCampaigns();
-      if (result.expired > 0) {
-        this.logger.log(`Campaigns expired: ${result.expired} moved to 'ended', rotation order compacted`);
-      }
-    });
-  }
-
-  // Sibling to expireCampaigns() above — activates paid+approved PromotionRequests
+  // Activates paid+approved PromotionRequests
   // whose startAt has arrived, expires ones past endAt, fires the going-live/
   // expiring-soon/expired notifications, and compacts the resulting Banner rows'
   // rotation order for any placement it touched.

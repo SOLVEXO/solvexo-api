@@ -59,24 +59,4 @@ export class MarketingController {
   deleteCoupon(@Req() req: any, @Param('storeId') storeId: string, @Param('couponId') couponId: string) {
     return this.marketingService.deleteCoupon(actingSellerId(req.user), storeId, couponId, req.ip, req.headers['user-agent']);
   }
-
-  // ─── Platform-wide sale campaigns (admin-created, seller opt-in) ────────
-
-  @RequirePermission('marketing.manage')
-  @Get(':storeId/campaigns')
-  getJoinableCampaigns(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.marketingService.getJoinableCampaigns(actingSellerId(req.user), storeId);
-  }
-
-  @RequirePermission('marketing.manage')
-  @Post(':storeId/campaigns/:campaignId/join')
-  joinCampaign(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string) {
-    return this.marketingService.joinCampaign(actingSellerId(req.user), storeId, campaignId, req.ip, req.headers['user-agent']);
-  }
-
-  @RequirePermission('marketing.manage')
-  @Delete(':storeId/campaigns/:campaignId/leave')
-  leaveCampaign(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string) {
-    return this.marketingService.leaveCampaign(actingSellerId(req.user), storeId, campaignId, req.ip, req.headers['user-agent']);
-  }
 }

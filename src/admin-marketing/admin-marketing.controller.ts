@@ -9,9 +9,6 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { AdminMarketingService } from './admin-marketing.service';
-import { CreateCampaignDto } from './dto/create-campaign.dto';
-import { UpdateCampaignDto } from './dto/update-campaign.dto';
-import { UpdateCampaignStatusDto } from './dto/update-campaign-status.dto';
 import { CreatePlatformCouponDto } from './dto/create-platform-coupon.dto';
 import { UpdatePlatformCouponDto } from './dto/update-platform-coupon.dto';
 
@@ -28,38 +25,6 @@ export class AdminMarketingController {
 
   private meta(req: any) {
     return { adminId: req.user.userId, ip: req.ip, userAgent: req.headers['user-agent'] };
-  }
-
-  // ─── Campaigns ───────────────────────────────────────────────────────────
-
-  @RequirePermission('marketing.manage')
-  @Post('campaigns')
-  createCampaign(@Req() req: any, @Body() dto: CreateCampaignDto) {
-    return this.adminMarketingService.createCampaign(dto, this.meta(req));
-  }
-
-  @RequirePermission('marketing.manage')
-  @Get('campaigns')
-  listCampaigns(@Query('status') status?: string) {
-    return this.adminMarketingService.listCampaigns(status);
-  }
-
-  @RequirePermission('marketing.manage')
-  @Put('campaigns/:id')
-  updateCampaign(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateCampaignDto) {
-    return this.adminMarketingService.updateCampaign(id, dto, this.meta(req));
-  }
-
-  @RequirePermission('marketing.manage')
-  @Patch('campaigns/:id/status')
-  setCampaignStatus(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateCampaignStatusDto) {
-    return this.adminMarketingService.setCampaignStatus(id, dto, this.meta(req));
-  }
-
-  @RequirePermission('marketing.manage')
-  @Delete('campaigns/:id')
-  deleteCampaign(@Req() req: any, @Param('id') id: string) {
-    return this.adminMarketingService.deleteCampaign(id, this.meta(req));
   }
 
   // ─── Platform-wide coupons ───────────────────────────────────────────────

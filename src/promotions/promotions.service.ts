@@ -434,14 +434,9 @@ export class PromotionsService {
   }
 
   async calendar(from: Date, to: Date) {
-    const { campaignModel } = this.databaseService.repositories;
-    const [promotions, campaigns] = await Promise.all([
-      this.model.find({ startAt: { $lt: to }, endAt: { $gt: from }, status: { $in: ['approved', 'active'] } })
-        .select('placement storeId startAt endAt priceUSD status').lean(),
-      campaignModel.find({ startDate: { $lt: to }, endDate: { $gt: from }, status: { $ne: 'draft' } })
-        .select('name startDate endDate status').lean(),
-    ]);
-    return { success: true, data: { promotions, campaigns } };
+    const promotions = await this.model.find({ startAt: { $lt: to }, endAt: { $gt: from }, status: { $in: ['approved', 'active'] } })
+      .select('placement storeId startAt endAt priceUSD status').lean();
+    return { success: true, data: { promotions } };
   }
 
   // ── Cron: activation / expiry / expiring-soon notification ─────────────────────

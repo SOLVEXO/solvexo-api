@@ -45,7 +45,6 @@ import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { RedisService } from '@/redis/redis.service';
 import { MarketingService } from '@/marketing/marketing.service';
-import { pickPrimaryCampaignForBadge } from '@/marketing/campaign-pricing.util';
 import { AdminConfigService } from '@/admin-config/admin-config.service';
 import { StoreThemeService } from '../store-theme/store-theme.service';
 import { StorePagesService } from '../store-pages/store-pages.service';
@@ -1565,9 +1564,6 @@ export class StoreService {
   }
 
   private async shapePublicStoreResponse(store: any, visitorIp?: string) {
-    const campaigns = await this.marketingService.getActiveCampaignsForStore(store._id.toString());
-    const primaryCampaign = pickPrimaryCampaignForBadge(campaigns);
-
     const bar = store.announcementBar;
     const now = Date.now();
     const announcementActive = !!bar?.isActive
@@ -1661,14 +1657,6 @@ export class StoreService {
           showIcon: bar.showIcon !== false, device: bar.device ?? 'all', dismissFor: bar.dismissFor ?? 'forever',
           countdownEndAt: bar.countdownEndAt ?? null, linkStyle: bar.linkStyle ?? 'underline', barHeight: bar.barHeight ?? 'md',
         } : null,
-        activeCampaign: primaryCampaign ? {
-          campaignId: primaryCampaign.campaignId,
-          name: primaryCampaign.name,
-          discountType: primaryCampaign.discountType,
-          discountValue: primaryCampaign.discountValue,
-          currency: primaryCampaign.currency,
-          endDate: primaryCampaign.endDate,
-        } : null,
       },
     };
   }
@@ -1676,7 +1664,6 @@ export class StoreService {
   private shapeStoreListItem(
     store: any,
     productCount: number | null = null,
-    activeCampaign: ReturnType<typeof pickPrimaryCampaignForBadge> = null,
   ): any {
     return {
       storeId: store._id,
@@ -1691,14 +1678,6 @@ export class StoreService {
       sellerType: store.sellerType ?? null,
       badges: store.badges ?? [],
       ...(productCount !== null ? { productCount } : {}),
-      activeCampaign: activeCampaign ? {
-        campaignId: activeCampaign.campaignId,
-        name: activeCampaign.name,
-        discountType: activeCampaign.discountType,
-        discountValue: activeCampaign.discountValue,
-        currency: activeCampaign.currency,
-        endDate: activeCampaign.endDate,
-      } : null,
     };
   }
 
@@ -1740,7 +1719,6 @@ export class StoreService {
         ])
       : [];
     const productCountByStore = new Map<string, number>(productCounts.map((r: any) => [r._id, r.count]));
-    const campaignsByStore = await this.marketingService.getActiveCampaignsForStores(storeIds);
 
     return {
       success: true,
@@ -1750,7 +1728,6 @@ export class StoreService {
           this.shapeStoreListItem(
             s,
             productCountByStore.get(s._id.toString()) ?? 0,
-            pickPrimaryCampaignForBadge(campaignsByStore.get(s._id.toString()) ?? []),
           ),
         ),
       },
@@ -1780,13 +1757,11 @@ export class StoreService {
         ])
       : [];
     const productCountByStore = new Map<string, number>(productCounts.map((r: any) => [r._id, r.count]));
-    const campaignsByStore = await this.marketingService.getActiveCampaignsForStores(storeIds);
 
     const shaped = stores.map((s: any) =>
       this.shapeStoreListItem(
         s,
         productCountByStore.get(s._id.toString()) ?? 0,
-        pickPrimaryCampaignForBadge(campaignsByStore.get(s._id.toString()) ?? []),
       ),
     );
     await this.redisService.set(cacheKey, JSON.stringify(shaped), 600);
@@ -2166,20 +2141,6 @@ export class StoreService {
       .select('name isVerified')
       .lean();
 
-    // Every product on this page belongs to the same store, so this is one
-    // lookup for the whole page, not per-product — same active-campaign
-    // resolution checkout pricing uses.
-    const storeCampaigns = await this.marketingService.getActiveCampaignsForStore(storeId);
-    const primaryCampaign = pickPrimaryCampaignForBadge(storeCampaigns);
-    const activeCampaignBadge = primaryCampaign ? {
-      campaignId: primaryCampaign.campaignId,
-      name: primaryCampaign.name,
-      discountType: primaryCampaign.discountType,
-      discountValue: primaryCampaign.discountValue,
-      currency: primaryCampaign.currency,
-      endDate: primaryCampaign.endDate,
-    } : null;
-
     // Category + sub-category names for the product card's info line: one lookup for the whole page.
     const cardCategoryIds = [...new Set(products.flatMap((p: any) => [p.categoryId, p.subCategoryId]).filter(Boolean).map(String).filter((id: string) => /^[a-f0-9]{24}$/i.test(id)))];
     const cardCategoryNames = new Map<string, string>();
@@ -2202,7 +2163,6 @@ export class StoreService {
         stock:               variant?.stock ?? null,
         compareAtPrice:      variant?.compareAtPrice ?? null,
         inStock:             (variantsByProduct.get(p._id.toString()) ?? []).some((v: any) => v.unlimitedStock || v.allowBackorder || availableStock(v) > 0),
-        activeCampaign:      activeCampaignBadge,
       };
       return base;
     });
