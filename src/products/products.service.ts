@@ -18,7 +18,7 @@ import { translatedHandleClause } from '../common/translated-handle.util';
 import { InjectConnection } from '@nestjs/mongoose';
 import { ClientSession, Connection, Types, isValidObjectId } from 'mongoose';
 import {
-  PRODUCT_LIMITS, assertMoney, assertStockQuantity, copySku, findDuplicateSku, generateSkus, normalizeBarcode, normalizeDescription, normalizeShortDescription, normalizeProductTabs,
+  PRODUCT_LIMITS, assertMoney, assertStockQuantity, copySku, findDuplicateSku, generateSkus, normalizeBarcode, normalizeDescription, normalizeShortDescription, normalizeProductTabs, normalizeOptionSwatches,
   normalizeImages, normalizeName, normalizeSku, normalizeStatus, normalizeTags, resolveScheduledAt, normalizeVideoUrl } from './product-input.util';
 import { softDeleteProducts } from './product-cascade.util';
 import { normalizeComplementaryIds } from './complementary-products.util';
@@ -1194,6 +1194,7 @@ export class ProductsService {
             description,
             shortDescription,
             tabs,
+            optionSwatches: normalizeOptionSwatches(body.optionSwatches),
             supplierId: await this.resolveSupplierId(storeId, body.supplierId),
             shippingProfileId,
             ...parseSellingOptions(body),
@@ -1580,6 +1581,7 @@ export class ProductsService {
     if (description !== undefined) productUpdate.description = normalizeDescription(description);
     if (body.shortDescription !== undefined) productUpdate.shortDescription = normalizeShortDescription(body.shortDescription);
     if (body.tabs !== undefined) productUpdate.tabs = normalizeProductTabs(body.tabs);
+    if (body.optionSwatches !== undefined) productUpdate.optionSwatches = normalizeOptionSwatches(body.optionSwatches);
     if (body.supplierId !== undefined) productUpdate.supplierId = await this.resolveSupplierId(String(product.storeId), body.supplierId);
     if (requestedCategoryId !== undefined) {
       productUpdate.categoryId = await this.resolveProductCategoryId(String(product.storeId), null, requestedCategoryId);

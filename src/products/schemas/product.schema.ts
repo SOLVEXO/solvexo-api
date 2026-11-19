@@ -177,6 +177,10 @@ export class Product {
   @Prop({ type: [{ _id: false, title: String, content: String }], default: [] })
   tabs: { title: string; content: string }[];
 
+  /** Seller-chosen swatch colours for option values (Shopify: the colour entry behind a Color value), e.g. { option: 'Color', value: 'Royal Green', color: '#1b5e20' }. */
+  @Prop({ type: [{ _id: false, option: String, value: String, color: String }], default: [] })
+  optionSwatches: { option: string; value: string; color: string }[];
+
   /** Preferred supplier (a Supplier of the same store): reorder suggestions group by it. Never sent to shoppers. */
   @Prop({ type: String, default: null })
   supplierId: string | null;

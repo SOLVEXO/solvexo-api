@@ -65,6 +65,31 @@ export function normalizeProductTabs(raw: unknown): { title: string; content: st
   return out;
 }
 
+/** Seller-chosen swatch colours of option values (Shopify: the colour entry behind a Color value).
+ *  Rows without a colour are dropped; a colour must be a hex code (#rgb or #rrggbb). */
+export function normalizeOptionSwatches(raw: unknown): { option: string; value: string; color: string }[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new BadRequestException('optionSwatches must be a list');
+  if (raw.length > 300) throw new BadRequestException('Too many swatch colours');
+  const out: { option: string; value: string; color: string }[] = [];
+  const seen = new Set<string>();
+  for (const row of raw) {
+    const option = typeof row?.option === 'string' ? row.option.trim() : '';
+    const value = typeof row?.value === 'string' ? row.value.trim() : '';
+    const colorRaw = typeof row?.color === 'string' ? row.color.trim().toLowerCase() : '';
+    if (!option || !value || !colorRaw) continue;
+    if (option.length > 40 || value.length > 60) throw new BadRequestException('Swatch option or value is too long');
+    const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/.exec(colorRaw);
+    if (!m) throw new BadRequestException(`Swatch colour for "${value}" must be a hex code like #1b5e20`);
+    const color = m[1].length === 3 ? '#' + m[1].split('').map((c: string) => c + c).join('') : colorRaw;
+    const key = `${option.toLowerCase()}|${value.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ option, value, color });
+  }
+  return out;
+}
+
 export function normalizeImages(raw: unknown): string[] {
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) throw new BadRequestException('images must be a list of URLs');
