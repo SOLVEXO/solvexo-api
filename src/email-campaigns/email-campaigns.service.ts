@@ -281,7 +281,7 @@ export class EmailCampaignsService {
     const campaign = await this.getOwnedCampaign(storeId, sellerId, campaignId);
     await this.entitlementsService.assertFeatureAllowed(storeId, 'emailCampaignsAllowed', 'Email Campaigns');
     if (!email) throw new BadRequestException('No email address to send the test to');
-    const store = await this.r.storeModel.findById(storeId).select('name slug customDomain customDomainStatus contactEmail').lean();
+    const store = await this.r.storeModel.findById(storeId).select('name slug customDomain customDomainStatus contactEmail mailingAddress').lean();
     const rendered = renderCampaignEmail({
       subject: campaign.subject,
       message: campaign.message,
@@ -290,6 +290,7 @@ export class EmailCampaignsService {
       designed: !!campaign.design,
       ctaUrl: storePublicUrl(store as any),
       unsubscribeUrl: '#',
+      storeAddress: (store as any)?.mailingAddress ?? null,
     });
     const sent = await this.emailService.sendMail(email, `[Test] ${rendered.subject}`, rendered.html, (store as any)?.contactEmail ?? null);
     if (!sent) throw new BadRequestException('The test email could not be sent. Check the email settings and try again.');
@@ -313,7 +314,7 @@ export class EmailCampaignsService {
     // blocks it (processScheduledCampaigns already catches and marks a
     // thrown campaign 'failed', so this needs no extra error handling here).
     await this.entitlementsService.assertFeatureAllowed(campaign.storeId, 'emailCampaignsAllowed', 'Email Campaigns');
-    const store = await this.r.storeModel.findById(campaign.storeId).select('name contactEmail').lean();
+    const store = await this.r.storeModel.findById(campaign.storeId).select('name contactEmail mailingAddress').lean();
     const recipients = await this.resolveAudience(campaign.storeId, campaign.audience, campaign.segment, campaign.segmentId);
 
     if (recipients.length === 0) {
@@ -364,6 +365,7 @@ export class EmailCampaignsService {
         customerName: rcpt.name,
         storeName: (store as any)?.name ?? 'the store',
         storeContactEmail: (store as any)?.contactEmail ?? null,
+        storeAddress: (store as any)?.mailingAddress ?? null,
         designed: !!campaign.design,
         unsubscribeUrl: newsletterUnsubscribeUrl(rcpt.unsubscribeToken),
         subject: campaign.subject,

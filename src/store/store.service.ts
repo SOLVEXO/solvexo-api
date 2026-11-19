@@ -1215,7 +1215,7 @@ export class StoreService {
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
   async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, taxId, taxRegistered, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, floatingContact, customerAccounts, timezone, currencyDisplay, defaultLanguage } = body;
+    const { name, logo, faviconUrl, description, tagline, contactEmail, contactPhone, mailingAddress, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, taxId, taxRegistered, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, floatingContact, customerAccounts, timezone, currencyDisplay, defaultLanguage } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1265,6 +1265,10 @@ export class StoreService {
     if (tagline !== undefined) updateData.tagline = tagline;
     if (contactEmail !== undefined) updateData.contactEmail = contactEmail;
     if (contactPhone !== undefined) updateData.contactPhone = contactPhone;
+    if (mailingAddress !== undefined) {
+      const addr = typeof mailingAddress === 'string' ? mailingAddress.replace(/\s+/g, ' ').trim().slice(0, 300) : '';
+      updateData.mailingAddress = addr || null;
+    }
     if (sellerType !== undefined) updateData.sellerType = sellerType;
     if (codEnabled !== undefined) updateData.codEnabled = !!codEnabled;
     if (paymentCaptureMethod !== undefined) {

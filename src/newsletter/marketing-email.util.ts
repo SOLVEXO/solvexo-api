@@ -34,6 +34,18 @@ export function textToHtml(text: string): string {
     .join('');
 }
 
+/** The seller's postal address as one safe line for a marketing email footer ('' when they have not set one). */
+export function footerAddressHtml(address?: string | null): string {
+  const a = typeof address === 'string' ? address.replace(/\s+/g, ' ').trim() : '';
+  return a ? `<br />${escapeHtml(a)}` : '';
+}
+
+/** A footer reason with the store's postal address after it (for the footers that are built from a plain text reason). */
+export function withAddress(reason: string, address?: string | null): string {
+  const a = typeof address === 'string' ? address.replace(/\s+/g, ' ').trim() : '';
+  return a ? `${reason} ${a}` : reason;
+}
+
 export interface MarketingEmailInput {
   senderName: string;
   heading?: string;

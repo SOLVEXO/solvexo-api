@@ -7,7 +7,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { EmailService } from '@/otp/services/email.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { newsletterUnsubscribeUrl, normalizeEmail } from '@/newsletter/newsletter-consent.util';
-import {
+import { withAddress,
   discountCodeHtml, escapeHtml, formatMoney, productCardHtml, renderMarketingEmail,
   renderMergeTags, storePublicUrl, textToHtml, unsubscribeHeaders,
 } from '@/newsletter/marketing-email.util';
@@ -17,7 +17,7 @@ import { AutomationSettingsShape, resolveAutomationSettings } from './schemas/ma
 const BATCH = 500;
 const MAX_VARIANTS_PER_RUN = 5000;
 
-type StoreLite = { _id: any; name: string; slug?: string; customDomain?: string | null; customDomainStatus?: string; contactEmail?: string | null; baseCurrency?: string | null };
+type StoreLite = { _id: any; name: string; slug?: string; customDomain?: string | null; customDomainStatus?: string; contactEmail?: string | null; baseCurrency?: string | null; mailingAddress?: string | null };
 
 /**
  * Shopify-style marketing automations for one store:
@@ -72,7 +72,7 @@ export class MarketingAutomationsService {
 
   private async loadStore(storeId: string): Promise<StoreLite | null> {
     return (await this.r.storeModel.findOne({ _id: storeId, isDelete: false })
-      .select('name slug customDomain customDomainStatus contactEmail baseCurrency').lean().catch(() => null)) as any;
+      .select('name slug customDomain customDomainStatus contactEmail baseCurrency mailingAddress').lean().catch(() => null)) as any;
   }
 
   async getSettings(storeId: string): Promise<AutomationSettingsShape> {
@@ -228,7 +228,7 @@ export class MarketingAutomationsService {
       ? `<span style="text-decoration:line-through;color:#8b8985">${escapeHtml(text.oldPrice)}</span> &nbsp;<strong>${escapeHtml(text.newPrice)}</strong>`
       : escapeHtml(text.productPrice);
     const subject = renderMergeTags(cfg.subject, text);
-    const reason = 'This is a test of one of your automated emails.';
+    const reason = withAddress('This is a test of one of your automated emails.', store.mailingAddress);
     const html = this.renderDesigned(cfg.html, text, { productImage: this.productImageFragment(imageUrl), priceLine }, reason, '#')
       ?? renderMarketingEmail({
         senderName: store.name,
@@ -276,7 +276,7 @@ export class MarketingAutomationsService {
     const vars = { customerName: customerName || 'there', storeName: store.name };
     const unsubscribeUrl = newsletterUnsubscribeUrl(unsubscribeToken);
     const shopUrl = storePublicUrl(store);
-    const reason = `You're receiving this because you subscribed to emails from ${store.name}.`;
+    const reason = withAddress(`You're receiving this because you subscribed to emails from ${store.name}.`, store.mailingAddress);
     const html = this.renderDesigned(
       settings.welcome.html,
       { ...vars, shopUrl: shopUrl ?? '', discountCode: settings.welcome.discountCode ?? '' },
@@ -427,7 +427,7 @@ export class MarketingAutomationsService {
         const subject = renderMergeTags(settings.backInStock.subject, vars);
         const imageUrl = v.images?.[0] ?? product.images?.[0] ?? null;
         const price = typeof v.price === 'number' ? formatMoney(v.price, v.currency ?? store.baseCurrency) : '';
-        const reason = `You're receiving this because you asked ${store.name} to tell you when this item was back in stock.`;
+        const reason = withAddress(`You're receiving this because you asked ${store.name} to tell you when this item was back in stock.`, store.mailingAddress);
         const html = this.renderDesigned(
           settings.backInStock.html,
           { ...vars, productUrl: productUrl ?? '', shopUrl: base ?? '', productPrice: price },
@@ -562,7 +562,7 @@ export class MarketingAutomationsService {
       const subject = renderMergeTags(settings.priceDrop.subject, personal);
       const imageUrl = v.images?.[0] ?? product.images?.[0] ?? null;
       const priceLine = `<span style="text-decoration:line-through;color:#8b8985">${escapeHtml(vars.oldPrice)}</span> &nbsp;<strong>${escapeHtml(vars.newPrice)}</strong>`;
-      const reason = `You're receiving this because this item is on your wishlist at ${store.name} and you subscribed to its emails.`;
+      const reason = withAddress(`You're receiving this because this item is on your wishlist at ${store.name} and you subscribed to its emails.`, store.mailingAddress);
       const html = this.renderDesigned(
         settings.priceDrop.html,
         { ...personal, productUrl: productUrl ?? '', shopUrl: base ?? '', productPrice: vars.newPrice },
@@ -654,7 +654,7 @@ export class MarketingAutomationsService {
       const vars = { customerName: u.name || 'there', storeName: store.name };
       const unsubscribeUrl = newsletterUnsubscribeUrl(token);
       const subject = renderMergeTags(settings.winBack.subject, vars);
-      const reason = `You're receiving this because you subscribed to emails from ${store.name}.`;
+      const reason = withAddress(`You're receiving this because you subscribed to emails from ${store.name}.`, store.mailingAddress);
       const html = this.renderDesigned(
         settings.winBack.html,
         { ...vars, shopUrl: shopUrl ?? '', discountCode: settings.winBack.discountCode ?? '' },

@@ -473,6 +473,10 @@ export class Store {
   contactEmail!: string | null;
   @Prop({ type: String, default: null })
   contactPhone!: string | null;
+  // The postal address printed in the footer of every marketing email (CAN-SPAM / GDPR style rules ask for one). Typed by the
+  // seller in Settings → General; deliberately NOT the private business address collected for seller verification.
+  @Prop({ type: String, default: null, maxlength: 300 })
+  mailingAddress!: string | null;
 
   // Was a hardcoded module constant (10) in InventoryService — every store
   // saw the exact same low-stock cutoff regardless of what "low" actually

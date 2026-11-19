@@ -9,7 +9,7 @@ import { randomBytes } from 'crypto';
 import { UpdateAbandonedCartSettingsDto } from './dto/update-abandoned-cart-settings.dto';
 
 import { API_PUBLIC_ORIGIN } from '@/common/api-origin';
-import { discountCodeHtml, escapeHtml, storePublicUrl, textToHtml, unsubscribeHeaders } from '@/newsletter/marketing-email.util';
+import { discountCodeHtml, escapeHtml, footerAddressHtml, storePublicUrl, textToHtml, unsubscribeHeaders } from '@/newsletter/marketing-email.util';
 import { signMarketingOptOutToken, verifyMarketingOptOutToken } from '@/common/marketing-optout-token.util';
 import { pickFields } from '@/common/pick-fields.util';
 
@@ -102,14 +102,14 @@ export class AbandonedCartService {
     await this.verifyStoreOwnership(storeId, sellerId);
     await this.entitlementsService.assertFeatureAllowed(storeId, 'abandonedCartRecoveryAllowed', 'Abandoned Cart Recovery');
     const settings: any = await this.getOrDefaultSettings(storeId);
-    const store: any = await this.r.storeModel.findById(storeId).select('name contactEmail slug customDomain customDomainStatus').lean();
+    const store: any = await this.r.storeModel.findById(storeId).select('name contactEmail slug customDomain customDomainStatus mailingAddress').lean();
     const to = String(email ?? '').trim() || store?.contactEmail || '';
     if (!to) throw new BadRequestException('Enter an email address to send the test to.');
     const storeName = store?.name ?? 'the store';
     const customerName = 'Alex';
     const { html } = this.buildRecoveryMail({
       template: settings.message, customerName, storeName, cartUrl: storePublicUrl(store) ?? 'https://solvexo.store',
-      storeId, email: to, discountCode: settings.discountCode ?? null,
+      storeId, email: to, discountCode: settings.discountCode ?? null, storeAddress: store?.mailingAddress ?? null,
     });
     const subject = this.renderTemplate(settings.subject, { customerName, storeName });
     // No List-Unsubscribe header: a test is not a real marketing send.
@@ -318,7 +318,7 @@ export class AbandonedCartService {
         // Abandoned-checkout emails are free: they do not use up the plan's monthly marketing emails (same as Shopify).
         const tickStore = String(trigger.storeId);
 
-        const store = await this.r.storeModel.findById(trigger.storeId).select('name contactEmail').lean();
+        const store = await this.r.storeModel.findById(trigger.storeId).select('name contactEmail mailingAddress').lean();
         const token = randomBytes(16).toString('hex');
         // `s` = the store whose cart the buyer should land on (checked against the checkout's own items when the link is clicked).
         const cartUrl = `${API_PUBLIC_ORIGIN}/api/abandoned-cart/click/${token}?s=${encodeURIComponent(String(trigger.storeId))}`;
@@ -335,7 +335,7 @@ export class AbandonedCartService {
         const subject = this.renderTemplate(trigger.subject, { customerName, storeName });
         // The template is plain text typed by the seller and the buyer's name is buyer-controlled, so the whole message is escaped.
         const discountCode: string | null = (trigger as any).discountCode ?? null;
-        const { html, unsubscribeUrl } = this.buildRecoveryMail({ template: trigger.message, customerName, storeName, cartUrl, storeId: String(trigger.storeId), email, discountCode });
+        const { html, unsubscribeUrl } = this.buildRecoveryMail({ template: trigger.message, customerName, storeName, cartUrl, storeId: String(trigger.storeId), email, discountCode, storeAddress: (store as any)?.mailingAddress ?? null });
         const sent = await this.emailService.sendMail(
           email,
           subject,
@@ -368,14 +368,14 @@ export class AbandonedCartService {
 
   /** The reminder's HTML: the seller's text (escaped: it is plain text and the buyer's name is buyer-controlled), the optional
    *  discount code, a button back to the cart, and the one-click unsubscribe footer every marketing-type mail carries. */
-  private buildRecoveryMail(a: { template: string; customerName: string; storeName: string; cartUrl: string; storeId: string; email: string; discountCode: string | null }) {
+  private buildRecoveryMail(a: { template: string; customerName: string; storeName: string; cartUrl: string; storeId: string; email: string; discountCode: string | null; storeAddress?: string | null }) {
     const message = textToHtml(this.renderTemplate(a.template, { customerName: a.customerName, storeName: a.storeName, cartUrl: a.cartUrl, discountCode: a.discountCode ?? '' }));
     const unsubscribeUrl = `${API_PUBLIC_ORIGIN}/api/abandoned-cart/unsubscribe/${signMarketingOptOutToken(a.storeId, a.email)}`;
     const html = `<div style="font-family:sans-serif;max-width:520px">
             ${message}
             ${a.discountCode ? discountCodeHtml(a.discountCode) : ''}
             <p style="margin-top:24px"><a href="${a.cartUrl}" style="background:#141413;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block">Return to your cart</a></p>
-            <p style="margin-top:28px;padding-top:14px;border-top:1px solid #eee;color:#888;font-size:12px">You got this because you started a checkout at ${escapeHtml(a.storeName)}. <a href="${unsubscribeUrl}" style="color:#888">Unsubscribe</a> if you do not want reminders like this.</p>
+            <p style="margin-top:28px;padding-top:14px;border-top:1px solid #eee;color:#888;font-size:12px">You got this because you started a checkout at ${escapeHtml(a.storeName)}. ${footerAddressHtml(a.storeAddress)} <a href="${unsubscribeUrl}" style="color:#888">Unsubscribe</a> if you do not want reminders like this.</p>
           </div>`;
     return { html, unsubscribeUrl };
   }
@@ -427,13 +427,13 @@ export class AbandonedCartService {
       );
       if (claim.modifiedCount === 0) return 0;
 
-      const store: any = await this.r.storeModel.findById(storeId).select('name contactEmail').lean();
+      const store: any = await this.r.storeModel.findById(storeId).select('name contactEmail mailingAddress').lean();
       const customerName = user.name ?? 'there';
       const storeName = store?.name ?? 'the store';
       // The click link keeps the first mail's token, so a click from either mail is tracked on the same checkout.
       const cartUrl = `${API_PUBLIC_ORIGIN}/api/abandoned-cart/click/${checkout.abandonedRecoveryToken}?s=${encodeURIComponent(storeId)}`;
       const subject = this.renderTemplate(settings.secondSubject, { customerName, storeName });
-      const { html, unsubscribeUrl } = this.buildRecoveryMail({ template: settings.secondMessage, customerName, storeName, cartUrl, storeId, email, discountCode: settings.discountCode ?? null });
+      const { html, unsubscribeUrl } = this.buildRecoveryMail({ template: settings.secondMessage, customerName, storeName, cartUrl, storeId, email, discountCode: settings.discountCode ?? null, storeAddress: store?.mailingAddress ?? null });
       const ok = await this.emailService.sendMail(email, subject, html, store?.contactEmail ?? null, unsubscribeHeaders(unsubscribeUrl), undefined, store?.name ?? null);
       if (!ok) {
         await this.r.checkoutModel.updateOne({ _id: checkout._id }, { $set: { abandonedSecondEmailSentAt: null } });

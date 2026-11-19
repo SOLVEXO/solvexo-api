@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { escapeHtml, renderMergeTags } from '@/newsletter/marketing-email.util';
+import { escapeHtml, footerAddressHtml, renderMergeTags } from '@/newsletter/marketing-email.util';
 
 export interface CampaignEmailInput {
   subject: string;
@@ -15,6 +15,8 @@ export interface CampaignEmailInput {
   trackLink?: ((href: string) => string) | null;
   openPixelUrl?: string | null;
   unsubscribeUrl?: string | null;
+  /** The store's mailing address, printed in the footer. */
+  storeAddress?: string | null;
 }
 
 function decodeEntities(s: string): string {
@@ -69,7 +71,7 @@ export function renderCampaignEmail(input: CampaignEmailInput): { subject: strin
 
   const footer = input.unsubscribeUrl
     ? `<p style="margin:${input.designed ? '0 auto' : '32px 0 0'};max-width:600px;padding:16px 12px;${input.designed ? '' : 'border-top:1px solid #eee;'}color:#888;font-size:12px;text-align:center;font-family:sans-serif">
-          You're receiving this because you subscribed to emails from ${storeName}.<br />
+          You're receiving this because you subscribed to emails from ${storeName}.${footerAddressHtml(input.storeAddress)}<br />
           <a href="${input.unsubscribeUrl}" style="color:#888">Unsubscribe</a>
         </p>` : '';
   const pixel = input.openPixelUrl ? `<img src="${input.openPixelUrl}" width="1" height="1" alt="" style="display:none" />` : '';
