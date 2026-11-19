@@ -12,9 +12,13 @@ describe('starter home page for a new store', () => {
     expect(filterSectionsToTheme(sections, 'theme-03-fashion')).toHaveLength(sections.length);
   });
 
-  it('is a real, designed page: banner, trust row, new arrivals, best sellers, sign-up', () => {
-    expect(sections.map(s => s.type)).toEqual(['image_banner', 'trust_badges', 'featured_products', 'featured_products', 'newsletter']);
-    expect(sections.filter(s => s.type === 'featured_products').map(s => s.settings.source)).toEqual(['newArrivals', 'bestsellers']);
+  it('only holds what the seller must fill in: a banner and one empty hand-picked slot (no auto lists)', () => {
+    expect(sections.map(s => s.type)).toEqual(['image_banner', 'featured_products']);
+    const featured = sections.filter(s => s.type === 'featured_products');
+    expect(featured.map(s => s.settings.source)).toEqual(['manual']);
+    expect((featured[0].settings as any).productIds).toEqual([]);
+    const text = JSON.stringify(sections);
+    for (const auto of ['bestsellers', 'newArrivals', 'trending', 'onSale']) expect(text).not.toContain(auto);
   });
 
   it('never ships an image the seller did not choose, or invented claims like free shipping', () => {

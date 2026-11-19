@@ -438,7 +438,7 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       if (s.source === 'category') required(s.categoryId, 'settings.categoryId');
       if (s.source === 'collection') required(s.collectionId, 'settings.collectionId');
       // Hand-picked (or the older pin list): an empty pick is allowed while the
-      // seller is still choosing (falls back to the store pins, else nothing).
+      // seller is still choosing: the section then shows nothing on the storefront (never "all products").
       if (s.productIds !== undefined && s.productIds !== null) {
         if (!Array.isArray(s.productIds) || s.productIds.some((id: unknown) => typeof id !== 'string')) {
           throw new BadRequestException('settings.productIds must be a list of product ids');
