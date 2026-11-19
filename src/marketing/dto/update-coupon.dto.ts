@@ -24,7 +24,7 @@ export class UpdateCouponDto {
   @IsOptional()
   @IsNumber()
   @Min(0)
-  minOrderAmount?: number;
+  minOrderAmount?: number | null;
 
   @ApiProperty({ required: false, description: 'G2.4: honour this coupon at the POS till' })
   @IsOptional()
@@ -35,7 +35,7 @@ export class UpdateCouponDto {
   @IsOptional()
   @IsNumber()
   @Min(1)
-  usageLimit?: number;
+  usageLimit?: number | null;
 
   @ApiProperty({ required: false, description: 'Saved customer segment id — only its members can redeem (null = everyone)' })
   @IsOptional()
@@ -45,12 +45,12 @@ export class UpdateCouponDto {
   @ApiProperty({ required: false })
   @IsOptional()
   @IsDateString()
-  startsAt?: string;
+  startsAt?: string | null;
 
   @ApiProperty({ required: false })
   @IsOptional()
   @IsDateString()
-  expiresAt?: string;
+  expiresAt?: string | null;
 
   @ApiProperty({ required: false })
   @IsOptional()

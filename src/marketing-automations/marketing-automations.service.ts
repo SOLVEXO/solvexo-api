@@ -15,6 +15,7 @@ import { AutomationType } from './schemas/automation-send-log.schema';
 import { AutomationSettingsShape, resolveAutomationSettings } from './schemas/marketing-automation-settings.schema';
 
 const BATCH = 500;
+const MAX_VARIANTS_PER_RUN = 5000;
 
 type StoreLite = { _id: any; name: string; slug?: string; customDomain?: string | null; customDomainStatus?: string; contactEmail?: string | null; baseCurrency?: string | null };
 
@@ -385,10 +386,15 @@ export class MarketingAutomationsService {
 
   async processBackInStock(): Promise<{ notified: number }> {
     this.startRun();
-    const variantIds: string[] = (await this.r.backInStockRequestModel.distinct('variantId', { status: 'pending' })).slice(0, BATCH).map(String);
-    if (variantIds.length === 0) return { notified: 0 };
-
-    const variants = await this.r.productVariantModel.find({ _id: { $in: variantIds } }).lean();
+    // Every pending variant is looked at (in chunks), not just the first BATCH — otherwise a few variants that stay out of stock
+    // (or belong to a store with the automation off) would sit at the front forever and starve everyone after them.
+    const pendingIds: string[] = (await this.r.backInStockRequestModel.distinct('variantId', { status: 'pending' })).map(String);
+    if (pendingIds.length === 0) return { notified: 0 };
+    const variants: any[] = [];
+    for (let i = 0; i < pendingIds.length && variants.length < MAX_VARIANTS_PER_RUN; i += BATCH) {
+      const chunk = await this.r.productVariantModel.find({ _id: { $in: pendingIds.slice(i, i + BATCH) } }).lean();
+      for (const v of chunk as any[]) if (this.isSellable(v)) variants.push(v);
+    }
     let notified = 0;
     const storeCache = new Map<string, { store: StoreLite | null; settings: AutomationSettingsShape }>();
 
@@ -488,14 +494,17 @@ export class MarketingAutomationsService {
 
     // A malformed id would make the whole $in query throw a CastError.
     const variantIds: string[] = (await this.r.wishListModel.distinct('productVariantId', { storeId }))
-      .map(String).filter((id) => isValidObjectId(id)).slice(0, BATCH);
+      .map(String).filter((id) => isValidObjectId(id));
     if (variantIds.length === 0) return 0;
+    let notified = 0;
+    // Worked through in chunks so a store with more than BATCH wishlisted variants is not stuck on the first BATCH.
+    for (let offset = 0; offset < variantIds.length; offset += BATCH) {
+    const chunkIds = variantIds.slice(offset, offset + BATCH);
     const [variants, snapshots] = await Promise.all([
-      this.r.productVariantModel.find({ _id: { $in: variantIds }, isDelete: { $ne: true } }).lean(),
-      this.r.priceSnapshotModel.find({ variantId: { $in: variantIds } }).lean(),
+      this.r.productVariantModel.find({ _id: { $in: chunkIds }, isDelete: { $ne: true } }).lean(),
+      this.r.priceSnapshotModel.find({ variantId: { $in: chunkIds } }).lean(),
     ]);
     const snapshotByVariant = new Map(snapshots.map((s: any) => [s.variantId, s.price as number]));
-    let notified = 0;
 
     for (const v of variants as any[]) {
       const variantId = String(v._id);
@@ -520,6 +529,7 @@ export class MarketingAutomationsService {
       // Not everyone was reached because the month's allowance ran out: keep the old price as the baseline, so the next run
       // (when there is room again) finishes the job. People who already got it are skipped by the dedupe log.
       if (!ranOutOfRoom) await this.r.priceSnapshotModel.updateOne({ variantId }, { $set: { price } });
+    }
     }
     return notified;
   }

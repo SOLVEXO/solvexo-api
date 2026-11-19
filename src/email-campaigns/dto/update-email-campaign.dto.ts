@@ -23,6 +23,7 @@ export class UpdateEmailCampaignDto {
   @ApiProperty({ required: false })
   @IsOptional()
   @IsString()
+  @MaxLength(500_000)
   message?: string;
 
   @ApiProperty({ required: false, enum: ['all', 'buyers', 'abandoned'] })

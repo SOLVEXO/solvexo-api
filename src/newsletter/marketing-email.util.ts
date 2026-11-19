@@ -97,3 +97,17 @@ export function formatMoney(amount: number, currency?: string | null): string {
     return `${code} ${amount.toFixed(2)}`;
   }
 }
+
+
+/**
+ * The page an unsubscribe link opens. The link itself must not unsubscribe anyone: mail scanners and link
+ * previewers open every URL in a message, which would silently unsubscribe the customer. The person confirms
+ * with a button (a POST back to the same address; "?page=1" asks for an HTML answer instead of the JSON one
+ * that Gmail/Yahoo one-click unsubscribe expects).
+ */
+export function unsubscribeConfirmPageHtml(storeName: string): string {
+  const name = escapeHtml(storeName);
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="robots" content="noindex"><title>Unsubscribe</title>
+<style>body{font-family:'Segoe UI',Tahoma,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f8f9fa;color:#333}.card{background:#fff;border-radius:10px;padding:40px;box-shadow:0 2px 4px rgba(0,0,0,.1);text-align:center;max-width:420px}h1{font-size:20px;margin:0 0 8px}p{margin:0 0 20px}button{background:#111;color:#fff;border:0;border-radius:8px;padding:12px 24px;font-size:15px;cursor:pointer}</style></head>
+<body><div class="card"><h1>Unsubscribe from ${name}?</h1><p>You will stop getting marketing emails from ${name}.</p><form method="post" action="?page=1"><button type="submit">Unsubscribe</button></form></div></body></html>`;
+}

@@ -43,7 +43,7 @@ d('email campaigns (real Mongo, direct calls)', () => {
     svc.db = { repositories: repos };
     svc.entitlementsService = { assertFeatureAllowed: async () => undefined };
     svc.activityLogService = { log: () => undefined };
-    svc.queue = { add: async (_n: string, data: any, opts: any) => { queued.push({ data, opts }); } };
+    svc.queue = { addBulk: async (jobs: any[]) => { for (const j of jobs) queued.push({ data: j.data, opts: j.opts }); } };
     svc.customerSegments = { resolveMembers: async () => null };
     svc.logger = { warn: () => undefined, log: () => undefined };
     svc.applySegment = async (_s: string, r: any) => r;

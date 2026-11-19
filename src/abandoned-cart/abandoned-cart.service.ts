@@ -11,6 +11,9 @@ import { UpdateAbandonedCartSettingsDto } from './dto/update-abandoned-cart-sett
 import { API_PUBLIC_ORIGIN } from '@/common/api-origin';
 import { discountCodeHtml, escapeHtml, storePublicUrl, textToHtml, unsubscribeHeaders } from '@/newsletter/marketing-email.util';
 import { signMarketingOptOutToken, verifyMarketingOptOutToken } from '@/common/marketing-optout-token.util';
+import { pickFields } from '@/common/pick-fields.util';
+
+const ABANDONED_CART_FIELDS = ['enabled', 'delayMinutes', 'subject', 'message', 'discountCode', 'secondReminderEnabled', 'secondReminderDelayHours', 'secondSubject', 'secondMessage'] as const;
 const DEFAULT_SETTINGS = { enabled: true, delayMinutes: 60, subject: 'You left something in your cart', message: "Hi {{customerName}}, you still have items waiting in your cart at {{storeName}}. Complete your order before they're gone: {{cartUrl}}" };
 const SECOND_DEFAULTS = { discountCode: null as string | null, secondReminderEnabled: false, secondReminderDelayHours: 24, secondSubject: 'Still thinking it over?', secondMessage: 'Hi {{customerName}}, your cart at {{storeName}} is still waiting for you. This is our last reminder: {{cartUrl}}' };
 const BATCH_SIZE = 200; // max emails sent per cron tick — never let one runaway backlog block the lock for too long
@@ -82,14 +85,14 @@ export class AbandonedCartService {
     if (dto.enabled === true) {
       await this.entitlementsService.assertFeatureAllowed(storeId, 'abandonedCartRecoveryAllowed', 'Abandoned Cart Recovery');
     }
-    const changes: Record<string, any> = { ...dto };
+    const changes: Record<string, any> = pickFields(dto, ABANDONED_CART_FIELDS);
     if ('discountCode' in dto) changes.discountCode = await this.validateDiscountCode(storeId, dto.discountCode);
     // DEFAULT_SETTINGS only fills fields the seller has not set; a field in this very update must not also be a default.
     const defaults: Record<string, any> = { ...DEFAULT_SETTINGS };
     for (const k of Object.keys(changes)) delete defaults[k];
     const settings = await this.r.abandonedCartSettingsModel.findOneAndUpdate(
       { storeId },
-      { $set: { storeId, ...changes }, $setOnInsert: defaults },
+      { $set: { ...changes, storeId }, $setOnInsert: defaults },
       { new: true, upsert: true },
     );
     return { success: true, message: 'Abandoned cart settings updated', data: settings };
@@ -152,18 +155,26 @@ export class AbandonedCartService {
     await this.verifyStoreOwnership(storeId, sellerId);
     const baseFilter = { isDelete: false, 'items.storeId': storeId };
 
-    const [abandoned, sent, clicked, recoveredDocs] = await Promise.all([
+    const [abandoned, sent, clicked, recoveredCount, recoveredAgg] = await Promise.all([
       this.r.checkoutModel.countDocuments({ ...baseFilter, status: { $in: ['pending', 'payment_pending', 'expired'] } }),
       this.r.checkoutModel.countDocuments({ ...baseFilter, abandonedEmailSentAt: { $ne: null } }),
       this.r.checkoutModel.countDocuments({ ...baseFilter, abandonedClickedAt: { $ne: null } }),
-      this.r.checkoutModel.find({ ...baseFilter, recoveredAt: { $ne: null } }).select('totalAmount').lean(),
+      this.r.checkoutModel.countDocuments({ ...baseFilter, recoveredAt: { $ne: null } }),
+      // THIS store's own items only, in the store's own currency (item.totalPrice). Checkout.totalAmount is in the buyer's checkout
+      // currency (and includes other sellers' items), so summing it mixed currencies and inflated the number.
+      this.r.checkoutModel.aggregate([
+        { $match: { ...baseFilter, recoveredAt: { $ne: null } } },
+        { $unwind: '$items' },
+        { $match: { 'items.storeId': storeId } },
+        { $group: { _id: null, total: { $sum: '$items.totalPrice' } } },
+      ]),
     ]);
 
-    const recoveredRevenue = recoveredDocs.reduce((s: number, c: any) => s + (c.totalAmount || 0), 0);
+    const recoveredRevenue = Math.round(((recoveredAgg as any[])[0]?.total ?? 0) * 100) / 100;
 
     return {
       success: true,
-      data: { abandonedCount: abandoned, emailsSent: sent, clicked, recovered: recoveredDocs.length, recoveredRevenue },
+      data: { abandonedCount: abandoned, emailsSent: sent, clicked, recovered: recoveredCount, recoveredRevenue },
     };
   }
 
@@ -446,6 +457,14 @@ export class AbandonedCartService {
   /** Public — the unsubscribe link of a recovery email. Records an explicit opt-out for THIS store and address (creating the
    *  subscriber row as "unsubscribed" when the shopper was never on the list), which is exactly what `processOneCheckout`
    *  and the campaigns check before sending. Idempotent. Returns whether the link was valid and the store name for the page. */
+  /** What the unsubscribe LINK shows — nothing changes until the confirm button (POST). */
+  async previewUnsubscribe(token: string): Promise<{ ok: boolean; storeName: string | null }> {
+    const claim = verifyMarketingOptOutToken(token);
+    if (!claim) return { ok: false, storeName: null };
+    const store: any = await this.r.storeModel.findOne({ _id: claim.storeId }).select('name').lean();
+    return { ok: true, storeName: store?.name ?? null };
+  }
+
   async unsubscribeByToken(token: string): Promise<{ ok: boolean; storeName: string | null }> {
     const claim = verifyMarketingOptOutToken(token);
     if (!claim) return { ok: false, storeName: null };

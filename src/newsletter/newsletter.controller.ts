@@ -6,9 +6,12 @@ import {
   HttpCode,
   Param,
   Post,
+  Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { OptionalJwtAuthGuard } from '@/auth/guards/optional-jwt-auth.guard';
@@ -66,10 +69,11 @@ export class NewsletterController {
     return this.newsletterService.confirmByToken(token);
   }
 
+  /** The link in the email only SHOWS a confirm page — it must not unsubscribe on a plain GET (scanners prefetch links). */
   @Get('unsubscribe/:token')
   @Header('Content-Type', 'text/html')
   unsubscribe(@Param('token') token: string) {
-    return this.newsletterService.unsubscribeByToken(token);
+    return this.newsletterService.previewUnsubscribe(token);
   }
 
   /** RFC 8058 one-click unsubscribe — what Gmail/Yahoo's "Unsubscribe"
@@ -77,8 +81,13 @@ export class NewsletterController {
    *  marketing email. */
   @Post('unsubscribe/:token')
   @HttpCode(200)
-  async unsubscribeOneClick(@Param('token') token: string) {
-    await this.newsletterService.unsubscribeByToken(token);
+  async unsubscribeOneClick(@Param('token') token: string, @Query('page') page: string | undefined, @Res({ passthrough: true }) res: Response) {
+    const html = await this.newsletterService.unsubscribeByToken(token);
+    // "?page=1" = the confirm-page button (answer with a page); otherwise Gmail/Yahoo one-click (JSON).
+    if (page === '1') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return html;
+    }
     return { success: true };
   }
 }

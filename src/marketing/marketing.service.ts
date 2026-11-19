@@ -82,7 +82,7 @@ export class MarketingService {
     await this.verifyStoreOwnership(storeId, sellerId);
 
     const page = parseInt(query.page) || 1;
-    const limit = parseInt(query.limit) || 20;
+    const limit = Math.min(100, Math.max(1, parseInt(query.limit) || 20));
     const skip = (page - 1) * limit;
 
     const filter: any = { storeId, isDelete: false };
@@ -101,7 +101,14 @@ export class MarketingService {
     if (!coupon) throw new NotFoundException('Coupon not found');
 
     const update: any = {};
-    if (dto.code !== undefined) update.code = dto.code.trim().toUpperCase();
+    if (dto.code !== undefined) {
+      const code = dto.code.trim().toUpperCase();
+      if (code !== coupon.code) {
+        const clash = await this.r.couponModel.findOne({ storeId, code, isDelete: false, _id: { $ne: couponId } });
+        if (clash) throw new ConflictException(`Coupon code "${code}" already exists for this store`);
+      }
+      update.code = code;
+    }
     if (dto.discountType !== undefined) update.discountType = dto.discountType;
     if (dto.discountValue !== undefined) update.discountValue = dto.discountValue;
     if (dto.minOrderAmount !== undefined) update.minOrderAmount = dto.minOrderAmount;
@@ -114,7 +121,10 @@ export class MarketingService {
       update.customerSegmentId = dto.customerSegmentId || null;
     }
     if (dto.startsAt !== undefined) update.startsAt = dto.startsAt ? new Date(dto.startsAt) : null;
-    if (dto.expiresAt !== undefined) update.expiresAt = new Date(dto.expiresAt);
+    if (dto.expiresAt !== undefined) update.expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
+    const finalType = update.discountType ?? coupon.discountType;
+    const finalValue = update.discountValue ?? coupon.discountValue;
+    if (finalType === 'percentage' && finalValue > 100) throw new BadRequestException('Percentage discount cannot exceed 100');
     if (dto.isActive !== undefined) update.isActive = dto.isActive;
 
     const updated = await this.r.couponModel.findByIdAndUpdate(couponId, update, { new: true });

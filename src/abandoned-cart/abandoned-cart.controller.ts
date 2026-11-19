@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Get, Header, HttpCode, Patch, Post, Param, Body, Query, Req, Res, UseGuards } from '@nestjs/common';
-import { escapeHtml } from '../newsletter/marketing-email.util';
+import { escapeHtml, unsubscribeConfirmPageHtml } from '../newsletter/marketing-email.util';
 import { Response } from 'express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { AbandonedCartService } from './abandoned-cart.service';
@@ -82,15 +82,21 @@ export class AbandonedCartController {
   @Get('unsubscribe/:token')
   @Header('Content-Type', 'text/html; charset=utf-8')
   async unsubscribe(@Param('token') token: string) {
-    const r = await this.abandonedCartService.unsubscribeByToken(token);
-    return unsubscribePage(r.ok, r.storeName);
+    // A plain GET only shows the confirm page — mail scanners open every link, so it must not unsubscribe anyone.
+    const r = await this.abandonedCartService.previewUnsubscribe(token);
+    return r.ok ? unsubscribeConfirmPageHtml(r.storeName ?? 'this store') : unsubscribePage(false, null);
   }
 
   /** One-click unsubscribe POST that Gmail/Yahoo send from their "Unsubscribe" button. */
   @Post('unsubscribe/:token')
   @HttpCode(200)
-  async unsubscribeOneClick(@Param('token') token: string) {
-    await this.abandonedCartService.unsubscribeByToken(token);
+  async unsubscribeOneClick(@Param('token') token: string, @Query('page') page: string | undefined, @Res({ passthrough: true }) res: Response) {
+    const r = await this.abandonedCartService.unsubscribeByToken(token);
+    // "?page=1" = the confirm-page button (answer with a page); otherwise Gmail/Yahoo one-click (JSON).
+    if (page === '1') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return unsubscribePage(r.ok, r.storeName);
+    }
     return { success: true };
   }
 }

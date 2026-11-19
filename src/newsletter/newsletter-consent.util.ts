@@ -98,6 +98,9 @@ export async function setMarketingConsent(
  * active — campaigns never reach it) with a fresh confirm token to email.
  * Returns `alreadyActive` when there's nothing to confirm.
  */
+/** Minimum gap between two confirmation emails to the same address. */
+const CONFIRM_RESEND_COOLDOWN_MS = 2 * 60 * 1000;
+
 export async function setPendingConsent(
   model: Model<NewsletterSubscriberDocument>,
   input: Omit<SetConsentInput, 'subscribed'>,
@@ -110,6 +113,12 @@ export async function setPendingConsent(
   if (existing?.isActive) return { alreadyActive: true, confirmToken: null };
 
   if (existing) {
+    // A confirmation mail went out moments ago: do not rotate the token or send another one. Otherwise anyone could
+    // type a victim's address in the signup form again and again and flood their inbox with confirmation mails.
+    const updatedAt = (existing as any).updatedAt as Date | undefined;
+    if (existing.pendingConfirmation && existing.confirmToken && updatedAt && Date.now() - updatedAt.getTime() < CONFIRM_RESEND_COOLDOWN_MS) {
+      return { alreadyActive: false, confirmToken: null };
+    }
     existing.pendingConfirmation = true;
     existing.confirmToken = confirmToken;
     existing.source = input.source;

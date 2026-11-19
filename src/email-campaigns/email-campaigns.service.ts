@@ -15,6 +15,9 @@ import { storePublicUrl } from '@/newsletter/marketing-email.util';
 import { EmailService } from '@/otp/services/email.service';
 import { campaignLinkTargets, renderCampaignEmail } from './campaign-email.util';
 import { SUB_ORDER_SPEND_EXPR } from '../store/customer-spend.util';
+import { pickFields } from '@/common/pick-fields.util';
+
+const CAMPAIGN_FIELDS = ['name', 'subject', 'message', 'audience', 'segment', 'segmentId', 'design'] as const;
 
 const PLATFORM_ORIGIN = 'https://solvexo.store';
 
@@ -58,7 +61,7 @@ export class EmailCampaignsService {
   async create(sellerId: string, storeId: string, dto: CreateEmailCampaignDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
     await this.entitlementsService.assertFeatureAllowed(storeId, 'emailCampaignsAllowed', 'Email Campaigns');
-    const campaign = await this.r.emailCampaignModel.create({ storeId, ...dto, status: 'draft' });
+    const campaign = await this.r.emailCampaignModel.create({ ...pickFields(dto, CAMPAIGN_FIELDS), storeId, status: 'draft' });
     return { success: true, message: 'Campaign created', data: campaign };
   }
 
@@ -84,7 +87,7 @@ export class EmailCampaignsService {
   async update(sellerId: string, storeId: string, campaignId: string, dto: UpdateEmailCampaignDto) {
     const campaign = await this.getOwnedCampaign(storeId, sellerId, campaignId);
     if (campaign.status !== 'draft') throw new BadRequestException('Only a draft campaign can be edited');
-    Object.assign(campaign, dto);
+    Object.assign(campaign, pickFields(dto, CAMPAIGN_FIELDS));
     await campaign.save();
     return { success: true, message: 'Campaign updated', data: campaign };
   }
@@ -317,10 +320,11 @@ export class EmailCampaignsService {
       throw e;
     }
 
-    for (let i = 0; i < createdSends.length; i++) {
-      const send = createdSends[i] as any;
+    // The whole audience goes to the queue in ONE call (addBulk) instead of one Redis call per recipient — a crash part-way
+    // through a long loop used to leave send rows with no job and the campaign stuck in 'sending'.
+    const jobs = createdSends.map((send: any, i: number) => {
       const rcpt = recipients[i];
-      await this.queue.add(EMAIL_CAMPAIGN_SEND_JOB, {
+      return { name: EMAIL_CAMPAIGN_SEND_JOB, data: {
         sendId: send._id.toString(),
         campaignId: campaign._id.toString(),
         email: rcpt.email,
@@ -331,13 +335,14 @@ export class EmailCampaignsService {
         unsubscribeUrl: newsletterUnsubscribeUrl(rcpt.unsubscribeToken),
         subject: campaign.subject,
         message: campaign.message,
-      }, {
+      }, opts: {
         // Shopify-Email-style retry of transient SMTP failures: 4 tries total,
         // waiting 2 / 4 / 8 minutes in between.
         attempts: 4,
-        backoff: { type: 'exponential', delay: 120_000 },
-      });
-    }
+        backoff: { type: 'exponential' as const, delay: 120_000 },
+      } };
+    });
+    await this.queue.addBulk(jobs);
 
     this.activityLogService.log({
       storeId: campaign.storeId, category: 'marketing', action: 'email_campaign_sent',
