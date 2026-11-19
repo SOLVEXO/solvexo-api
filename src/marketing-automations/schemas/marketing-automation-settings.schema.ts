@@ -58,6 +58,32 @@ export class WinBackAutomation {
   @Prop({ type: String, default: null }) html: string | null;
 }
 
+/** Shopify "Post-purchase": a thank-you / follow-up email N days after a customer ordered. */
+@Schema({ _id: false })
+export class PostPurchaseAutomation {
+  @Prop({ default: false }) enabled: boolean;
+  @Prop({ default: 3, min: 1, max: 30 }) afterDays: number;
+  @Prop({ default: '' }) subject: string;
+  @Prop({ default: '' }) message: string;
+  @Prop({ type: String, default: null }) discountCode: string | null;
+  @Prop({ type: Object, default: null }) design: Record<string, unknown> | null;
+  @Prop({ type: String, default: null }) html: string | null;
+}
+
+/** Shopify "Customer appreciation" (VIP): one email, once, to a customer who reached N orders (and spent at least X). */
+@Schema({ _id: false })
+export class CustomerAppreciationAutomation {
+  @Prop({ default: false }) enabled: boolean;
+  @Prop({ default: 3, min: 2, max: 50 }) minOrders: number;
+  // In the store's own currency; 0 = no spending rule.
+  @Prop({ default: 0, min: 0 }) minSpent: number;
+  @Prop({ default: '' }) subject: string;
+  @Prop({ default: '' }) message: string;
+  @Prop({ type: String, default: null }) discountCode: string | null;
+  @Prop({ type: Object, default: null }) design: Record<string, unknown> | null;
+  @Prop({ type: String, default: null }) html: string | null;
+}
+
 @Schema({ timestamps: true })
 export class MarketingAutomationSettings {
   _id: string;
@@ -76,6 +102,12 @@ export class MarketingAutomationSettings {
 
   @Prop({ type: WinBackAutomation, default: () => ({}) })
   winBack: WinBackAutomation;
+
+  @Prop({ type: PostPurchaseAutomation, default: () => ({}) })
+  postPurchase: PostPurchaseAutomation;
+
+  @Prop({ type: CustomerAppreciationAutomation, default: () => ({}) })
+  customerAppreciation: CustomerAppreciationAutomation;
 
   // Double opt-in (Shopify: "Confirm email subscription") — storefront and
   // checkout sign-ups get a confirmation email and only become subscribers
@@ -120,6 +152,25 @@ export const DEFAULT_AUTOMATION_SETTINGS = {
     design: null as Record<string, unknown> | null,
     html: null as string | null,
   },
+  postPurchase: {
+    enabled: false,
+    afterDays: 3,
+    subject: 'Thank you for your order, {{customerName}}',
+    message: "Hi {{customerName}},\n\nThanks again for your order {{orderNumber}} at {{storeName}} — we hope you love it. If there is anything we can do, just reply to this email.",
+    discountCode: null as string | null,
+    design: null as Record<string, unknown> | null,
+    html: null as string | null,
+  },
+  customerAppreciation: {
+    enabled: false,
+    minOrders: 3,
+    minSpent: 0,
+    subject: 'A thank-you from {{storeName}}',
+    message: "Hi {{customerName}},\n\nYou are one of our best customers and we wanted to say thank you. Here is a little something for your next order at {{storeName}}.",
+    discountCode: null as string | null,
+    design: null as Record<string, unknown> | null,
+    html: null as string | null,
+  },
 };
 
 export type AutomationSettingsShape = typeof DEFAULT_AUTOMATION_SETTINGS;
@@ -144,5 +195,7 @@ export function resolveAutomationSettings(row: Partial<MarketingAutomationSettin
     backInStock: pick(DEFAULT_AUTOMATION_SETTINGS.backInStock, row?.backInStock),
     priceDrop: pick(DEFAULT_AUTOMATION_SETTINGS.priceDrop, row?.priceDrop),
     winBack: pick(DEFAULT_AUTOMATION_SETTINGS.winBack, row?.winBack),
+    postPurchase: pick(DEFAULT_AUTOMATION_SETTINGS.postPurchase, row?.postPurchase),
+    customerAppreciation: pick(DEFAULT_AUTOMATION_SETTINGS.customerAppreciation, row?.customerAppreciation),
   };
 }

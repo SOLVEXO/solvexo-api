@@ -274,6 +274,22 @@ export class SchedulerService {
     });
   }
 
+  @Cron('40 * * * *')
+  async processPostPurchaseEmails() {
+    await this.runLocked('automation-post-purchase', 50 * 60_000, async () => {
+      const result = await this.marketingAutomationsService.processPostPurchase();
+      if (result.notified > 0) this.logger.log(`Post-purchase: ${result.notified} email(s) sent`);
+    });
+  }
+
+  @Cron('30 10 * * *')
+  async processCustomerAppreciationEmails() {
+    await this.runLocked('automation-customer-appreciation', 60 * 60_000, async () => {
+      const result = await this.marketingAutomationsService.processCustomerAppreciation();
+      if (result.notified > 0) this.logger.log(`Customer appreciation: ${result.notified} email(s) sent`);
+    });
+  }
+
   @Cron('*/5 * * * *')
   async processScheduledEmailCampaigns() {
     await this.runLocked('email-campaigns-scheduled-send', 120_000, async () => {

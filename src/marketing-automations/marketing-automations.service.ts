@@ -99,6 +99,12 @@ export class MarketingAutomationsService {
       backInStock: { enabled: bool, subject: (v) => str(v, 200), message: (v) => str(v, 5000) },
       priceDrop: { enabled: bool, minDropPercent: (v) => int(v, 1, 90), subject: (v) => str(v, 200), message: (v) => str(v, 5000) },
       winBack: { enabled: bool, afterDays: (v) => int(v, 14, 365), subject: (v) => str(v, 200), message: (v) => str(v, 5000), discountCode: (v) => v },
+      postPurchase: { enabled: bool, afterDays: (v) => int(v, 1, 30), subject: (v) => str(v, 200), message: (v) => str(v, 5000), discountCode: (v) => v },
+      customerAppreciation: {
+        enabled: bool, minOrders: (v) => int(v, 2, 50),
+        minSpent: (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(10_000_000, Math.max(0, Math.round(v * 100) / 100)) : undefined),
+        subject: (v) => str(v, 200), message: (v) => str(v, 5000), discountCode: (v) => v,
+      },
     };
 
     for (const [section, fields] of Object.entries(sections)) {
@@ -198,11 +204,11 @@ export class MarketingAutomationsService {
   /** "[Test]" copy of one automation's current email, filled with sample
    *  data (the store's first active product for product emails). */
   async sendTest(storeId: string, section: string, email: string | null) {
-    if (!['welcome', 'backInStock', 'priceDrop', 'winBack'].includes(section)) throw new BadRequestException('Unknown automation');
+    if (!['welcome', 'backInStock', 'priceDrop', 'winBack', 'postPurchase', 'customerAppreciation'].includes(section)) throw new BadRequestException('Unknown automation');
     if (!email) throw new BadRequestException('No email address to send the test to');
     const [settings, store] = await Promise.all([this.getSettings(storeId), this.loadStore(storeId)]);
     if (!store) throw new NotFoundException('Store not found');
-    const cfg = settings[section as 'welcome' | 'backInStock' | 'priceDrop' | 'winBack'];
+    const cfg = settings[section as 'welcome' | 'backInStock' | 'priceDrop' | 'winBack' | 'postPurchase' | 'customerAppreciation'];
 
     const product = await this.r.productModel.findOne({ storeId, isDelete: false, status: 'active' }).select('name slug images').lean() as any;
     const variant = product ? await this.r.productVariantModel.findOne({ productId: String(product._id) }).select('price currency images').lean() as any : null;
@@ -223,6 +229,7 @@ export class MarketingAutomationsService {
       oldPrice: formatMoney(oldPrice, currency),
       newPrice: formatMoney(newPrice, currency),
       discountCode: (cfg as any).discountCode ?? '',
+      orderNumber: '#1001',
     };
     const priceLine = section === 'priceDrop'
       ? `<span style="text-decoration:line-through;color:#8b8985">${escapeHtml(text.oldPrice)}</span> &nbsp;<strong>${escapeHtml(text.newPrice)}</strong>`
@@ -675,5 +682,155 @@ export class MarketingAutomationsService {
       if (ok) sent++; else this.giveRoomBack(storeId);
     }
     return { sent, scanned: lapsed.length, outOfRoom };
+  }
+
+  // ── Post-purchase ────────────────────────────────────────────────────────
+
+  async processPostPurchase(): Promise<{ notified: number }> {
+    this.startRun();
+    const enabled = await this.r.marketingAutomationSettingsModel.find({ 'postPurchase.enabled': true }).select('storeId').lean();
+    let notified = 0;
+    for (const row of enabled as any[]) {
+      const storeId = String(row.storeId);
+      try {
+        if (!(await this.marketingAllowed(storeId))) continue;
+        notified += await this.processPostPurchaseForStore(storeId);
+      } catch (e: any) {
+        this.logger.error(`post-purchase for store ${storeId} failed: ${e?.message}`);
+      }
+    }
+    return { notified };
+  }
+
+  /** Orders placed about `afterDays` ago (a 3 day window, so a missed run is caught up) get one thank-you each, to customers who
+   *  subscribed to this store's emails. The dedupe log is keyed on the order, so nobody is mailed twice for the same order. */
+  private async processPostPurchaseForStore(storeId: string): Promise<number> {
+    const [settings, store] = await Promise.all([this.getSettings(storeId), this.loadStore(storeId)]);
+    if (!store || !settings.postPurchase.enabled) return 0;
+    const to = new Date(Date.now() - settings.postPurchase.afterDays * 86_400_000);
+    const from = new Date(to.getTime() - 3 * 86_400_000);
+    const orders: any[] = await this.r.orderModel
+      .find({ isDelete: false, createdAt: { $gte: from, $lte: to }, sellerOrders: { $elemMatch: { storeId, status: { $ne: 'cancelled' } } } })
+      .select('userId orderNumber createdAt')
+      .sort({ createdAt: 1 })
+      .limit(BATCH)
+      .lean();
+    if (orders.length === 0) return 0;
+
+    const userIds = [...new Set(orders.map((o) => String(o.userId)))].filter((id) => isValidObjectId(id));
+    const users = await this.r.userModel.find({ _id: { $in: userIds }, isDelete: { $ne: true } }).select('name email').lean();
+    const userById = new Map(users.map((u: any) => [String(u._id), u]));
+    const subs = await this.activeSubscribers(storeId, users.map((u: any) => normalizeEmail(u.email)));
+    let sent = 0;
+    for (const o of orders) {
+      const u: any = userById.get(String(o.userId));
+      if (!u) continue;
+      const email = normalizeEmail(u.email);
+      const token = subs.get(email);
+      if (!token) continue;
+      if (!(await this.takeRoom(storeId))) break; // plan allowance used up for this month
+      const logId = await this.claim(storeId, 'post_purchase', email, `order:${o._id}`);
+      if (!logId) { this.giveRoomBack(storeId); continue; }
+      const ok = await this.sendCustomerEmail(store, settings.postPurchase, u.name, email, token, { orderNumber: o.orderNumber ? `#${o.orderNumber}` : '' }, 'Shop now');
+      await this.markDelivered(logId, ok);
+      if (ok) sent++; else this.giveRoomBack(storeId);
+    }
+    return sent;
+  }
+
+  // ── Customer appreciation (VIP) ──────────────────────────────────────────
+
+  async processCustomerAppreciation(): Promise<{ notified: number }> {
+    this.startRun();
+    const enabled = await this.r.marketingAutomationSettingsModel.find({ 'customerAppreciation.enabled': true }).select('storeId').lean();
+    let notified = 0;
+    for (const row of enabled as any[]) {
+      const storeId = String(row.storeId);
+      try {
+        if (!(await this.marketingAllowed(storeId))) continue;
+        notified += await this.processCustomerAppreciationForStore(storeId);
+      } catch (e: any) {
+        this.logger.error(`customer appreciation for store ${storeId} failed: ${e?.message}`);
+      }
+    }
+    return { notified };
+  }
+
+  /** Customers who reached the order count (and, when set, the spend) get ONE appreciation email, ever. Spend is counted in the
+   *  store's own currency (orders placed in another currency count towards the order total only). */
+  private async processCustomerAppreciationForStore(storeId: string): Promise<number> {
+    const [settings, store] = await Promise.all([this.getSettings(storeId), this.loadStore(storeId)]);
+    if (!store || !settings.customerAppreciation.enabled) return 0;
+    const { minOrders, minSpent } = settings.customerAppreciation;
+    let sent = 0;
+    let skip = 0;
+    for (let page = 0; page < 20 && sent < BATCH; page++) {
+      const vips: { _id: string }[] = await this.r.orderModel.aggregate([
+        { $match: { isDelete: false, 'sellerOrders.storeId': storeId } },
+        { $unwind: '$sellerOrders' },
+        { $match: { 'sellerOrders.storeId': storeId, 'sellerOrders.status': { $ne: 'cancelled' } } },
+        { $group: { _id: '$userId', orderIds: { $addToSet: '$_id' }, spent: { $sum: { $cond: [{ $eq: ['$currency', store.baseCurrency ?? 'USD'] }, { $ifNull: ['$sellerOrders.subtotal', 0] }, 0] } } } },
+        { $project: { orderCount: { $size: '$orderIds' }, spent: 1 } },
+        { $match: { orderCount: { $gte: minOrders }, spent: { $gte: minSpent } } },
+        { $sort: { _id: 1 } },
+        { $skip: skip },
+        { $limit: BATCH },
+      ]);
+      if (vips.length === 0) break;
+      skip += vips.length;
+      const ids = vips.map((v) => String(v._id)).filter((id) => isValidObjectId(id));
+      const users = await this.r.userModel.find({ _id: { $in: ids }, isDelete: { $ne: true } }).select('name email').lean();
+      const userById = new Map(users.map((u: any) => [String(u._id), u]));
+      const subs = await this.activeSubscribers(storeId, users.map((u: any) => normalizeEmail(u.email)));
+      let outOfRoom = false;
+      for (const v of vips) {
+        const u: any = userById.get(String(v._id));
+        if (!u) continue;
+        const email = normalizeEmail(u.email);
+        const token = subs.get(email);
+        if (!token) continue;
+        if (!(await this.takeRoom(storeId))) { outOfRoom = true; break; }
+        const logId = await this.claim(storeId, 'customer_appreciation', email, 'vip');
+        if (!logId) { this.giveRoomBack(storeId); continue; }
+        const ok = await this.sendCustomerEmail(store, settings.customerAppreciation, u.name, email, token, {}, 'Shop now');
+        await this.markDelivered(logId, ok);
+        if (ok) sent++; else this.giveRoomBack(storeId);
+      }
+      if (outOfRoom || vips.length < BATCH) break;
+    }
+    return sent;
+  }
+
+  /** One marketing email to one subscribed customer (designed or plain text), with unsubscribe link and the store address. */
+  private async sendCustomerEmail(
+    store: StoreLite,
+    cfg: { subject: string; message: string; html: string | null; discountCode?: string | null },
+    customerName: string | undefined,
+    email: string,
+    unsubscribeToken: string,
+    extraVars: Record<string, string>,
+    ctaLabel: string,
+  ): Promise<boolean> {
+    const shopUrl = storePublicUrl(store);
+    const vars = { customerName: customerName || 'there', storeName: store.name, ...extraVars };
+    const unsubscribeUrl = newsletterUnsubscribeUrl(unsubscribeToken);
+    const subject = renderMergeTags(cfg.subject, vars);
+    const reason = withAddress(`You're receiving this because you subscribed to emails from ${store.name}.`, store.mailingAddress);
+    const html = this.renderDesigned(
+      cfg.html,
+      { ...vars, shopUrl: shopUrl ?? '', discountCode: cfg.discountCode ?? '' },
+      {},
+      reason,
+      unsubscribeUrl,
+    ) ?? renderMarketingEmail({
+      senderName: store.name,
+      heading: subject,
+      bodyHtml: textToHtml(renderMergeTags(cfg.message, vars)),
+      extraHtml: cfg.discountCode ? discountCodeHtml(cfg.discountCode) : '',
+      cta: shopUrl ? { url: shopUrl, label: ctaLabel } : null,
+      reason,
+      unsubscribeUrl,
+    });
+    return this.emailService.sendMail(email, subject, html, store.contactEmail ?? null, unsubscribeHeaders(unsubscribeUrl), undefined, store.name);
   }
 }
