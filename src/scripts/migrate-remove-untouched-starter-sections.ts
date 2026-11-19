@@ -13,6 +13,7 @@
 import 'dotenv/config';
 import mongoose from 'mongoose';
 import { isDeepStrictEqual } from 'node:util';
+import { writeFileSync } from 'node:fs';
 
 const trustBlocks = [
   { type: 'trust_badge_item', settings: { icon: 'lock', text: 'Secure checkout' } },
@@ -46,6 +47,7 @@ async function run() {
   const db = mongoose.connection.db;
   if (!db) throw new Error('Failed to obtain DB connection');
   const pages = db.collection('storepages');
+  const backup: any[] = []; // the old sections of every page we change, so it can be undone
   let touchedPages = 0;
   let removedTotal = 0;
 
@@ -61,8 +63,10 @@ async function run() {
     if (!removed) continue;
     touchedPages++; removedTotal += removed;
     console.log(`${apply ? 'cleaning' : 'would clean'} store ${page.storeId}: ${removed} untouched starter section(s)`);
+    if (apply) backup.push({ _id: page._id, storeId: page.storeId, sections: page.sections, draft: page.draft, themeTemplates: page.themeTemplates });
     if (apply) await pages.updateOne({ _id: page._id }, { $set: set });
   }
+  if (apply && backup.length) { const f = `starter-sections-backup-${Date.now()}.json`; writeFileSync(f, JSON.stringify(backup)); console.log(`Backup of the old sections: ${f}`); }
   console.log(`${apply ? 'Done' : 'Dry run'}: ${removedTotal} section(s) in ${touchedPages} home page(s).${apply ? '' : ' Re-run with --apply to change the data.'}`);
   await mongoose.disconnect();
 }
