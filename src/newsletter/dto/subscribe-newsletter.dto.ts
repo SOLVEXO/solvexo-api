@@ -13,6 +13,7 @@ export const PUBLIC_NEWSLETTER_SOURCES = [
   'platform_footer',
   'store_footer',
   'store_section',
+  'store_popup',
   'checkout',
 ] as const;
 

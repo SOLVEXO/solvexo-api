@@ -552,6 +552,8 @@ export class DatabaseService {
     private customerSegmentModel: Model<schema.CustomerSegmentDocument>,
     @InjectModel(schema.MarketingCampaign.name)
     private marketingCampaignModel: Model<schema.MarketingCampaignDocument>,
+    @InjectModel(schema.SignupForm.name)
+    private signupFormModel: Model<schema.SignupFormDocument>,
 
     // Phase 5 — Product Tracking Foundation.
     @InjectModel(schema.ProductView.name)
@@ -763,6 +765,7 @@ export class DatabaseService {
       courierBookingModel: this.courierBookingModel,
       customerSegmentModel: this.customerSegmentModel,
       marketingCampaignModel: this.marketingCampaignModel,
+      signupFormModel: this.signupFormModel,
       productViewModel: this.productViewModel,
       storefrontSessionModel: this.storefrontSessionModel,
       savedReportModel: this.savedReportModel,

@@ -303,6 +303,7 @@ import { DatabaseService } from './databaseservice';
       { name: schema.CourierBooking.name, schema: schema.CourierBookingSchema },
       { name: schema.CustomerSegment.name, schema: schema.CustomerSegmentSchema },
       { name: schema.MarketingCampaign.name, schema: schema.MarketingCampaignSchema },
+      { name: schema.SignupForm.name, schema: schema.SignupFormSchema },
       // Phase 5 — Product Tracking Foundation.
       { name: schema.ProductView.name, schema: schema.ProductViewSchema },
       { name: schema.StorefrontSession.name, schema: schema.StorefrontSessionSchema },

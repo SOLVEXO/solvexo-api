@@ -1,6 +1,7 @@
 import { MerchandisingModule } from './merchandising/merchandising.module';
 import { CustomerSegmentsModule } from './customer-segments/customer-segments.module';
 import { MarketingCampaignsModule } from './marketing-campaigns/marketing-campaigns.module';
+import { SignupFormsModule } from './signup-forms/signup-forms.module';
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
@@ -150,6 +151,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     MerchandisingModule,
     CustomerSegmentsModule,
     MarketingCampaignsModule,
+    SignupFormsModule,
     ConfigModule.forRoot({ isGlobal: true }),
     EventEmitterModule.forRoot(),
     ThrottlerModule.forRootAsync({
