@@ -46,6 +46,26 @@ export function withAddress(reason: string, address?: string | null): string {
   return a ? `${reason} ${a}` : reason;
 }
 
+/**
+ * A drag-and-drop designed email, filled for one recipient: `raw` values are HTML fragments built by the server, `text` values are
+ * escaped (they land in text and href/src attributes). The footer (reason + unsubscribe) is added after the design. Null when the
+ * store has no designed version, so the caller falls back to the plain-text email.
+ */
+export function renderDesignedEmail(
+  html: string | null | undefined,
+  text: Record<string, string>,
+  raw: Record<string, string>,
+  reason: string,
+  unsubscribeUrl?: string | null,
+): string | null {
+  if (!html) return null;
+  let out = html;
+  for (const [k, v] of Object.entries(raw)) out = out.split(`{{${k}}}`).join(v);
+  for (const [k, v] of Object.entries(text)) out = out.split(`{{${k}}}`).join(escapeHtml(v));
+  const footer = `<p style="margin:0 auto;max-width:600px;padding:16px 12px;color:#888;font-size:12px;text-align:center;font-family:sans-serif">${escapeHtml(reason)}${unsubscribeUrl ? `<br /><a href="${unsubscribeUrl}" style="color:#888">Unsubscribe</a>` : ''}</p>`;
+  return out + footer;
+}
+
 export interface MarketingEmailInput {
   senderName: string;
   heading?: string;

@@ -48,6 +48,12 @@ export class AbandonedCartSettings {
 
   // Optional second reminder, sent once, `secondReminderDelayHours` after the first one, only if the shopper still has not
   // ordered. Off until the seller switches it on.
+  // Drag-and-drop designs (the web app's EmailDesign JSON) and their rendered HTML with {{tags}}; when set they replace the plain text.
+  @Prop({ type: Object, default: null }) design: Record<string, unknown> | null;
+  @Prop({ type: String, default: null }) html: string | null;
+  @Prop({ type: Object, default: null }) secondDesign: Record<string, unknown> | null;
+  @Prop({ type: String, default: null }) secondHtml: string | null;
+
   @Prop({ type: Boolean, default: false })
   secondReminderEnabled: boolean;
 

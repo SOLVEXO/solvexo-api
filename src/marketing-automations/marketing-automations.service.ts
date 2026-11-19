@@ -7,7 +7,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { EmailService } from '@/otp/services/email.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { newsletterUnsubscribeUrl, normalizeEmail } from '@/newsletter/newsletter-consent.util';
-import { withAddress,
+import { renderDesignedEmail, withAddress,
   discountCodeHtml, escapeHtml, formatMoney, productCardHtml, renderMarketingEmail,
   renderMergeTags, storePublicUrl, textToHtml, unsubscribeHeaders,
 } from '@/newsletter/marketing-email.util';
@@ -316,12 +316,7 @@ export class MarketingAutomationsService {
     reason: string,
     unsubscribeUrl?: string | null,
   ): string | null {
-    if (!html) return null;
-    let out = html;
-    for (const [k, v] of Object.entries(raw)) out = out.split(`{{${k}}}`).join(v);
-    for (const [k, v] of Object.entries(text)) out = out.split(`{{${k}}}`).join(escapeHtml(v));
-    const footer = `<p style="margin:0 auto;max-width:600px;padding:16px 12px;color:#888;font-size:12px;text-align:center;font-family:sans-serif">${escapeHtml(reason)}${unsubscribeUrl ? `<br /><a href="${unsubscribeUrl}" style="color:#888">Unsubscribe</a>` : ''}</p>`;
-    return out + footer;
+    return renderDesignedEmail(html, text, raw, reason, unsubscribeUrl);
   }
 
   /** The dynamic-product section's image fragment ({{productImage}}). */

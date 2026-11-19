@@ -9,11 +9,11 @@ import { randomBytes } from 'crypto';
 import { UpdateAbandonedCartSettingsDto } from './dto/update-abandoned-cart-settings.dto';
 
 import { API_PUBLIC_ORIGIN } from '@/common/api-origin';
-import { discountCodeHtml, escapeHtml, footerAddressHtml, storePublicUrl, textToHtml, unsubscribeHeaders } from '@/newsletter/marketing-email.util';
+import { discountCodeHtml, escapeHtml, footerAddressHtml, renderDesignedEmail, withAddress, storePublicUrl, textToHtml, unsubscribeHeaders } from '@/newsletter/marketing-email.util';
 import { signMarketingOptOutToken, verifyMarketingOptOutToken } from '@/common/marketing-optout-token.util';
 import { pickFields } from '@/common/pick-fields.util';
 
-const ABANDONED_CART_FIELDS = ['enabled', 'audience', 'delayMinutes', 'subject', 'message', 'discountCode', 'secondReminderEnabled', 'secondReminderDelayHours', 'secondSubject', 'secondMessage'] as const;
+const ABANDONED_CART_FIELDS = ['enabled', 'audience', 'design', 'html', 'secondDesign', 'secondHtml', 'delayMinutes', 'subject', 'message', 'discountCode', 'secondReminderEnabled', 'secondReminderDelayHours', 'secondSubject', 'secondMessage'] as const;
 const DEFAULT_SETTINGS = { enabled: true, audience: 'subscribed' as 'subscribed' | 'all', delayMinutes: 600, subject: 'You left something in your cart', message: "Hi {{customerName}}, you still have items waiting in your cart at {{storeName}}. Complete your order before they're gone: {{cartUrl}}" };
 const SECOND_DEFAULTS = { discountCode: null as string | null, secondReminderEnabled: false, secondReminderDelayHours: 24, secondSubject: 'Still thinking it over?', secondMessage: 'Hi {{customerName}}, your cart at {{storeName}} is still waiting for you. This is our last reminder: {{cartUrl}}' };
 const BATCH_SIZE = 200; // max emails sent per cron tick — never let one runaway backlog block the lock for too long
@@ -85,6 +85,13 @@ export class AbandonedCartService {
       await this.entitlementsService.assertFeatureAllowed(storeId, 'abandonedCartRecoveryAllowed', 'Abandoned Cart Recovery');
     }
     const changes: Record<string, any> = pickFields(dto, ABANDONED_CART_FIELDS);
+    // A design and its rendered HTML travel together; null clears both (back to the plain text).
+    for (const [d, h] of [['design', 'html'], ['secondDesign', 'secondHtml']] as const) {
+      if (!(d in dto) && !(h in dto)) continue;
+      if ((dto as any)[d] === null) { changes[d] = null; changes[h] = null; continue; }
+      if ((dto as any)[d] === undefined) { delete changes[h]; continue; } // HTML alone is never stored
+      await this.checkDesign(storeId, (dto as any)[d], (dto as any)[h]);
+    }
     if ('discountCode' in dto) changes.discountCode = await this.validateDiscountCode(storeId, dto.discountCode);
     // DEFAULT_SETTINGS only fills fields the seller has not set; a field in this very update must not also be a default.
     const defaults: Record<string, any> = { ...DEFAULT_SETTINGS };
@@ -109,13 +116,23 @@ export class AbandonedCartService {
     const customerName = 'Alex';
     const { html } = this.buildRecoveryMail({
       template: settings.message, customerName, storeName, cartUrl: storePublicUrl(store) ?? 'https://solvexo.store',
-      storeId, email: to, discountCode: settings.discountCode ?? null, storeAddress: store?.mailingAddress ?? null,
+      storeId, email: to, discountCode: settings.discountCode ?? null, storeAddress: store?.mailingAddress ?? null, designHtml: settings.html ?? null,
     });
     const subject = this.renderTemplate(settings.subject, { customerName, storeName });
     // No List-Unsubscribe header: a test is not a real marketing send.
     const sent = await this.emailService.sendMail(to, `[Test] ${subject}`, html, store?.contactEmail ?? null, undefined, undefined, store?.name ?? null);
     if (!sent) throw new BadRequestException('The test email could not be sent. Check the email settings and try again.');
     return { success: true, message: `Test email sent to ${to}` };
+  }
+
+  /** A designed email must be a real design, come with its rendered HTML, stay a sane size, and only show real codes of this store. */
+  private async checkDesign(storeId: string, design: any, html: unknown) {
+    if (typeof design !== 'object' || design.version !== 1 || !Array.isArray(design.blocks)) throw new BadRequestException('Invalid email design');
+    if (typeof html !== 'string' || !html.trim()) throw new BadRequestException('The rendered email HTML is missing');
+    if (html.length > 500_000) throw new BadRequestException('This email is too large');
+    for (const block of design.blocks as any[]) {
+      if (block?.type === 'discount' && block.code) await this.validateDiscountCode(storeId, String(block.code));
+    }
   }
 
   /** The code must be a real, live coupon of THIS store (same rule as the welcome / win-back emails); empty removes it. */
@@ -335,7 +352,7 @@ export class AbandonedCartService {
         const subject = this.renderTemplate(trigger.subject, { customerName, storeName });
         // The template is plain text typed by the seller and the buyer's name is buyer-controlled, so the whole message is escaped.
         const discountCode: string | null = (trigger as any).discountCode ?? null;
-        const { html, unsubscribeUrl } = this.buildRecoveryMail({ template: trigger.message, customerName, storeName, cartUrl, storeId: String(trigger.storeId), email, discountCode, storeAddress: (store as any)?.mailingAddress ?? null });
+        const { html, unsubscribeUrl } = this.buildRecoveryMail({ template: trigger.message, customerName, storeName, cartUrl, storeId: String(trigger.storeId), email, discountCode, storeAddress: (store as any)?.mailingAddress ?? null, designHtml: (trigger as any).html ?? null });
         const sent = await this.emailService.sendMail(
           email,
           subject,
@@ -368,7 +385,16 @@ export class AbandonedCartService {
 
   /** The reminder's HTML: the seller's text (escaped: it is plain text and the buyer's name is buyer-controlled), the optional
    *  discount code, a button back to the cart, and the one-click unsubscribe footer every marketing-type mail carries. */
-  private buildRecoveryMail(a: { template: string; customerName: string; storeName: string; cartUrl: string; storeId: string; email: string; discountCode: string | null; storeAddress?: string | null }) {
+  private buildRecoveryMail(a: { template: string; customerName: string; storeName: string; cartUrl: string; storeId: string; email: string; discountCode: string | null; storeAddress?: string | null; designHtml?: string | null }) {
+    const unsubscribeForDesign = `${API_PUBLIC_ORIGIN}/api/abandoned-cart/unsubscribe/${signMarketingOptOutToken(a.storeId, a.email)}`;
+    const designed = renderDesignedEmail(
+      a.designHtml,
+      { customerName: a.customerName, storeName: a.storeName, cartUrl: a.cartUrl, discountCode: a.discountCode ?? '' },
+      {},
+      withAddress(`You got this because you started a checkout at ${a.storeName}.`, a.storeAddress),
+      unsubscribeForDesign,
+    );
+    if (designed) return { html: designed, unsubscribeUrl: unsubscribeForDesign };
     const message = textToHtml(this.renderTemplate(a.template, { customerName: a.customerName, storeName: a.storeName, cartUrl: a.cartUrl, discountCode: a.discountCode ?? '' }));
     const unsubscribeUrl = `${API_PUBLIC_ORIGIN}/api/abandoned-cart/unsubscribe/${signMarketingOptOutToken(a.storeId, a.email)}`;
     const html = `<div style="font-family:sans-serif;max-width:520px">
@@ -433,7 +459,7 @@ export class AbandonedCartService {
       // The click link keeps the first mail's token, so a click from either mail is tracked on the same checkout.
       const cartUrl = `${API_PUBLIC_ORIGIN}/api/abandoned-cart/click/${checkout.abandonedRecoveryToken}?s=${encodeURIComponent(storeId)}`;
       const subject = this.renderTemplate(settings.secondSubject, { customerName, storeName });
-      const { html, unsubscribeUrl } = this.buildRecoveryMail({ template: settings.secondMessage, customerName, storeName, cartUrl, storeId, email, discountCode: settings.discountCode ?? null, storeAddress: store?.mailingAddress ?? null });
+      const { html, unsubscribeUrl } = this.buildRecoveryMail({ template: settings.secondMessage, customerName, storeName, cartUrl, storeId, email, discountCode: settings.discountCode ?? null, storeAddress: store?.mailingAddress ?? null, designHtml: settings.secondHtml ?? null });
       const ok = await this.emailService.sendMail(email, subject, html, store?.contactEmail ?? null, unsubscribeHeaders(unsubscribeUrl), undefined, store?.name ?? null);
       if (!ok) {
         await this.r.checkoutModel.updateOne({ _id: checkout._id }, { $set: { abandonedSecondEmailSentAt: null } });

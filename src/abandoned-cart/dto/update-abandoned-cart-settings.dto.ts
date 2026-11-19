@@ -1,12 +1,34 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsBoolean, IsIn, IsOptional, IsNumber, IsString, Min, Max, MaxLength } from 'class-validator';
+import { IsBoolean, IsIn, IsObject, IsOptional, IsNumber, IsString, Min, Max, MaxLength } from 'class-validator';
 
 export class UpdateAbandonedCartSettingsDto {
   @ApiProperty({ required: false })
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+
+  @ApiProperty({ required: false, description: 'Designed first email (EmailDesign JSON); null goes back to the plain text' })
+  @IsOptional()
+  @IsObject()
+  design?: Record<string, unknown> | null;
+
+  @ApiProperty({ required: false, description: 'The rendered HTML of `design`' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500_000)
+  html?: string | null;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsObject()
+  secondDesign?: Record<string, unknown> | null;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500_000)
+  secondHtml?: string | null;
 
   @ApiProperty({ required: false, enum: ['subscribed', 'all'] })
   @IsOptional()
