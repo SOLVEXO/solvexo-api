@@ -20,6 +20,10 @@ export class PlatformPlanPaymentAttempt {
 
   @Prop({ type: String, default: null }) invoiceId: string | null;
   @Prop({ type: String, default: null }) providerChargeId: string | null;
+  // Where the attempt came from and which card was used (best-effort) — shown in the billing timeline.
+  @Prop({ type: String, default: null }) source: string | null; // 'stripe_invoice' | 'plan_change' | 'renewal'
+  @Prop({ type: String, default: null }) cardBrand: string | null;
+  @Prop({ type: String, default: null }) cardLast4: string | null;
 }
 
 export const PlatformPlanPaymentAttemptSchema = SchemaFactory.createForClass(PlatformPlanPaymentAttempt);

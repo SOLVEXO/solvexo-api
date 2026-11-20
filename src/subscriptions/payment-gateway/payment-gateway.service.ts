@@ -82,6 +82,20 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
     }
   }
 
+  /** Card brand + last 4 of the payment method behind a PaymentIntent (null for non-card / not found / manual provider). Best-effort, never throws. */
+  async getCardForPaymentIntent(paymentIntentId: string | null | undefined): Promise<{ brand: string; last4: string } | null> {
+    const client = this.stripeClient;
+    if (!client || !paymentIntentId || !paymentIntentId.startsWith('pi_')) return null;
+    try {
+      const pi: any = await client.paymentIntents.retrieve(paymentIntentId, { expand: ['payment_method'] });
+      const card = pi?.payment_method?.card;
+      return card?.last4 ? { brand: String(card.brand ?? 'card'), last4: String(card.last4) } : null;
+    } catch (err: any) {
+      this.logger.warn(`getCardForPaymentIntent(${paymentIntentId}) failed: ${err?.message}`);
+      return null;
+    }
+  }
+
   chargeOneTime(referenceId: string, amountUSD: number, context?: ChargeContext): Promise<ChargeResult> {
     return this.provider.chargeOneTime(referenceId, amountUSD, context);
   }

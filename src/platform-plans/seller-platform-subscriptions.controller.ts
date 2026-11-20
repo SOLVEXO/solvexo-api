@@ -14,6 +14,8 @@ import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
 import { ChangePlatformPlanDto, CancelPlatformPlanDto, BillingPortalDto, ConfirmOnboardingPaymentMethodDto, SaveOnboardingDraftDto, AdminExtendSubscriptionDto, AdminAssignPlanDto, AdminUnlockOrLockDto } from './dto/subscribe-platform-plan.dto';
 import { RefundInvoiceDto } from './dto/refund-invoice.dto';
 import { ListInvoicesQueryDto } from './dto/list-invoices.dto';
+import { BillingTimelineQueryDto } from './dto/billing-timeline.dto';
+import { BillingTimelineService } from './billing-timeline.service';
 
 @ApiTags('Platform Plans — Seller')
 @Controller('api/platform-plans')
@@ -21,6 +23,7 @@ export class SellerPlatformSubscriptionsController {
   constructor(
     private readonly sellerPlatformSubscriptionsService: SellerPlatformSubscriptionsService,
     private readonly entitlementsService: EntitlementsService,
+    private readonly billingTimeline: BillingTimelineService,
   ) {}
 
   @RequirePermission('billing.manage')
@@ -103,6 +106,25 @@ export class SellerPlatformSubscriptionsController {
     return this.sellerPlatformSubscriptionsService.adminListInvoices(storeId, query);
   }
 
+  // Admin: one store's complete billing timeline (trial → today) + CSV. Declared with the other literal admin routes.
+  @RequirePermission('billing.manage')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('admin')
+  @Get('admin/stores/:storeId/billing-timeline')
+  adminBillingTimeline(@Param('storeId') storeId: string, @Query() query: BillingTimelineQueryDto) {
+    return this.billingTimeline.getForAdmin(storeId, query);
+  }
+
+  @RequirePermission('billing.manage')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('admin')
+  @Get('admin/stores/:storeId/billing-timeline/export')
+  adminBillingExport(@Param('storeId') storeId: string, @Query() query: BillingTimelineQueryDto) {
+    return this.billingTimeline.exportForAdmin(storeId, query);
+  }
+
   // Onboarding wizard's Payment step — no store exists yet at this point, so
   // these are literal routes declared ahead of the `:storeId` routes below
   // (same convention as every other literal-vs-param route split in this
@@ -166,6 +188,24 @@ export class SellerPlatformSubscriptionsController {
     await this.sellerPlatformSubscriptionsService.verifyStoreOwnership(storeId, actingSellerId(req.user));
     const data = await this.entitlementsService.getEntitlementsSummary(storeId);
     return { success: true, data };
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.billing.view', 'settings.billing.manage')
+  @Get(':storeId/billing-timeline')
+  billingTimelineFor(@Req() req: any, @Param('storeId') storeId: string, @Query() query: BillingTimelineQueryDto) {
+    return this.billingTimeline.getForSeller(actingSellerId(req.user), storeId, query);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.billing.view', 'settings.billing.manage')
+  @Get(':storeId/billing-timeline/export')
+  billingExportFor(@Req() req: any, @Param('storeId') storeId: string, @Query() query: BillingTimelineQueryDto) {
+    return this.billingTimeline.exportForSeller(actingSellerId(req.user), storeId, query);
   }
 
   @ApiBearerAuth()

@@ -6,6 +6,7 @@ import { PlatformAddonsController } from './platform-addons.controller';
 import { PlatformPlansService } from './platform-plans.service';
 import { PlatformPlanCatalogService } from './platform-plan-catalog.service';
 import { SellerPlatformSubscriptionsService } from './seller-platform-subscriptions.service';
+import { BillingTimelineService } from './billing-timeline.service';
 import { EntitlementsService } from './entitlements.service';
 import { AiCreditsService } from './ai-credits.service';
 import { PlatformAddonsService } from './platform-addons.service';
@@ -43,6 +44,7 @@ import { CriticalAlertService } from '../common/critical-alert.service';
     PlatformPlansService,
     PlatformPlanCatalogService,
     SellerPlatformSubscriptionsService,
+    BillingTimelineService,
     LegacyPlatformSubscriptionBackfillService,
     EntitlementsService,
     AiCreditsService,

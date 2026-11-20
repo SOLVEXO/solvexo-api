@@ -406,10 +406,31 @@ export class SellerPlatformSubscriptionsService {
     return out;
   }
 
+  /** Card brand/last4 behind a payment — best-effort metadata for the billing timeline, must never break billing. */
+  private async safeCard(paymentIntentId: string | null | undefined): Promise<{ brand: string; last4: string } | null> {
+    try { return (await (this.gateway as any).getCardForPaymentIntent?.(paymentIntentId)) ?? null; } catch { return null; }
+  }
+
+  /** Itemised lines of a Stripe invoice (plan price, discounts/credits, tax) — signed amounts in USD. */
+  private lineItemsFromStripeInvoice(invoice: any): Array<{ kind: 'plan' | 'credit' | 'discount' | 'tax' | 'other'; label: string; amountUSD: number }> {
+    const out: Array<{ kind: 'plan' | 'credit' | 'discount' | 'tax' | 'other'; label: string; amountUSD: number }> = [];
+    for (const l of invoice?.lines?.data ?? []) {
+      const amt = this.round((l.amount ?? 0) / 100);
+      out.push({ kind: amt < 0 ? 'credit' : 'plan', label: String(l.description ?? 'Platform plan').slice(0, 200), amountUSD: amt });
+    }
+    for (const d of invoice?.total_discount_amounts ?? []) {
+      if (d?.amount) out.push({ kind: 'discount', label: 'Intro / promotional discount', amountUSD: -this.round(d.amount / 100) });
+    }
+    const taxCents = (invoice?.total_taxes ?? []).reduce((s: number, t: any) => s + (t?.amount ?? 0), 0) || invoice?.tax || 0;
+    if (taxCents) out.push({ kind: 'tax', label: 'Tax', amountUSD: this.round(taxCents / 100) });
+    return out;
+  }
+
   private async recordAttempt(params: {
     storeId: string; sellerId: string; attemptType: 'initial' | 'renewal' | 'proration';
     outcome: 'success' | 'failed'; amountUSD: number; failureReason?: string | null; failureCode?: string | null;
     invoiceId?: string | null; providerChargeId?: string | null;
+    source?: string | null; cardBrand?: string | null; cardLast4?: string | null;
   }) {
     try {
       const attemptNumber = (await this.attemptModel.countDocuments({ storeId: params.storeId })) + 1;
@@ -817,6 +838,7 @@ export class SellerPlatformSubscriptionsService {
     invoice.status = invoice.refundedAmountUSD >= invoice.amountUSD ? 'refunded' : 'partially_refunded';
     invoice.refundedAt = new Date();
     invoice.providerRefundId = result.providerRefundId ?? invoice.providerRefundId;
+    invoice.refundReason = reason?.trim() || invoice.refundReason || null;
     await invoice.save();
 
     this.activityLogService.log({
@@ -1024,7 +1046,8 @@ export class SellerPlatformSubscriptionsService {
     }
 
     const now = new Date();
-    const { newAmountUSD, totalCreditAvailable, netDue, isFreeMoveIn } = this.computeProration(sub, newPlan, newInterval);
+    const proration = this.computeProration(sub, newPlan, newInterval);
+    const { newAmountUSD, totalCreditAvailable, netDue, isFreeMoveIn } = proration;
     void totalCreditAvailable; // surfaced via previewChangePlan; changePlan itself only needs netDue
 
     // Shopify: moving to a cheaper plan takes effect at the end of the billing cycle — nothing is charged,
@@ -1224,12 +1247,15 @@ export class SellerPlatformSubscriptionsService {
       const dueTotalUSD = this.round(netDue + dueTaxUSD);
       const charge = await this.gateway.chargeSubscription(sub._id.toString(), dueTotalUSD, { providerCustomerId: chargeCustomerId, idempotencyKey });
 
+      // Itemised invoice: plan price, credit for the unused part of the old plan, account credit, tax.
+      const lineItems = this.buildChangeLineItems(newPlan, oldPlan, newInterval, proration, dueTaxUSD, dueQuote?.label ?? 'Tax');
+
       // 3DS / SCA required: nothing is granted yet. Remember what is being bought and hand the client secret back so
       // the browser can confirm the card; confirmPendingPlanChange() applies the plan once the charge has succeeded.
       if (!charge.success && charge.requiresAction && charge.clientSecret) {
         sub.pendingPlanChange = {
           kind: 'upgrade', planId: String(newPlanId), interval: newInterval, amountUSD: this.round(newAmountUSD),
-          paymentIntentId: charge.providerChargeId, chargedUSD: dueTotalUSD, subtotalUSD: netDue, taxUSD: dueTaxUSD, createdAt: now,
+          paymentIntentId: charge.providerChargeId, chargedUSD: dueTotalUSD, subtotalUSD: netDue, taxUSD: dueTaxUSD, lineItems, createdAt: now,
         };
         sub.markModified?.('pendingPlanChange');
         await sub.save();
@@ -1241,6 +1267,7 @@ export class SellerPlatformSubscriptionsService {
       }
 
       try {
+        const card = await this.safeCard(charge.providerChargeId);
         invoice = await this.invoiceModel.create({
           storeId, sellerId, platformPlanId: newPlanId,
           invoiceNumber: await this.generateInvoiceNumber(), type: isFirstPaidPurchase ? 'initial' : 'proration',
@@ -1249,11 +1276,13 @@ export class SellerPlatformSubscriptionsService {
           status: charge.success ? 'paid' : 'failed',
           paidAt: charge.success ? now : null, providerChargeId: charge.providerChargeId,
           paymentMethodType: charge.paymentMethodType ?? 'manual',
+          cardBrand: card?.brand ?? null, cardLast4: card?.last4 ?? null, lineItems,
         });
         await this.recordAttempt({
           storeId, sellerId, attemptType: 'proration', outcome: charge.success ? 'success' : 'failed',
           amountUSD: dueTotalUSD, failureReason: charge.success ? null : (charge.failureReason ?? 'Payment declined'),
           failureCode: charge.failureCode ?? null, invoiceId: invoice._id.toString(), providerChargeId: charge.providerChargeId,
+          source: 'plan_change', cardBrand: card?.brand ?? null, cardLast4: card?.last4 ?? null,
         });
       } catch (err: any) {
         if (charge.success) await this.reportChargedButNotSaved(sub, charge.providerChargeId, dueTotalUSD, err);
@@ -1285,6 +1314,17 @@ export class SellerPlatformSubscriptionsService {
     }
 
     return { success: true, message, data: { subscription: sub, invoice } };
+  }
+
+  /** Line-by-line breakdown of an immediate plan change: new plan, credit for the unused old plan, account credit, tax (signed, sums to the amount charged). */
+  private buildChangeLineItems(newPlan: any, oldPlan: any, interval: 'monthly' | 'yearly', p: { newAmountUSD: number; unusedCredit: number; existingCreditBalanceUSD: number }, taxUSD: number, taxLabel: string) {
+    const items: Array<{ kind: 'plan' | 'credit' | 'discount' | 'tax' | 'other'; label: string; amountUSD: number }> = [
+      { kind: 'plan', label: `${newPlan.name} plan (${interval})`, amountUSD: this.round(p.newAmountUSD) },
+    ];
+    if (p.unusedCredit > 0) items.push({ kind: 'credit', label: `Unused time on ${oldPlan?.name ?? 'previous plan'}`, amountUSD: -this.round(p.unusedCredit) });
+    if (p.existingCreditBalanceUSD > 0) items.push({ kind: 'credit', label: 'Account credit applied', amountUSD: -this.round(p.existingCreditBalanceUSD) });
+    if (taxUSD > 0) items.push({ kind: 'tax', label: taxLabel, amountUSD: this.round(taxUSD) });
+    return items;
   }
 
   /** A card was charged but the local record could not be written — log at error level + alert so it can be reconciled by hand. */
@@ -1426,11 +1466,18 @@ export class SellerPlatformSubscriptionsService {
     const chargedUSD = pending.chargedUSD ?? pending.subtotalUSD ?? 0;
     try {
       if (!(await this.invoiceModel.exists({ providerChargeId: pending.paymentIntentId, status: 'paid' }))) {
-        await this.invoiceModel.create({
+        const card = await this.safeCard(pending.paymentIntentId);
+        const createdInvoice: any = await this.invoiceModel.create({
           storeId, sellerId, platformPlanId: pending.planId,
           invoiceNumber: await this.generateInvoiceNumber(), type: 'proration',
           amountUSD: chargedUSD, subtotalUSD: pending.subtotalUSD ?? chargedUSD, taxAmountUSD: pending.taxUSD ?? 0, taxRatePercent: 0,
           status: 'paid', paidAt: now, providerChargeId: pending.paymentIntentId, paymentMethodType: 'card',
+          cardBrand: card?.brand ?? null, cardLast4: card?.last4 ?? null, lineItems: pending.lineItems ?? [],
+        });
+        await this.recordAttempt({
+          storeId, sellerId, attemptType: 'proration', outcome: 'success', amountUSD: chargedUSD,
+          invoiceId: String(createdInvoice._id), providerChargeId: pending.paymentIntentId,
+          source: 'plan_change', cardBrand: card?.brand ?? null, cardLast4: card?.last4 ?? null,
         });
         sub.totalPaidUSD = this.round((sub.totalPaidUSD ?? 0) + chargedUSD);
       }
@@ -2057,6 +2104,7 @@ export class SellerPlatformSubscriptionsService {
     const line = invoice.lines?.data?.[0];
     const periodEnd = line?.period?.end ? new Date(line.period.end * 1000) : this.addPeriod(new Date(), sub.billingInterval as any);
     const providerChargeId = getInvoicePaymentIntentId(invoice);
+    const card = await this.safeCard(providerChargeId);
 
     // The invoice now paid had a 'failed' placeholder in Billing History: replace it with the paid record.
     if (invoice.id) await this.invoiceModel.deleteOne({ stripeInvoiceId: invoice.id, status: 'failed' });
@@ -2103,7 +2151,8 @@ export class SellerPlatformSubscriptionsService {
         taxCountry: taxAmountUSD > 0 ? (taxInfo?.country ?? null) : null,
         status: 'paid', paidAt: new Date(), providerChargeId, stripeInvoiceId: invoice.id,
         hostedInvoiceUrl: invoice.hosted_invoice_url ?? null, invoicePdfUrl: invoice.invoice_pdf ?? null,
-        paymentMethodType: 'card',
+        paymentMethodType: 'card', cardBrand: card?.brand ?? null, cardLast4: card?.last4 ?? null,
+        lineItems: this.lineItemsFromStripeInvoice(invoice),
       }], { session });
 
       sub.status = 'active';
@@ -2115,6 +2164,10 @@ export class SellerPlatformSubscriptionsService {
       await sub.save({ session });
     });
     await this.unlockStorefrontIfComingSoon(sub.storeId);
+    await this.recordAttempt({
+      storeId: sub.storeId, sellerId: sub.sellerId, attemptType: invoice.billing_reason === 'subscription_create' ? 'initial' : 'renewal',
+      outcome: 'success', amountUSD, providerChargeId, source: 'stripe_invoice', cardBrand: card?.brand ?? null, cardLast4: card?.last4 ?? null,
+    });
 
     const plan = await this.planModel.findById(sub.platformPlanId).lean();
     await this.syncFeaturedBadge(sub.storeId, plan);
@@ -2256,6 +2309,14 @@ export class SellerPlatformSubscriptionsService {
     if (invoice.id && sub.lastFailedStripeInvoiceId === invoice.id) return;
     if (invoice.id) sub.lastFailedStripeInvoiceId = invoice.id;
     const amountUSD = this.round((invoice.amount_due ?? 0) / 100);
+    // Every failed charge is kept as its own record (when, how much, why) for the billing timeline.
+    const failCard = await this.safeCard(getInvoicePaymentIntentId(invoice));
+    await this.recordAttempt({
+      storeId: sub.storeId, sellerId: sub.sellerId, attemptType: invoice.billing_reason === 'subscription_create' ? 'initial' : 'renewal',
+      outcome: 'failed', amountUSD, failureReason: invoice.last_finalization_error?.message ?? 'The card was declined or could not be authenticated',
+      failureCode: invoice.last_finalization_error?.code ?? null, providerChargeId: getInvoicePaymentIntentId(invoice),
+      source: 'stripe_invoice', cardBrand: failCard?.brand ?? null, cardLast4: failCard?.last4 ?? null,
+    });
 
     // A purchase that was never paid: the seller stays EXACTLY where they were (trialing / trial_ended / active on the
     // old plan / locked) — no plan was granted, so there is nothing to put into dunning or past_due.
