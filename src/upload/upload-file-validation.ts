@@ -108,6 +108,36 @@ export function maxBytesForExtension(ext: string): number {
   return Number.POSITIVE_INFINITY;
 }
 
+// ── Seller verification (KYC) documents ─────────────────────────────────
+// Stricter than the generic private route: only PDF and photos, 10 MB, and each
+// seller's files live in their own folder so a document can be tied to its owner.
+
+export const KYC_DOCUMENT_EXTENSIONS: readonly string[] = ['pdf', 'jpg', 'jpeg', 'png', 'webp'];
+export const KYC_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
+export const KYC_DOCUMENT_RESOURCE_TYPES: readonly string[] = ['image', 'raw'];
+
+export const kycFolderForSeller = (sellerId: string) => `private/kyc-documents/${sellerId}`;
+
+/** True only when `publicId` sits inside this seller's own KYC folder (blocks attaching someone else's file or any other private file). */
+export function isOwnKycPublicId(publicId: unknown, sellerId: string): boolean {
+  if (typeof publicId !== 'string' || !sellerId) return false;
+  const prefix = `${kycFolderForSeller(sellerId)}/`;
+  return publicId.startsWith(prefix) && publicId.length > prefix.length && !publicId.includes('..');
+}
+
+/** KYC upload gate: extension allow-list, 10 MB, and the real file bytes must match the extension. */
+export function assertKycDocument(file: { originalname?: string; mimetype?: string; buffer?: Buffer; size?: number }): void {
+  const ext = getExtension(file.originalname || '');
+  if (!KYC_DOCUMENT_EXTENSIONS.includes(ext)) {
+    throw new BadRequestException('Upload a PDF or a clear photo (JPG, PNG or WebP).');
+  }
+  const size = file.buffer?.length ?? file.size ?? 0;
+  if (size > KYC_DOCUMENT_MAX_BYTES) {
+    throw new BadRequestException(`File is too large. The limit is ${KYC_DOCUMENT_MAX_BYTES / (1024 * 1024)} MB.`);
+  }
+  assertFileSignature(file);
+}
+
 /** Throws BadRequestException when the buffer's real type does not match the claimed extension. */
 export function assertFileSignature(file: { originalname?: string; mimetype?: string; buffer?: Buffer; size?: number }): void {
   const ext = getExtension(file.originalname || '');

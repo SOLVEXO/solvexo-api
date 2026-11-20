@@ -28,9 +28,10 @@ import { StoreModule } from '../store/store.module';
 import { StorePagesModule } from '../store-pages/store-pages.module';
 import { GiftCardsModule } from '../gift-cards/gift-cards.module';
 import { SellerTrustModule } from '../seller-trust/seller-trust.module';
+import { KycRetentionModule } from '../seller-trust/kyc-retention.module';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), MerchandisingModule, SubscriptionsModule, FinanceModule, RedisModule, SeoModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, AnalyticsModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule, AdminAnnouncementsModule, AuthModule, StoreModule, StorePagesModule, GiftCardsModule, MembershipsModule, FbrDiModule, SellerTrustModule],
+  imports: [ScheduleModule.forRoot(), MerchandisingModule, SubscriptionsModule, FinanceModule, RedisModule, SeoModule, PromotionsModule, ExchangeRateModule, AdminFinanceModule, BookingsModule, IntegrationsModule, AbandonedCartModule, AnalyticsModule, EmailCampaignsModule, InventoryModule, PurchaseOrdersModule, DraftOrdersModule, OrdersModule, MarketingAutomationsModule, AdminAnnouncementsModule, AuthModule, StoreModule, StorePagesModule, GiftCardsModule, MembershipsModule, FbrDiModule, SellerTrustModule, KycRetentionModule],
   providers: [SchedulerService],
 })
 export class SchedulerModule {}

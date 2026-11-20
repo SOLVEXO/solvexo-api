@@ -7,6 +7,7 @@ import {
   UseGuards,
   BadRequestException,
   Body,
+  Req,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -14,7 +15,7 @@ import { UploadService } from './upload.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { publicUploadFileFilter, privateUploadFileFilter, assertFileSignature } from './upload-file-validation';
+import { publicUploadFileFilter, privateUploadFileFilter, assertFileSignature, assertKycDocument, kycFolderForSeller } from './upload-file-validation';
 
 @Controller('api/upload')
 @UseGuards(JwtAuthGuard)
@@ -54,13 +55,15 @@ export class UploadController {
     limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
     fileFilter: privateUploadFileFilter,
   }))
-  async uploadPrivateFile(@UploadedFile() file: Express.Multer.File, @Body('purpose') purpose?: string) {
+  async uploadPrivateFile(@UploadedFile() file: Express.Multer.File, @Req() req: any, @Body('purpose') purpose?: string) {
     if (!file) throw new BadRequestException('No file uploaded');
-    assertFileSignature(file);
     // Only a known purpose gets its own folder — anything else (including
     // omitted) keeps the original digital-products default so that flow is
     // never affected by this addition.
-    const folder = purpose === 'kyc_document' ? 'private/kyc-documents' : undefined;
+    const isKyc = purpose === 'kyc_document';
+    if (isKyc) assertKycDocument(file); else assertFileSignature(file);
+    // KYC files go in the uploading seller's own folder (see isOwnKycPublicId).
+    const folder = isKyc ? kycFolderForSeller(String(req.user.userId)) : undefined;
     const result = await this.uploadService.uploadPrivateFile(file, folder);
     return {
       success: true,

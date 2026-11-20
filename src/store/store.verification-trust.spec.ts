@@ -3,6 +3,7 @@ jest.mock('../database/databaseservice', () => ({ DatabaseService: class {} }));
 
 import { BadRequestException } from '@nestjs/common';
 import { StoreService } from './store.service';
+import { VERIFICATION_DECLARATION_VERSION } from './verification-requirements.config';
 
 function build(store: any) {
   const storeModel = {
@@ -80,11 +81,30 @@ describe('StoreService seller verification (trust)', () => {
         documents: [doc('owner_id'), doc('tax_registration'), doc('address_proof')],
       },
     }));
-    await service.submitVerification('seller', 's1');
+    await service.submitVerification('seller', 's1', { accepted: true, ip: '1.2.3.4', userAgent: 'jest' });
     const update = storeModel.findByIdAndUpdate.mock.calls[0][1];
     expect(update.$set).toMatchObject({ verificationStatus: 'pending', infoRequestMessage: null });
     expect(update.$set.verificationSubmittedAt).toBeInstanceOf(Date);
     expect(update.$push['verification.history']).toMatchObject({ action: 'resubmitted' });
+    // The declaration is recorded with its wording version, time and where it was accepted from.
+    expect(update.$set['verification.consent']).toMatchObject({ version: VERIFICATION_DECLARATION_VERSION, ip: '1.2.3.4', userAgent: 'jest' });
+    expect(update.$set['verification.consent'].acceptedAt).toBeInstanceOf(Date);
+  });
+
+  it('refuses to submit without the declaration — nothing is saved', async () => {
+    const doc = (type: string) => ({ type, publicId: `p-${type}`, resourceType: 'raw', fileName: `${type}.pdf`, uploadedAt: new Date() });
+    const { service, storeModel } = build(baseStore({
+      verificationStatus: 'not_started',
+      verification: {
+        legalBusinessName: 'Shop', businessAddress: 'Lahore', idDocumentType: 'cnic', taxId: '1234567-8', cnicNumber: '12345-1234567-1',
+        authorizedContact: { name: 'A', email: 'a@x.pk', phone: '0300' },
+        businessProfile: { sourcing: 'reseller', sellsBrandedGoods: false, regulatedCategories: [], premises: 'shop', yearsSelling: '1_3y', dispatchTime: 'same_day', returnPolicy: '7_day_returns', monthlyOrders: 'lt_50', bankAccountInOwnName: true },
+        documents: [doc('owner_id'), doc('tax_registration'), doc('address_proof')],
+      },
+    }));
+    await expect(service.submitVerification('seller', 's1')).rejects.toThrow('confirm the declaration');
+    await expect(service.submitVerification('seller', 's1', { accepted: false })).rejects.toThrow('confirm the declaration');
+    expect(storeModel.findByIdAndUpdate).not.toHaveBeenCalled();
   });
 
   it('submit lists the missing NTN/CNIC/questionnaire for a PK seller', async () => {
@@ -112,5 +132,55 @@ describe('StoreService seller verification (trust)', () => {
     const { service, storeModel } = build(baseStore());
     await service.listPublicStores({});
     expect(storeModel.countDocuments.mock.calls[0][0]).toMatchObject({ status: 'active', marketplaceHidden: { $ne: true } });
+  });
+});
+
+describe('StoreService seller verification: STRN rule', () => {
+  const filled = {
+    legalBusinessName: 'Shop', businessAddress: 'Lahore', idDocumentType: 'cnic', taxId: '1234567-8', cnicNumber: '12345-1234567-1',
+    authorizedContact: { name: 'A', email: 'a@x.pk', phone: '0300' },
+    businessProfile: { sourcing: 'reseller', sellsBrandedGoods: false, regulatedCategories: [], premises: 'shop', yearsSelling: '1_3y', dispatchTime: 'same_day', returnPolicy: '7_day_returns', monthlyOrders: 'lt_50', bankAccountInOwnName: true } as any,
+    documents: ['owner_id', 'tax_registration', 'address_proof'].map((type) => ({ type, publicId: `p-${type}`, resourceType: 'raw', fileName: `${type}.pdf`, uploadedAt: new Date() })),
+  };
+  const missing = async (store: any, settings?: any) => {
+    const { service } = build(store);
+    if (settings) service.sellerTrust.getSettings = jest.fn().mockResolvedValue(settings);
+    return (await service.getVerification('seller', 's1')).data;
+  };
+
+  it('a complete PK submission without an STRN can be submitted by default', async () => {
+    const d = await missing(baseStore({ verification: filled }));
+    expect(d.missingFields).not.toContain('strn');
+    expect(d.canSubmit).toBe(true);
+  });
+
+  it('answering "yes, sales-tax registered" makes the STRN required and the answer is saved and returned', async () => {
+    const d = await missing(baseStore({ verification: { ...filled, businessProfile: { ...filled.businessProfile, salesTaxRegistered: true } } }));
+    expect(d.missingFields).toContain('strn');
+    expect(d.canSubmit).toBe(false);
+    expect(d.businessProfile.salesTaxRegistered).toBe(true);
+    const ok = await missing(baseStore({ verification: { ...filled, strn: '17-00-1234-567-89', businessProfile: { ...filled.businessProfile, salesTaxRegistered: true } } }));
+    expect(ok.canSubmit).toBe(true);
+  });
+
+  it('the admin switch makes the STRN required for every PK seller, and getVerification reports it', async () => {
+    const d = await missing(baseStore({ verification: filled }), { enforcementStartedAt: null, graceDays: 30, requireStrnForPk: true });
+    expect(d.missingFields).toContain('strn');
+    expect(d.requirements.requiredFields).toContain('strn');
+    expect(d.canSubmit).toBe(false);
+  });
+
+  it('a settings failure falls back to the default rule instead of breaking the page', async () => {
+    const { service } = build(baseStore({ verification: filled }));
+    service.sellerTrust.getSettings = jest.fn().mockRejectedValue(new Error('db down'));
+    const d = (await service.getVerification('seller', 's1')).data;
+    expect(d.canSubmit).toBe(true);
+  });
+
+  it('the questionnaire accepts salesTaxRegistered true/false/null and rejects anything else', async () => {
+    const { service, storeModel } = build(baseStore());
+    await service.updateVerification('seller', 's1', { businessProfile: { salesTaxRegistered: true } });
+    expect(storeModel.findByIdAndUpdate.mock.calls[0][1].$set.verification.businessProfile).toEqual({ salesTaxRegistered: true });
+    await expect(service.updateVerification('seller', 's1', { businessProfile: { salesTaxRegistered: 'yes' } })).rejects.toBeInstanceOf(BadRequestException);
   });
 });

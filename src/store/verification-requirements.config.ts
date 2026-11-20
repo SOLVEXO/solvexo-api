@@ -23,7 +23,18 @@ export interface VerificationRequirementSet {
 export interface RequirementProfileInput {
   sellsBrandedGoods?: boolean | null;
   regulatedCategories?: string[] | null;
+  /** PK: the seller says they are sales-tax registered → STRN becomes required. */
+  salesTaxRegistered?: boolean | null;
 }
+
+/** Platform switches that change what a seller must submit (admin → Seller Trust settings). */
+export interface RequirementOptions {
+  /** PK: STRN required from every seller, not only those who say they are sales-tax registered. */
+  requireStrnForPk?: boolean;
+}
+
+/** Version of the declaration wording the seller ticks before submitting (web: `DECLARATION_TEXT`). Bump it when the wording changes. */
+export const VERIFICATION_DECLARATION_VERSION = '2026-11-20';
 
 const BASIC_REQUIRED_FIELDS = [
   'legalBusinessName', 'businessAddress', 'idDocumentType',
@@ -81,6 +92,7 @@ export function getVerificationRequirements(
   businessType: BusinessType | null,
   level: VerificationLevel,
   profile?: RequirementProfileInput | null,
+  options?: RequirementOptions | null,
 ): VerificationRequirementSet {
   const rule = COUNTRY_RULES[(country ?? '').toUpperCase()];
   let base: ReturnType<CountryRule>;
@@ -93,6 +105,21 @@ export function getVerificationRequirements(
       requiredDocuments: [...BASIC_REQUIRED_DOCS, ...(level === 'business' ? BUSINESS_EXTRA_DOCS : [])],
       optionalDocuments: [...OPTIONAL_DOCS],
     };
+  }
+
+  // Pakistan STRN: optional by default; required for a seller who says they are sales-tax registered, or for everyone
+  // when the admin switch is on.
+  if ((country ?? '').toUpperCase() === 'PK' && (profile?.salesTaxRegistered === true || options?.requireStrnForPk === true)) {
+    base = {
+      ...base,
+      requiredFields: base.requiredFields.includes('strn') ? base.requiredFields : [...base.requiredFields, 'strn'],
+      optionalFields: base.optionalFields.filter((f) => f !== 'strn'),
+    };
+  }
+
+  // A company or partnership must also name the person behind it (director / partner) and give their ID number.
+  if (isEntity(businessType)) {
+    base = { ...base, requiredFields: [...new Set([...base.requiredFields, 'director.name', 'director.idNumber'])] };
   }
 
   const requiredDocuments = [...base.requiredDocuments];

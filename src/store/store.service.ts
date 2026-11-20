@@ -27,7 +27,10 @@ import {
   type BusinessType, type VerificationDocumentType, type VerificationDocument,
   type VerificationStatus,
 } from './schemas/store.schema';
-import { getVerificationRequirements, isFieldSatisfied } from './verification-requirements.config';
+import { getVerificationRequirements, isFieldSatisfied, VERIFICATION_DECLARATION_VERSION } from './verification-requirements.config';
+import type { RequirementOptions } from './verification-requirements.config';
+import { CHANGE_SCALAR_FIELDS, CHANGE_CONTACT_FIELDS, CHANGE_DIRECTOR_FIELDS, mergeVerificationChange, describeChange } from './verification-change.util';
+import { VERIFICATION_LIMITS } from './dto/update-verification.dto';
 import { normalizeCnic, normalizeNtn, CNIC_FORMAT_MESSAGE, NTN_FORMAT_MESSAGE } from './verification-validators';
 import {
   SOURCING_TYPES, REGULATED_CATEGORIES, PREMISES_TYPES, YEARS_SELLING, DISPATCH_TIMES, RETURN_POLICIES, MONTHLY_ORDERS,
@@ -36,6 +39,7 @@ import { SellerTrustService } from '../seller-trust/seller-trust.service';
 import { resolveCountryFromIp } from '@/common/geo-locate.util';
 import { currencyForCountry } from '@/common/country-currency.const';
 import { UploadService } from '@/upload/upload.service';
+import { isOwnKycPublicId, KYC_DOCUMENT_RESOURCE_TYPES } from '@/upload/upload-file-validation';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { EntitlementsService, trimToMarketsLimit } from '@/platform-plans/entitlements.service';
@@ -334,16 +338,26 @@ export class StoreService {
     return this.uploadService.generateExpiringPrivateUrl(d.publicId, d.resourceType, 300, { inline: true });
   }
 
+  /** The admin switches that change what a seller must submit (never throws: on a settings failure the defaults apply). */
+  private async requirementOptions(): Promise<RequirementOptions> {
+    try {
+      const settings = await this.sellerTrust?.getSettings();
+      return { requireStrnForPk: settings?.requireStrnForPk === true };
+    } catch {
+      return {};
+    }
+  }
+
   /** THE evaluation used by getVerification (seller view), getLeadDetail
    *  (admin view — see AdminMarketplaceService), and submitVerification
    *  (the actual security gate) — one calculation, three consumers. Renders
    *  the FULL checklist (required + optional), each entry tagged with its
    *  current state, instead of just the list of what's missing, so the UI
    *  never has to re-derive "why is this shown" logic of its own. */
-  private evaluateVerification(store: any) {
+  private evaluateVerification(store: any, options?: RequirementOptions) {
     const v = store.verification ?? {};
     const level = store.verificationLevel ?? determineVerificationLevel(store.businessType ?? null);
-    const req = getVerificationRequirements(store.country ?? 'PK', store.businessType ?? null, level, v.businessProfile ?? null);
+    const req = getVerificationRequirements(store.country ?? 'PK', store.businessType ?? null, level, v.businessProfile ?? null, options);
 
     const missingFields = req.requiredFields.filter((path) => !isFieldSatisfied(v, path));
     // PK identifiers saved before format validation existed count as missing until corrected.
@@ -380,7 +394,7 @@ export class StoreService {
   async getVerification(sellerId: string, storeId: string) {
     const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
     const v: any = store.verification ?? {};
-    const evaluation = this.evaluateVerification(store);
+    const evaluation = this.evaluateVerification(store, await this.requirementOptions());
     const deadline = this.sellerTrust
       ? await this.sellerTrust.deadlineFor(store as any)
       : { dueAt: null, limited: false, enforcementStarted: false };
@@ -398,6 +412,7 @@ export class StoreService {
         businessAddress: v.businessAddress ?? null,
         idDocumentType: v.idDocumentType ?? null,
         authorizedContact: v.authorizedContact ?? null,
+        director: v.director ?? null,
         cnicNumber: v.cnicNumber ?? null,
         strn: v.strn ?? null,
         businessProfile: this.shapeBusinessProfile(v.businessProfile),
@@ -407,6 +422,8 @@ export class StoreService {
         missingDocuments: evaluation.missingDocuments,
         canSubmit: evaluation.canSubmit,
         history: v.history ?? [],
+        // A verified seller's waiting / decided change request (see requestVerificationChange); null when none.
+        change: this.shapeVerificationChange(v.change),
         storeStatus: store.status,
         rejectionReason: store.rejectionReason ?? null,
         // Set while verificationStatus is 'needs_info' — the admin's question.
@@ -434,21 +451,21 @@ export class StoreService {
     const country = query.country ?? store.country ?? 'PK';
     const level = determineVerificationLevel(businessType);
 
-    return { success: true, data: getVerificationRequirements(country, businessType, level) };
+    return { success: true, data: getVerificationRequirements(country, businessType, level, null, await this.requirementOptions()) };
   }
 
   /** Same preview, but usable BEFORE a store exists — onboarding doesn't
    *  create the store until the final submit step, so there's no storeId to
    *  scope `getVerificationRequirements` (above) to yet. Pure function of
    *  country+businessType, no DB read at all — no ownership check needed. */
-  previewVerificationRequirementsStandalone(query: { country?: string; businessType?: string }) {
+  async previewVerificationRequirementsStandalone(query: { country?: string; businessType?: string }) {
     const businessType = (query.businessType as BusinessType) ?? null;
     if (businessType && !BUSINESS_TYPES.includes(businessType)) {
       throw new BadRequestException('Invalid businessType');
     }
     const country = query.country ?? 'PK';
     const level = determineVerificationLevel(businessType);
-    return { success: true, data: getVerificationRequirements(country, businessType, level) };
+    return { success: true, data: getVerificationRequirements(country, businessType, level, null, await this.requirementOptions()) };
   }
 
   /** Validates a new store country (ISO alpha-2) and returns it normalised. The country decides which payment
@@ -478,10 +495,11 @@ export class StoreService {
     businessType?: BusinessType;
     legalBusinessName?: string;
     registrationNumber?: string;
-    taxId?: string;
+    taxId?: string | null;
     businessAddress?: string;
     idDocumentType?: string;
     authorizedContact?: { name?: string; designation?: string; email?: string; phone?: string };
+    director?: { name?: string; idNumber?: string };
     documents?: { type: VerificationDocumentType; publicId: string; resourceType?: string; fileName: string }[];
     cnicNumber?: string | null;
     strn?: string | null;
@@ -502,6 +520,9 @@ export class StoreService {
     if (body.documents) {
       for (const d of body.documents) {
         if (!VERIFICATION_DOCUMENT_TYPES.includes(d.type)) throw new BadRequestException(`Invalid document type: ${d.type}`);
+        // The file must be one this seller uploaded for verification — never someone else's or another private file.
+        if (!isOwnKycPublicId(d.publicId, sellerId)) throw new BadRequestException('Invalid document: upload the file again.');
+        if (d.resourceType !== undefined && !KYC_DOCUMENT_RESOURCE_TYPES.includes(d.resourceType)) throw new BadRequestException('Invalid document type.');
       }
     }
 
@@ -545,7 +566,27 @@ export class StoreService {
     if (body.businessAddress !== undefined) next.businessAddress = body.businessAddress;
     if (body.idDocumentType !== undefined) next.idDocumentType = body.idDocumentType;
     if (body.authorizedContact !== undefined) {
-      next.authorizedContact = { ...(current.authorizedContact ?? {}), ...body.authorizedContact };
+      // Only the four known keys are kept — any extra property a client sends is dropped.
+      const ac: Record<string, unknown> = body.authorizedContact ?? {};
+      const picked: Record<string, string> = {};
+      for (const key of ['name', 'designation', 'email', 'phone']) {
+        const value = ac[key];
+        if (typeof value === 'string') picked[key] = value.trim();
+      }
+      next.authorizedContact = { ...(current.authorizedContact ?? {}), ...picked };
+    }
+    if (body.director !== undefined) {
+      // Company / partnership: the person behind the business. A Pakistani ID number must be a valid CNIC (stored normalised).
+      const dir: Record<string, unknown> = body.director ?? {};
+      const pickedDir: Record<string, string | null> = {};
+      if (typeof dir.name === 'string') pickedDir.name = dir.name.trim().slice(0, VERIFICATION_LIMITS.directorName) || null;
+      if (typeof dir.idNumber === 'string') {
+        const raw = dir.idNumber.trim();
+        if (!raw) pickedDir.idNumber = null;
+        else if (isPk) { const cnic = normalizeCnic(raw); if (!cnic) throw new BadRequestException(`Director ID: ${CNIC_FORMAT_MESSAGE}`); pickedDir.idNumber = cnic; }
+        else pickedDir.idNumber = raw.slice(0, VERIFICATION_LIMITS.directorId);
+      }
+      next.director = { ...(current.director ?? {}), ...pickedDir };
     }
     if (body.documents !== undefined) {
       // Replace-by-type — re-uploading a document type overwrites the
@@ -590,14 +631,14 @@ export class StoreService {
    *  client-cached list) and rejects with a structured error naming exactly
    *  what's missing if anything is absent. This is the real security
    *  boundary — the frontend's own checklist is UX only. */
-  async submitVerification(sellerId: string, storeId: string) {
+  async submitVerification(sellerId: string, storeId: string, consent?: { accepted: boolean; ip?: string; userAgent?: string }) {
     const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
     const verificationStatus: VerificationStatus = store.verificationStatus ?? 'not_started';
     if (!EDITABLE_VERIFICATION_STATUSES.includes(verificationStatus)) {
       throw new BadRequestException('This store has already been submitted for review');
     }
 
-    const evaluation = this.evaluateVerification(store);
+    const evaluation = this.evaluateVerification(store, await this.requirementOptions());
     if (!evaluation.canSubmit) {
       throw new BadRequestException({
         message: 'Please complete every required field and document before submitting',
@@ -606,13 +647,19 @@ export class StoreService {
       });
     }
 
+    // The seller must confirm the declaration on every submit / resubmit; the backend refuses without it.
+    if (!consent?.accepted) {
+      throw new BadRequestException('Please confirm the declaration before submitting.');
+    }
+
     const nextStatus: VerificationStatus = 'pending';
     assertValidVerificationTransition(verificationStatus, nextStatus);
 
     const wasRejected = verificationStatus === 'rejected' || verificationStatus === 'needs_info';
+    const acceptedAt = new Date();
     const historyEntry = {
       action: wasRejected ? 'resubmitted' : 'submitted',
-      note: null,
+      note: `Declaration accepted (version ${VERIFICATION_DECLARATION_VERSION})`,
       actorId: sellerId,
       actorRole: 'seller',
       at: new Date(),
@@ -625,6 +672,11 @@ export class StoreService {
         infoRequestMessage: null,
         verificationSubmittedAt: new Date(),
         'verification.submitted': true,
+        'verification.consent': {
+          acceptedAt, version: VERIFICATION_DECLARATION_VERSION,
+          ip: consent.ip ? String(consent.ip).slice(0, 64) : null,
+          userAgent: consent.userAgent ? String(consent.userAgent).slice(0, 300) : null,
+        },
       },
       $push: { 'verification.history': historyEntry },
     });
@@ -638,6 +690,178 @@ export class StoreService {
     }).catch(() => {});
 
     return { success: true, message: wasRejected ? 'Resubmitted for review' : 'Submitted for review' };
+  }
+
+  // ── Change request (a VERIFIED seller cannot edit in place — see VerificationChangeRequest) ──
+
+  /** Evaluates the requirement checklist as if `verification` were the live data (used to vet a change before it is applied). */
+  async evaluateWithVerification(store: any, verification: Record<string, any>) {
+    return this.evaluateVerification(
+      { country: store.country, businessType: store.businessType, verificationLevel: store.verificationLevel, verification },
+      await this.requirementOptions(),
+    );
+  }
+
+  /**
+   * Would applying a change leave NEW required details empty? Only gaps the change itself creates count: a detail that was already
+   * missing before (e.g. a director for a company verified before that was required) never blocks an unrelated change.
+   */
+  async evaluateChangeGaps(store: any, current: Record<string, any>, merged: Record<string, any>) {
+    const [before, after] = await Promise.all([this.evaluateWithVerification(store, current), this.evaluateWithVerification(store, merged)]);
+    const missingFields = after.missingFields.filter((f: string) => !before.missingFields.includes(f));
+    const missingDocuments = after.missingDocuments.filter((d: string) => !(before.missingDocuments as string[]).includes(d));
+    return { ok: missingFields.length === 0 && missingDocuments.length === 0, missingFields, missingDocuments };
+  }
+
+  /** Stable shape of a change request for the seller (no links) and for the admin (`withLinks`: expiring links to the new files). */
+  shapeVerificationChange(change: any, withLinks = false) {
+    if (!change || change.status === 'cancelled') return null;
+    return {
+      status: change.status,
+      fields: change.fields ?? {},
+      documents: (change.documents ?? []).map((d: VerificationDocument) => ({
+        type: d.type, fileName: d.fileName, uploadedAt: d.uploadedAt, viewUrl: withLinks ? this.signedDocumentUrl(d) : null,
+      })),
+      sellerNote: change.sellerNote ?? null,
+      requestedAt: change.requestedAt ?? null,
+      reviewedAt: change.reviewedAt ?? null,
+      rejectionReason: change.rejectionReason ?? null,
+      consent: change.consent ? { acceptedAt: change.consent.acceptedAt, version: change.consent.version } : null,
+    };
+  }
+
+  /**
+   * A verified seller asks to change their details / files. Nothing live changes: the request waits for an admin.
+   * Only values that really differ are kept, formats are checked like a normal save, new files must be this seller's own
+   * uploads, the result must still satisfy every requirement, and the seller must accept the declaration again.
+   */
+  async requestVerificationChange(
+    sellerId: string,
+    storeId: string,
+    body: {
+      legalBusinessName?: string | null; registrationNumber?: string | null; taxId?: string | null; strn?: string | null;
+      cnicNumber?: string | null; businessAddress?: string | null;
+      authorizedContact?: { name?: string; designation?: string; email?: string; phone?: string };
+      director?: { name?: string; idNumber?: string };
+      documents?: { type: VerificationDocumentType; publicId: string; resourceType?: string; fileName: string }[];
+      note?: string | null;
+    },
+    consent?: { accepted: boolean; ip?: string; userAgent?: string },
+  ) {
+    const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
+    if ((store.verificationStatus ?? 'not_started') !== 'verified') {
+      throw new BadRequestException('Your details are not verified yet, so you can edit them directly. Change requests are for verified stores.');
+    }
+    if (!consent?.accepted) throw new BadRequestException('Please confirm the declaration before submitting.');
+
+    const current: any = (store.verification as any)?.toObject?.() ?? store.verification ?? {};
+    if (current.change?.status === 'pending') {
+      throw new BadRequestException('You already have a change request waiting for review. Cancel it to send a new one.');
+    }
+
+    const isPk = String(store.country ?? 'PK').toUpperCase() === 'PK';
+    const text = (raw: unknown, max: number): string | null => {
+      if (raw === null || raw === undefined) return null;
+      const s = String(raw).trim().slice(0, max);
+      return s === '' ? null : s;
+    };
+    const L = VERIFICATION_LIMITS;
+    const limits: Record<string, number> = {
+      legalBusinessName: L.legalBusinessName, registrationNumber: L.registrationNumber, taxId: L.taxId,
+      strn: L.strn, cnicNumber: L.idNumber, businessAddress: L.businessAddress,
+    };
+
+    const fields: Record<string, unknown> = {};
+    for (const key of CHANGE_SCALAR_FIELDS) {
+      if (body[key] === undefined) continue;
+      let next = text(body[key], limits[key]);
+      if (next && isPk && key === 'taxId') { next = normalizeNtn(next); if (!next) throw new BadRequestException(NTN_FORMAT_MESSAGE); }
+      if (next && isPk && key === 'cnicNumber') { next = normalizeCnic(next); if (!next) throw new BadRequestException(CNIC_FORMAT_MESSAGE); }
+      if (next !== (current[key] ?? null)) fields[key] = next;
+    }
+    const contact: Record<string, string> = {};
+    for (const key of CHANGE_CONTACT_FIELDS) {
+      const raw = body.authorizedContact?.[key];
+      if (raw === undefined) continue;
+      const next = String(raw ?? '').trim().slice(0, key === 'email' ? L.contactEmail : key === 'phone' ? L.contactPhone : L.contactName);
+      if (next !== String(current.authorizedContact?.[key] ?? '')) contact[key] = next;
+    }
+    if (Object.keys(contact).length) fields.authorizedContact = contact;
+
+    // Company / partnership: the director behind the business (same format rules as a normal save).
+    const directorChange: Record<string, string | null> = {};
+    for (const key of CHANGE_DIRECTOR_FIELDS) {
+      const raw = body.director?.[key];
+      if (raw === undefined) continue;
+      let next = text(raw, key === 'name' ? L.directorName : L.directorId);
+      if (next && isPk && key === 'idNumber') { next = normalizeCnic(next); if (!next) throw new BadRequestException(`Director ID: ${CNIC_FORMAT_MESSAGE}`); }
+      if (next !== (current.director?.[key] ?? null)) directorChange[key] = next;
+    }
+    if (Object.keys(directorChange).length) fields.director = directorChange;
+
+    const byType = new Map<string, VerificationDocument>();
+    for (const d of body.documents ?? []) {
+      if (!VERIFICATION_DOCUMENT_TYPES.includes(d.type)) throw new BadRequestException(`Invalid document type: ${d.type}`);
+      if (!isOwnKycPublicId(d.publicId, sellerId)) throw new BadRequestException('Invalid document: upload the file again.');
+      if (d.resourceType !== undefined && !KYC_DOCUMENT_RESOURCE_TYPES.includes(d.resourceType)) throw new BadRequestException('Invalid document type.');
+      byType.set(d.type, { type: d.type, publicId: d.publicId, resourceType: d.resourceType ?? 'raw', fileName: String(d.fileName).slice(0, L.fileName), uploadedAt: new Date() });
+    }
+    const documents = [...byType.values()];
+
+    if (!Object.keys(fields).length && !documents.length) throw new BadRequestException('You have not changed anything.');
+
+    // The details must still be complete after the change (e.g. the seller cannot blank a required field).
+    const { merged } = mergeVerificationChange(current, { fields, documents });
+    const gaps = await this.evaluateChangeGaps(store, current, merged);
+    if (!gaps.ok) {
+      throw new BadRequestException({
+        message: 'This change would leave required details empty',
+        missingFields: gaps.missingFields,
+        missingDocuments: gaps.missingDocuments,
+      });
+    }
+
+    const now = new Date();
+    await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, {
+      $set: {
+        'verification.change': {
+          status: 'pending', fields, documents,
+          sellerNote: text(body.note, 500), requestedAt: now,
+          consent: {
+            acceptedAt: now, version: VERIFICATION_DECLARATION_VERSION,
+            ip: consent.ip ? String(consent.ip).slice(0, 64) : null,
+            userAgent: consent.userAgent ? String(consent.userAgent).slice(0, 300) : null,
+          },
+          reviewedAt: null, reviewedBy: null, rejectionReason: null,
+        },
+      },
+      $push: { 'verification.history': { action: 'change_requested', note: describeChange({ fields, documents }).join(', '), actorId: sellerId, actorRole: 'seller', at: now } },
+    });
+
+    this.notificationsService.notifyAdmins({
+      type: NOTIFICATION_TYPES.ADMIN_VERIFICATION_CHANGE_REQUESTED,
+      title: 'Verified store asked to change its details',
+      body: `"${(store as any).name ?? 'A store'}" sent a change request: ${describeChange({ fields, documents }).join(', ')}.`,
+      data: { storeId, link: `/admin/seller-trust/${storeId}` },
+    }).catch(() => {});
+
+    return { success: true, message: 'Change request sent. Your current details stay in place until Solvexo approves it.' };
+  }
+
+  /** The seller withdraws a waiting change request; the files they uploaded for it are deleted. */
+  async cancelVerificationChange(sellerId: string, storeId: string) {
+    const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
+    const change: any = (store.verification as any)?.change;
+    if (change?.status !== 'pending') throw new BadRequestException('There is no change request waiting for review.');
+    const now = new Date();
+    await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, {
+      $set: { 'verification.change.status': 'cancelled', 'verification.change.reviewedAt': now },
+      $push: { 'verification.history': { action: 'change_cancelled', note: null, actorId: sellerId, actorRole: 'seller', at: now } },
+    });
+    for (const d of (change.documents ?? []) as VerificationDocument[]) {
+      await this.uploadService.deletePrivateFile(d.publicId, d.resourceType).catch(() => undefined);
+    }
+    return { success: true, message: 'Change request cancelled' };
   }
 
   /** Validates the questionnaire part of a verification PATCH; only the keys sent are returned (partial update). */
@@ -677,6 +901,7 @@ export class StoreService {
     oneOf('returnPolicy', RETURN_POLICIES);
     oneOf('monthlyOrders', MONTHLY_ORDERS);
     bool('bankAccountInOwnName');
+    bool('salesTaxRegistered');
     return out;
   }
 
@@ -694,6 +919,7 @@ export class StoreService {
       returnPolicy: p?.returnPolicy ?? null,
       monthlyOrders: p?.monthlyOrders ?? null,
       bankAccountInOwnName: p?.bankAccountInOwnName ?? null,
+      salesTaxRegistered: p?.salesTaxRegistered ?? null,
     };
   }
 
@@ -705,7 +931,7 @@ export class StoreService {
   async getVerificationEvaluationForAdmin(storeId: string) {
     const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false }).select('+verification');
     if (!store) throw new NotFoundException('Store not found');
-    return this.evaluateVerification(store);
+    return this.evaluateVerification(store, await this.requirementOptions());
   }
 
   /** KYC document upload — thin wrapper so the frontend can upload straight

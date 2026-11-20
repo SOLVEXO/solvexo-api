@@ -44,4 +44,16 @@ export class UpdateSellerTrustSettingsDto {
   @ApiProperty({ required: false, example: 30 })
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(365)
   graceDays?: number;
+
+  @ApiProperty({ required: false, description: 'Pakistan: true = every seller must give an STRN; false = only sellers who say they are sales-tax registered' })
+  @IsOptional() @IsBoolean()
+  requireStrnForPk?: boolean;
+
+  @ApiProperty({ required: false, example: 6, description: 'Years a CLOSED store\'s verification files are kept before they are deleted' })
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(15)
+  kycRetentionYears?: number;
+
+  @ApiProperty({ required: false, example: 90, description: 'Days the files of an unsubmitted / rejected verification are kept before they are deleted' })
+  @IsOptional() @Type(() => Number) @IsInt() @Min(7) @Max(365)
+  kycDraftRetentionDays?: number;
 }

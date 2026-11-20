@@ -1,6 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { MerchandisingService } from '@/merchandising/merchandising.service';
 import { SellerTrustService } from '@/seller-trust/seller-trust.service';
+import { SellerTrustReminderService } from '@/seller-trust/seller-trust-reminder.service';
+import { KycRetentionService } from '@/seller-trust/kyc-retention.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { MEMBERSHIP_BILLING_JOB, QUEUE_NAMES } from '../queues/queue.constants';
@@ -90,6 +92,8 @@ export class SchedulerService {
     private readonly courierTrackingSyncService: CourierTrackingSyncService,
     private readonly merchandisingService: MerchandisingService,
     private readonly sellerTrustService: SellerTrustService,
+    private readonly sellerTrustReminders: SellerTrustReminderService,
+    private readonly kycRetention: KycRetentionService,
   ) {}
 
   // Seller trust — daily: recompute every store's verification deadline,
@@ -100,6 +104,29 @@ export class SchedulerService {
     await this.runLocked('seller-trust-recompute', 60 * 60_000, async () => {
       const r = await this.sellerTrustService.recomputeAll();
       this.logger.log(`Seller trust: ${r.stores} store(s) — ${r.high} high / ${r.medium} medium risk, ${r.hidden} limited`);
+    });
+  }
+
+  // Seller trust — daily 04:30 UTC (09:30 in Pakistan), after the recompute above has refreshed every deadline:
+  // verification reminders 14 / 7 / 3 / 1 days before the deadline and once when it passes (each stage once per store).
+  @Cron('30 4 * * *')
+  async sendSellerTrustReminders() {
+    await this.runLocked('seller-trust-reminders', 30 * 60_000, async () => {
+      const r = await this.sellerTrustReminders.sendDueReminders();
+      this.logger.log(`Seller trust reminders: ${r.sent} sent, ${r.skipped} skipped, ${r.checked} checked`);
+    });
+  }
+
+  // Seller trust — daily 05:20 UTC: deletes verification documents (and the identity data next to them) whose retention period is
+  // over: files that never reached review / were rejected and not fixed (90 days by default) and the files of CLOSED stores
+  // (6 years after closing by default). The periods are admin settings.
+  @Cron('20 5 * * *')
+  async eraseExpiredVerificationDocuments() {
+    await this.runLocked('kyc-retention', 45 * 60_000, async () => {
+      const r = await this.kycRetention.run();
+      if (r.closedErased || r.draftsExpired || r.failed) {
+        this.logger.log(`KYC retention: ${r.closedErased} closed store(s) erased, ${r.draftsExpired} draft(s) expired, ${r.filesDeleted} file(s) deleted, ${r.failed} failed`);
+      }
     });
   }
 

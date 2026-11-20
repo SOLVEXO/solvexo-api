@@ -10,6 +10,7 @@ import { assertValidVerificationTransition, type VerificationStatus } from '../s
 import { MarketplaceListingQueryDto } from './dto/marketplace-listing-query.dto';
 import { LeadsQueryDto } from './dto/leads-query.dto';
 import { SellerTrustService } from '../seller-trust/seller-trust.service';
+import { CHANGE_SCALAR_FIELDS, describeChange, mergeVerificationChange } from '../store/verification-change.util';
 
 interface AuditMeta {
   adminId: string;
@@ -255,7 +256,7 @@ export class AdminMarketplaceService {
    *  infer "why is this document required for this seller" on its own —
    *  the same country/businessType/level-aware calculation the seller sees
    *  is what's shown here. */
-  async getLeadDetail(id: string) {
+  async getLeadDetail(id: string, meta?: AuditMeta) {
     const store = await this.r.storeModel.findOne({ _id: id, isDelete: false }).select('+verification');
     if (!store) throw new NotFoundException('Lead not found');
 
@@ -265,6 +266,8 @@ export class AdminMarketplaceService {
       this.storeService.getVerificationEvaluationForAdmin(id),
     ]);
     const v: any = store.verification ?? {};
+    const pendingChangeDocs = ((v as any).change?.status === 'pending' ? ((v as any).change.documents ?? []) : []).map((d: any) => ({ type: `${d.type} (change request)`, state: 'uploaded' }));
+    this.logDocumentAccess(store, [...evaluation.documents, ...pendingChangeDocs], meta);
 
     return {
       success: true,
@@ -296,12 +299,16 @@ export class AdminMarketplaceService {
         businessAddress: v.businessAddress ?? null,
         idDocumentType: v.idDocumentType ?? null,
         authorizedContact: v.authorizedContact ?? null,
+        director: v.director ?? null,
         cnicNumber: v.cnicNumber ?? null,
         strn: v.strn ?? null,
         businessProfile: this.storeService.shapeBusinessProfile(v.businessProfile),
         ntnCheck: v.ntnCheck ?? null,
+        consent: v.consent ? { acceptedAt: v.consent.acceptedAt, version: v.consent.version } : null,
         infoRequestMessage: (store as any).infoRequestMessage ?? null,
         documents: evaluation.documents,
+        // A verified seller's waiting / decided change request, with expiring links to the new files.
+        change: this.storeService.shapeVerificationChange(v.change, true),
         requirements: evaluation.requirements,
         missingFields: evaluation.missingFields,
         missingDocuments: evaluation.missingDocuments,
@@ -319,6 +326,21 @@ export class AdminMarketplaceService {
       throw new BadRequestException('This lead has already been reviewed');
     }
     return store;
+  }
+
+  /** Audit trail: this admin was handed expiring links to the seller's private ID / tax documents. Never throws. */
+  private logDocumentAccess(store: any, documents: { type: string; state: string }[], meta?: AuditMeta) {
+    if (!meta) return;
+    const types = documents.filter((d) => d.state === 'uploaded').map((d) => d.type);
+    if (!types.length) return;
+    try {
+      this.activityLogService.log({
+        storeId: 'platform', category: 'moderation', action: 'verification_documents_viewed',
+        description: `Opened ${types.length} private verification document(s) of store "${store.name}"`,
+        actorId: meta.adminId, actorRole: 'admin', targetId: String(store._id), targetType: 'store',
+        ip: meta.ip, userAgent: meta.userAgent, metadata: { documentTypes: types },
+      });
+    } catch { /* an audit failure must never block the review */ }
   }
 
   private pushVerificationHistory(action: string, note: string | null, meta: AuditMeta) {
@@ -455,5 +477,88 @@ export class AdminMarketplaceService {
     }).catch(() => {});
 
     return { success: true, message: 'Information requested from the seller' };
+  }
+
+  // ── Change requests of VERIFIED sellers (their live details are locked; see VerificationChangeRequest) ──
+
+  private async findPendingChangeOrThrow(id: string) {
+    const store = await this.r.storeModel.findOne({ _id: id, isDelete: false }).select('+verification');
+    if (!store) throw new NotFoundException('Store not found');
+    const change: any = (store.verification as any)?.change;
+    if (change?.status !== 'pending') throw new BadRequestException('This store has no change request waiting for review.');
+    return { store, change };
+  }
+
+  /** Applies the seller's change: new values and files go live, replaced private files are removed, the badge and the verified status are untouched. */
+  async approveChange(id: string, meta: AuditMeta) {
+    const { store, change } = await this.findPendingChangeOrThrow(id);
+    const current: any = (store.verification as any)?.toObject?.() ?? store.verification ?? {};
+    const input = { fields: change.fields ?? {}, documents: change.documents ?? [] };
+    const { merged, replaced } = mergeVerificationChange(current, input);
+
+    // The result must still meet every requirement (the rules may have changed since the request was sent).
+    const gaps = await this.storeService.evaluateChangeGaps(store, current, merged);
+    if (!gaps.ok) {
+      throw new BadRequestException({
+        message: 'The details after this change would not meet the requirements. Reject the request or ask the seller to fix it.',
+        missingFields: gaps.missingFields,
+        missingDocuments: gaps.missingDocuments,
+      });
+    }
+
+    const now = new Date();
+    const set: Record<string, unknown> = {
+      'verification.change.status': 'approved', 'verification.change.reviewedAt': now, 'verification.change.reviewedBy': meta.adminId,
+      'verification.change.rejectionReason': null,
+    };
+    for (const key of CHANGE_SCALAR_FIELDS) if (input.fields[key] !== undefined) set[`verification.${key}`] = merged[key];
+    if (input.fields.authorizedContact) set['verification.authorizedContact'] = merged.authorizedContact;
+    if (input.fields.director) set['verification.director'] = merged.director;
+    if (input.documents.length) set['verification.documents'] = merged.documents;
+
+    const summary = describeChange(input).join(', ');
+    await this.r.storeModel.findByIdAndUpdate(id, {
+      $set: set,
+      $push: { 'verification.history': this.pushVerificationHistory('change_approved', summary, meta) },
+    });
+    // Live files that the new ones replaced are no longer needed (best effort — a storage failure never undoes the approval).
+    for (const old of replaced) await this.uploadService.deletePrivateFile(old.publicId, old.resourceType).catch(() => undefined);
+    await this.sellerTrust?.recomputeStore(id);
+
+    this.log('verification_change_approved', `Approved a change request of store "${store.name}": ${summary}`, meta, id, 'store');
+    this.notificationsService.notify({
+      recipientId: store.sellerId, recipientRole: 'seller', storeId: id,
+      type: NOTIFICATION_TYPES.VERIFICATION_CHANGE_APPROVED,
+      title: 'Your change request was approved',
+      body: `The new details of "${store.name}" are now in place: ${summary}.`,
+      data: { storeId: id },
+    }).catch(() => {});
+    return { success: true, message: 'Change approved and applied' };
+  }
+
+  /** Refuses the change: the live details stay exactly as they were and the seller's new files are deleted. */
+  async rejectChange(id: string, reason: string, meta: AuditMeta) {
+    const { store, change } = await this.findPendingChangeOrThrow(id);
+    const now = new Date();
+    await this.r.storeModel.findByIdAndUpdate(id, {
+      $set: {
+        'verification.change.status': 'rejected', 'verification.change.reviewedAt': now,
+        'verification.change.reviewedBy': meta.adminId, 'verification.change.rejectionReason': reason,
+      },
+      $push: { 'verification.history': this.pushVerificationHistory('change_rejected', reason, meta) },
+    });
+    for (const d of (change.documents ?? []) as { publicId: string; resourceType: string }[]) {
+      await this.uploadService.deletePrivateFile(d.publicId, d.resourceType).catch(() => undefined);
+    }
+
+    this.log('verification_change_rejected', `Rejected a change request of store "${store.name}": ${reason}`, meta, id, 'store');
+    this.notificationsService.notify({
+      recipientId: store.sellerId, recipientRole: 'seller', storeId: id,
+      type: NOTIFICATION_TYPES.VERIFICATION_CHANGE_REJECTED,
+      title: 'Your change request was not approved',
+      body: `"${store.name}" keeps its current details. Reason: ${reason}. You can send a new request.`,
+      data: { storeId: id },
+    }).catch(() => {});
+    return { success: true, message: 'Change rejected' };
   }
 }

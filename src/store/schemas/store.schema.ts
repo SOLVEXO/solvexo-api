@@ -318,6 +318,48 @@ export class VerificationHistoryEntry {
 }
 export const VerificationHistoryEntrySchema = SchemaFactory.createForClass(VerificationHistoryEntry);
 
+// The seller's declaration at submit time ("what I entered is true, Solvexo may store and review my documents").
+// Kept with the version of the wording they agreed to, so a later change of the text never rewrites the record.
+@Schema({ _id: false })
+export class VerificationConsent {
+  @Prop({ type: Date, required: true }) acceptedAt: Date;
+  @Prop({ type: String, required: true }) version: string;
+  @Prop({ type: String, default: null }) ip: string | null;
+  @Prop({ type: String, default: null }) userAgent: string | null;
+}
+export const VerificationConsentSchema = SchemaFactory.createForClass(VerificationConsent);
+
+// A VERIFIED seller cannot edit their details in place (the badge would then vouch for data nobody reviewed). They send
+// a change request instead: the new values + files wait here while the live details stay as they are; an admin approves
+// (values are applied) or rejects (nothing changes). Only the latest request is kept; the trail is in `history`.
+export const VERIFICATION_CHANGE_STATUSES = ['pending', 'approved', 'rejected', 'cancelled'] as const;
+export type VerificationChangeStatus = (typeof VERIFICATION_CHANGE_STATUSES)[number];
+
+@Schema({ _id: false })
+export class VerificationChangeRequest {
+  @Prop({ type: String, enum: VERIFICATION_CHANGE_STATUSES, default: 'pending' }) status: VerificationChangeStatus;
+  /** Only the keys that differ from the live details: legalBusinessName, registrationNumber, taxId, strn, cnicNumber, businessAddress, authorizedContact{}. */
+  @Prop({ type: Object, default: {} }) fields: Record<string, unknown>;
+  /** New files (a type here replaces the live file of that type once approved). */
+  @Prop({ type: [VerificationDocumentSchema], default: [] }) documents: VerificationDocument[];
+  @Prop({ type: String, default: null }) sellerNote: string | null;
+  @Prop({ type: Date, default: () => new Date() }) requestedAt: Date;
+  @Prop({ type: VerificationConsentSchema, default: null }) consent: VerificationConsent | null;
+  @Prop({ type: Date, default: null }) reviewedAt: Date | null;
+  @Prop({ type: String, default: null }) reviewedBy: string | null;
+  @Prop({ type: String, default: null }) rejectionReason: string | null;
+}
+export const VerificationChangeRequestSchema = SchemaFactory.createForClass(VerificationChangeRequest);
+
+// Company / partnership: the owner, director or partner behind the business (the person whose ID the registration points to).
+@Schema({ _id: false })
+export class VerificationDirector {
+  @Prop({ type: String, default: null }) name: string | null;
+  /** PK: CNIC (normalised `12345-1234567-1`). Other countries: free text (Emirates ID / national ID / passport number). */
+  @Prop({ type: String, default: null }) idNumber: string | null;
+}
+export const VerificationDirectorSchema = SchemaFactory.createForClass(VerificationDirector);
+
 @Schema({ _id: false })
 export class AuthorizedContact {
   @Prop({ type: String, default: null }) name: string | null;
@@ -351,6 +393,8 @@ export class BusinessProfile {
   @Prop({ type: String, enum: RETURN_POLICIES, default: null }) returnPolicy: string | null;
   @Prop({ type: String, enum: MONTHLY_ORDERS, default: null }) monthlyOrders: string | null;
   @Prop({ type: Boolean, default: null }) bankAccountInOwnName: boolean | null;
+  // Pakistan: "Are you registered for sales tax?" — a "yes" makes the STRN required (see verification-requirements.config.ts).
+  @Prop({ type: Boolean, default: null }) salesTaxRegistered: boolean | null;
 }
 export const BusinessProfileSchema = SchemaFactory.createForClass(BusinessProfile);
 
@@ -394,12 +438,20 @@ export class SellerVerification {
   @Prop({ type: NtnCheckSchema, default: null }) ntnCheck: NtnCheck | null;
   @Prop({ type: BusinessProfileSchema, default: () => ({}) }) businessProfile: BusinessProfile;
   @Prop({ type: AuthorizedContactSchema, default: () => ({}) }) authorizedContact: AuthorizedContact;
+  // Required for a company or partnership (see verification-requirements.config.ts).
+  @Prop({ type: VerificationDirectorSchema, default: () => ({}) }) director: VerificationDirector;
   @Prop({ type: [VerificationDocumentSchema], default: [] }) documents: VerificationDocument[];
   @Prop({ type: [VerificationHistoryEntrySchema], default: [] }) history: VerificationHistoryEntry[];
   // Flips true the first time the seller submits (vs. still drafting during
   // onboarding) — lets the admin Leads list distinguish "seller hasn't
   // finished yet" from "ready to review" without inspecting every field.
   @Prop({ type: Boolean, default: false }) submitted: boolean;
+  // Latest declaration (set on every submit / resubmit). Null on submissions made before the declaration existed.
+  @Prop({ type: VerificationConsentSchema, default: null }) consent: VerificationConsent | null;
+  // The latest change request of a verified seller (see VerificationChangeRequest). Null = never asked.
+  @Prop({ type: VerificationChangeRequestSchema, default: null }) change: VerificationChangeRequest | null;
+  // Set when the retention period of a CLOSED store ended and its identity data + files were erased (see KycRetentionService).
+  @Prop({ type: Date, default: null }) purgedAt: Date | null;
 }
 export const SellerVerificationSchema = SchemaFactory.createForClass(SellerVerification);
 // Required-document/field calculation lives in verification-requirements.config.ts
@@ -867,6 +919,15 @@ export class Store {
   // Rate limit for admin verification reminders (one per store per 24h).
   @Prop({ type: Date, default: null })
   lastTrustReminderAt: Date | null;
+
+  // When the seller's account was closed (set by the account purge): the retention period of the verification files counts from here.
+  @Prop({ type: Date, default: null })
+  verificationClosedAt: Date | null;
+
+  // The latest AUTOMATIC verification reminder (see SellerTrustReminderService): which stage ('d14' | 'd7' | 'd3' | 'd1' |
+  // 'limited'), for which deadline, and when. A stage is never sent twice for the same deadline; a moved deadline starts over.
+  @Prop({ type: Object, default: null })
+  trustAutoReminder: { stage: string; forDueAt: Date; at: Date } | null;
 
   @Prop({ default: false })
   isDelete: boolean;

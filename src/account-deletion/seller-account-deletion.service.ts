@@ -181,7 +181,7 @@ export class SellerAccountDeletionService {
     }
     await this.r.posDeviceModel.deleteMany({ storeId: { $in: storeIds } });
     await this.r.posSettingsModel.updateMany({ storeId: { $in: storeIds } }, { $set: { businessAddress: null, businessTaxId: null, receiptHeader: null, receiptFooter: null, businessName: null } });
-    await this.r.storeModel.updateMany({ _id: { $in: storeIds } }, { $set: { isDelete: true, status: 'suspended' } });
+    await this.r.storeModel.updateMany({ _id: { $in: storeIds } }, { $set: { isDelete: true, status: 'suspended', verificationClosedAt: now } });
 
     seller.name = 'Deleted account';
     seller.email = `deleted+${seller._id}@deleted.invalid`;

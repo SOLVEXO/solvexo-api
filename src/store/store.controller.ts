@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Patch, Body, Req, Res, Param, Query, UseGuards, UseInterceptors, UploadedFile, ForbiddenException } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Delete, Body, Req, Res, Param, Query, UseGuards, UseInterceptors, UploadedFile, ForbiddenException } from '@nestjs/common';
 import { PublicCache, PublicCacheInterceptor } from '@/storefront/public-cache.interceptor';
 import { PUBLIC_BROWSE_LIMIT } from '@/storefront/public-throttle';
 import { resolveCountryFromIp } from '@/common/geo-locate.util';
@@ -25,6 +25,7 @@ import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { BulkTagCustomersDto } from './dto/bulk-tag-customers.dto';
 import { BulkArchiveCustomersDto } from './dto/bulk-archive-customers.dto';
 import { BulkCustomerMarketingDto } from './dto/bulk-customer-marketing.dto';
+import { UpdateVerificationDto, AttachVerificationDocumentDto, SubmitVerificationDto, RequestVerificationChangeDto } from './dto/update-verification.dto';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @Controller('api/store')
@@ -158,7 +159,7 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Patch(':storeId/verification')
-  async updateVerification(@Req() req: any, @Param('storeId') storeId: string, @Body() body: any) {
+  async updateVerification(@Req() req: any, @Param('storeId') storeId: string, @Body() body: UpdateVerificationDto) {
     return this.storeService.updateVerification(req.user.userId, storeId, body);
   }
 
@@ -168,7 +169,7 @@ export class StoreController {
   async attachVerificationDocument(
     @Req() req: any,
     @Param('storeId') storeId: string,
-    @Body() body: { type: string; publicId: string; resourceType: string; fileName: string },
+    @Body() body: AttachVerificationDocumentDto,
   ) {
     return this.storeService.attachVerificationDocument(req.user.userId, storeId, body.type, {
       publicId: body.publicId,
@@ -180,8 +181,27 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
   @Post(':storeId/verification/submit')
-  async submitVerification(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.storeService.submitVerification(req.user.userId, storeId);
+  async submitVerification(@Req() req: any, @Param('storeId') storeId: string, @Body() body: SubmitVerificationDto) {
+    return this.storeService.submitVerification(req.user.userId, storeId, {
+      accepted: body?.declarationAccepted === true, ip: req.ip, userAgent: req.headers?.['user-agent'],
+    });
+  }
+
+  // A VERIFIED seller asks to change their details / files (they are locked in place); an admin approves or rejects.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/verification/change')
+  async requestVerificationChange(@Req() req: any, @Param('storeId') storeId: string, @Body() body: RequestVerificationChangeDto) {
+    return this.storeService.requestVerificationChange(req.user.userId, storeId, body, {
+      accepted: body?.declarationAccepted === true, ip: req.ip, userAgent: req.headers?.['user-agent'],
+    });
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Delete(':storeId/verification/change')
+  async cancelVerificationChange(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeService.cancelVerificationChange(req.user.userId, storeId);
   }
 
   // Real "Manage general store settings" — previously seller-only with no

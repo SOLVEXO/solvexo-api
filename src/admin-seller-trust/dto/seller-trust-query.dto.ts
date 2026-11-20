@@ -29,6 +29,10 @@ export class SellerTrustQueryDto {
   @IsOptional() @IsIn(['yes', 'no'])
   limited?: 'yes' | 'no';
 
+  @ApiProperty({ required: false, enum: ['yes'], description: 'Only verified stores that sent a change request waiting for review' })
+  @IsOptional() @IsIn(['yes'])
+  changePending?: 'yes';
+
   @ApiProperty({ required: false, enum: ['submitted', 'risk', 'created'], default: 'submitted' })
   @IsOptional() @IsIn(['submitted', 'risk', 'created'])
   sort?: 'submitted' | 'risk' | 'created';
