@@ -2,7 +2,7 @@
 import { PLAN_CATALOG, CATALOG_VERSION, assertCatalogValid, buildFeatureBullets } from './platform-plan.catalog';
 import { EntitlementsService } from './entitlements.service';
 
-// The final plan matrix (catalog v6). Plain describe/it/expect only, so it also runs on scripts/mini-jest.cjs.
+// The final plan matrix (catalog v7). Plain describe/it/expect only, so it also runs on scripts/mini-jest.cjs.
 const KEYS = ['basic', 'grow', 'advanced', 'enterprise'];
 const limitsOf = (key: string): any => (PLAN_CATALOG.find((p) => p.key === key) as any).limits;
 const column = (field: string) => KEYS.map((k) => limitsOf(k)[field]);
@@ -25,8 +25,8 @@ function service(limits: any, emailsUsed = 0) {
 }
 
 describe('plan catalog v6 — the final matrix', () => {
-  it('is internally valid (limits, tier order, prices) and is version 6', () => {
-    expect(CATALOG_VERSION).toBe(6);
+  it('is internally valid (limits, tier order, prices) and is version 7', () => {
+    expect(CATALOG_VERSION).toBe(7);
     expect(() => assertCatalogValid()).not.toThrow();
   });
 
@@ -40,8 +40,8 @@ describe('plan catalog v6 — the final matrix', () => {
     expect(column('maxB2BCatalogs')).toEqual([1, 3, 10, -1]);
   });
 
-  it('abandoned cart, custom redirects, email campaigns, B2B and custom domain are on every plan', () => {
-    for (const f of ['abandonedCartRecoveryAllowed', 'customRedirectsAllowed', 'emailCampaignsAllowed', 'b2bWholesaleAllowed', 'customDomainAllowed', 'advancedSeoToolsAllowed']) {
+  it('abandoned cart, custom redirects, email campaigns and custom domain are on every plan', () => {
+    for (const f of ['abandonedCartRecoveryAllowed', 'customRedirectsAllowed', 'emailCampaignsAllowed', 'customDomainAllowed', 'advancedSeoToolsAllowed']) {
       expect(column(f)).toEqual([true, true, true, true]);
     }
   });
@@ -86,11 +86,17 @@ describe('plan catalog v6 — the final matrix', () => {
     });
   });
 
-  it('the marketing bullets mention the monthly emails and the wholesale catalogs', () => {
+  it('wholesale (B2B) starts at Grow: not on Basic, on every plan above it', () => {
+    expect(column('b2bWholesaleAllowed')).toEqual([false, true, true, true]);
+  });
+
+  it('the marketing bullets mention the monthly emails; wholesale catalogs only from Grow', () => {
     const basic: any = PLAN_CATALOG[0];
-    const text = buildFeatureBullets(basic, null).join(' | ');
-    expect(text.includes('2,000 marketing emails a month')).toBe(true);
-    expect(text.includes('1 wholesale catalog')).toBe(true);
+    const grow: any = PLAN_CATALOG[1];
+    const basicText = buildFeatureBullets(basic, null).join(' | ');
+    expect(basicText.includes('2,000 marketing emails a month')).toBe(true);
+    expect(basicText.toLowerCase()).not.toContain('wholesale');
+    expect(buildFeatureBullets(grow, basic).join(' | ').includes('3 wholesale catalogs')).toBe(true);
   });
 });
 

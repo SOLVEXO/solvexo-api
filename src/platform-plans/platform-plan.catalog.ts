@@ -34,7 +34,7 @@ export type PlanKey = 'basic' | 'grow' | 'advanced' | 'enterprise';
 
 /** Bump when the limits/features in `PLAN_CATALOG` change — existing plan documents
  *  are re-aligned to the catalog once per bump (see PlatformPlanCatalogService). */
-export const CATALOG_VERSION = 6; // v2: Enterprise became fixed-price · v3: transactionFeeRate now means the Shopify-style third-party gateway fee · v4: one uniform yearly discount (25%), yearly prices re-aligned once · v5: final plan matrix (banners/promotions dead and unlimited, abandoned cart + redirects + B2B on every plan, memberships/licenses/courses Grow+, API & webhooks Advanced+, B2B catalogs and monthly email limits). v6: no plan sells AI credits or AI SEO suggestions, and white-label branding is not a plan feature (every seller can switch the "Powered by" credit off). Re-alignment never touches prices.
+export const CATALOG_VERSION = 7; // v2: Enterprise became fixed-price · v3: transactionFeeRate now means the Shopify-style third-party gateway fee · v4: one uniform yearly discount (25%), yearly prices re-aligned once · v5: final plan matrix (banners/promotions dead and unlimited, abandoned cart + redirects + B2B on every plan, memberships/licenses/courses Grow+, API & webhooks Advanced+, B2B catalogs and monthly email limits). v6: no plan sells AI credits or AI SEO suggestions, and white-label branding is not a plan feature (every seller can switch the "Powered by" credit off). v7: wholesale (B2B) starts at Grow, not Basic. Re-alignment never touches prices.
 
 /** Shopify bills a year up front at 25% off the monthly rate on every plan ($25→$19, $65→$49, $399→$299 a month).
  *  Solvexo applies the same discount to every plan so the catalog is internally consistent. */
@@ -96,7 +96,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
       seoAiSuggestionsAllowed: false, prioritySupport: false,
       whiteLabelAllowed: false, searchConsoleIntegrationAllowed: false,
       calculatedShippingRatesAllowed: false, digitalMembershipsAllowed: false, digitalLicensesAllowed: false, digitalCoursesAllowed: false,
-      b2bWholesaleAllowed: true, apiWebhooksAllowed: false, dedicatedAccountManager: false,
+      b2bWholesaleAllowed: false, apiWebhooksAllowed: false, dedicatedAccountManager: false,
       ...DEAD_LIMITS, ...NOT_OFFERED,
     },
   },
