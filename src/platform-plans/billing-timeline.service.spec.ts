@@ -31,7 +31,7 @@ describe('BillingTimelineService', () => {
     const addons = over.addons ?? [{ _id: 'ad1', addonType: 'extra_staff_seat', priceUSD: 10, quantity: 1, status: 'active', createdAt: iso(20), charges: [{ amountUSD: 10, taxUSD: 0, chargedAt: iso(20) }] }];
     const fees = over.fees ?? [{ _id: 'f1', periodKey: '2026-10', amountUSD: 12, taxAmountUSD: 0, saleCount: 4, status: 'paid', paidAt: iso(15), createdAt: iso(15) }];
     const db: any = { repositories: {
-      storeModel: { findById: jest.fn(() => Object.assign(Promise.resolve({ sellerId: over.owner ?? 'seller-1', isDelete: false }), { select: () => ({ lean: () => Promise.resolve({ _id: 'st1' }) }) })) },
+      storeModel: { findById: jest.fn(() => Object.assign(Promise.resolve({ sellerId: over.owner ?? 'seller-1', isDelete: false }), { select: () => ({ lean: () => Promise.resolve({ _id: 'st1', name: 'Ali Shoes' }) }) })) },
       sellerPlatformSubscriptionModel: { findOne: () => ({ lean: () => Promise.resolve(sub) }) },
       platformPlanInvoiceModel: { find: () => chain(invoices) },
       platformPlanPaymentAttemptModel: { find: () => chain(attempts) },
@@ -84,6 +84,10 @@ describe('BillingTimelineService', () => {
     expect(seller.every(e => e.internal === undefined)).toBe(true);
     const admin = (await make().getForAdmin('64b7f0f0f0f0f0f0f0f0f0f0', {})).data.events;
     expect(admin.find(e => e.invoiceNumber === 'INV-1' && e.kind === 'payment')!.internal).toMatchObject({ providerChargeId: 'pi_1', stripeInvoiceId: 'in_x' });
+  });
+
+  it('returns the store name (used on the printed statement)', async () => {
+    expect((await make().getForSeller('seller-1', 'st1', {})).data.storeName).toBe('Ali Shoes');
   });
 
   it('another seller gets 403', async () => {

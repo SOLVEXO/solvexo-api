@@ -86,7 +86,8 @@ export class BillingTimelineService {
   /** Builds every event for the store (all time), then derives the summary (all time) and the statement (selected range). */
   async build(storeId: string, q: BillingTimelineQueryDto, admin: boolean) {
     const { from, to, kinds } = this.parseRange(q);
-    const [sub, invoices, attempts, addons, fees] = await Promise.all([
+    const [store, sub, invoices, attempts, addons, fees] = await Promise.all([
+      this.db.repositories.storeModel.findById(storeId).select('name').lean() as Promise<any>,
       this.subModel.findOne({ storeId, isDelete: false }).lean() as Promise<any>,
       this.invoiceModel.find({ storeId, isDelete: false }).sort({ createdAt: 1 }).lean() as Promise<any[]>,
       this.attemptModel.find({ storeId }).sort({ createdAt: 1 }).lean() as Promise<any[]>,
@@ -108,6 +109,7 @@ export class BillingTimelineService {
     });
 
     return {
+      storeName: (store?.name as string | undefined) ?? null,
       summary: this.summarise(all, sub, invoices, planName),
       statement: this.statement(inRange, from, to),
       events: inRange,
