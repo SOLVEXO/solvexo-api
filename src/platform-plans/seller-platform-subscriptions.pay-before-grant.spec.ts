@@ -298,6 +298,14 @@ describe('SellerPlatformSubscriptionsService — pay before grant', () => {
       expect(sub.amountUSD).toBe(0);
       expect(notifications.sendDowngradedDueToFailedPayments).toHaveBeenCalled();
     });
+    it('a legacy store is LOCKED (not left on the paid plan) when no free plan exists to downgrade to', async () => {
+      const sub = makeSub({ status: 'past_due', platformPlanId: GROW._id, amountUSD: 29, pastDueSince: old, legacyFreeEligible: true });
+      const { service, notifications } = make(sub, {}, (q: any) => (q?.isFree ? null : null));
+      expect((await service.lockOverduePastDue(NOW)).locked).toBe(1);
+      expect(sub.status).toBe('locked');
+      expect(notifications.sendStoreLocked).toHaveBeenCalled();
+      expect(notifications.sendDowngradedDueToFailedPayments).not.toHaveBeenCalled();
+    });
     it('failed dunning sets pastDueSince', async () => {
       const sub = makeSub({ status: 'active', platformPlanId: GROW._id, amountUSD: 29, providerSubscriptionId: 'sub_x' });
       const { service } = make(sub);

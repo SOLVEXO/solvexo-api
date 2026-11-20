@@ -2224,9 +2224,11 @@ export class SellerPlatformSubscriptionsService {
         if (!since || now.getTime() - new Date(since).getTime() < limitMs) continue;
 
         // Legacy (grandfathered) stores have a free plan to fall back to; everyone else is locked.
-        if ((sub as any).legacyFreeEligible) {
-          const freePlan = await this.downgradeToFree(sub);
-          if (!freePlan) { this.logger.error(`lockOverduePastDue: legacy store ${sub.storeId} is overdue but no free plan exists to downgrade to`); continue; }
+        // No active free plan configured (e.g. production has none): a legacy store cannot be downgraded, so it is locked
+        // like any other overdue store instead of staying on a paid plan it never paid for.
+        const freePlan = (sub as any).legacyFreeEligible ? await this.downgradeToFree(sub) : null;
+        if ((sub as any).legacyFreeEligible && !freePlan) this.logger.warn(`lockOverduePastDue: no free plan exists — locking legacy store ${sub.storeId} instead of downgrading`);
+        if (freePlan) {
           await sub.save();
           locked++;
           const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
