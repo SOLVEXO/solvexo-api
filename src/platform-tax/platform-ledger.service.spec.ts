@@ -63,14 +63,13 @@ function build(over: { rules?: any[] } = {}) {
     { _id: id(2), storeId: id(101), sellerId: 'u2', status: 'paid', paidAt: PAID, amountUSD: 29, subtotalUSD: null, taxAmountUSD: 0, isDelete: false },
     { _id: id(3), storeId: id(100), status: 'failed', paidAt: null, amountUSD: 29, isDelete: false },
   ]);
-  const addons = new Source([{ _id: id(10), storeId: id(100), sellerId: 'u1', charges: [{ amountUSD: 10, taxUSD: 0.2, chargedAt: PAID }, { amountUSD: 10, chargedAt: PAID }] }]);
   const feeBills = new Source([{ _id: id(20), storeId: id(100), sellerId: 'u1', status: 'paid', paidAt: PAID, amountUSD: 5, taxAmountUSD: 0.1, isDelete: false }, { _id: id(21), storeId: id(100), status: 'paid', paidAt: PAID, amountUSD: 5, isDelete: false }]);
   const taxRecords = new Source([{ _id: id(30), source: 'promotion', refId: 'pi_1', storeId: id(100), taxAmountUSD: 1.5, collectedAt: PAID }]);
   const stores = new Source([{ _id: id(100), country: 'PK' }, { _id: id(101), country: 'GB' }]);
   const ledger = new FakeLedger();
   const entities: any = { load: async () => ({ entity, rules: over.rules ?? [], settings: {} }) };
-  const svc = new PlatformLedgerService({ repositories: { storeModel: stores } } as any, entities, ledger as any, planInvoices as any, addons as any, feeBills as any, taxRecords as any);
-  const sources = { planInvoices, addons, feeBills, taxRecords, stores };
+  const svc = new PlatformLedgerService({ repositories: { storeModel: stores } } as any, entities, ledger as any, planInvoices as any, feeBills as any, taxRecords as any);
+  const sources = { planInvoices, feeBills, taxRecords, stores };
   return { svc, ledger, sources, snapshot: () => JSON.stringify(sources) };
 }
 
@@ -96,22 +95,20 @@ describe('PlatformLedgerService (read-only shadow)', () => {
     expect(ledger.rows.length).toBe(0);
     expect(ledger.writes).toBe(0);
     expect(s.dryRun).toBe(true);
-    expect(s.created).toBe(7); // 2 plan invoices (failed one skipped) + 2 add-on charges + 2 fee bills + 1 promotion... = 7
-    expect(s.examined).toBe(7);
+    expect(s.created).toBe(5); // 2 plan invoices (failed one skipped) + 2 fee bills + 1 promotion = 5
+    expect(s.examined).toBe(5);
   });
 
   it('creates one row per paid source (golden values) and tax-unknown rows carry null, not 0', async () => {
     process.env.PLATFORM_LEDGER_ENABLED = 'true';
     const { svc, ledger } = build();
     const s = await svc.sync({ dryRun: false });
-    expect(s.created).toBe(7);
-    expect(ledger.rows.length).toBe(7);
+    expect(s.created).toBe(5);
+    expect(ledger.rows.length).toBe(5);
     const by = (t: string, i: string) => ledger.rows.find((r) => r.sourceType === t && r.sourceId === i);
     expect(by('plan_invoice', id(1))).toMatchObject({ taxKnown: true, netUSD: 29, chargedTaxUSD: 0.58, totalUSD: 29.58, customer: { storeId: id(100), country: 'PK' } });
     const unknownPlan = by('plan_invoice', id(2));
     expect(unknownPlan).toMatchObject({ taxKnown: false, chargedTaxUSD: null, taxLines: null, customer: { country: 'GB' } });
-    expect(by('addon_charge', `${id(10)}:0`)).toMatchObject({ taxKnown: true, chargedTaxUSD: 0.2 });
-    expect(by('addon_charge', `${id(10)}:1`)).toMatchObject({ taxKnown: false, chargedTaxUSD: null });
     expect(by('fee_bill', id(20))).toMatchObject({ taxKnown: true, chargedTaxUSD: 0.1 });
     expect(by('fee_bill', id(21))).toMatchObject({ taxKnown: false, chargedTaxUSD: null });
     expect(by('promotion', 'pi_1')).toMatchObject({ taxKnown: true, chargedTaxUSD: 1.5, netUSD: null });
@@ -125,18 +122,18 @@ describe('PlatformLedgerService (read-only shadow)', () => {
     await svc.sync({ dryRun: false });
     const s2 = await svc.sync({ dryRun: false });
     expect(s2.created).toBe(0);
-    expect(ledger.rows.length).toBe(7);
-    expect(s2.unchanged).toBe(7);
+    expect(ledger.rows.length).toBe(5);
+    expect(s2.unchanged).toBe(5);
   });
 
   it('AC1.3 two runs at the same time still leave ONE row per source (loser gets E11000 and just updates)', async () => {
     process.env.PLATFORM_LEDGER_ENABLED = 'true';
     const { svc, ledger } = build();
     const [a, b] = await Promise.all([svc.sync({ dryRun: false }), svc.sync({ dryRun: false })]);
-    expect(ledger.rows.length).toBe(7);
+    expect(ledger.rows.length).toBe(5);
     const keys = new Set(ledger.rows.map((r) => `${r.sourceType}|${r.sourceId}`));
-    expect(keys.size).toBe(7);
-    expect(a.created + b.created).toBe(7);
+    expect(keys.size).toBe(5);
+    expect(a.created + b.created).toBe(5);
     expect(a.racedDuplicates + b.racedDuplicates).toBeGreaterThan(0);
   });
 

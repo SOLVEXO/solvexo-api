@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { buildMonths, concentration, monthKeys, summarizeStreams } from './revenue-model.util';
 
-const empty = { plans: [], transactionFees: [], commission: [], addons: [], posPlans: [], promotions: [] };
+const empty = { plans: [], transactionFees: [], commission: [], posPlans: [], promotions: [] };
 
 describe('revenue model', () => {
   it('adds streams per month and computes the take rate against GMV', () => {
@@ -19,11 +19,9 @@ describe('revenue model', () => {
     const months = buildMonths(['2026-08', '2026-09', '2026-10'], {
       ...empty,
       plans: [{ month: '2026-08', amount: 100 }, { month: '2026-09', amount: 150 }, { month: '2026-10', amount: 5 }],
-      addons: [{ month: '2026-09', amount: 50 }],
     }, []);
     const s = summarizeStreams(months);
-    expect(s[0]).toMatchObject({ stream: 'plans', total: 255, sharePercent: 83.61, lastMonth: 150, previousMonth: 100, changePercent: 50 });
-    expect(s.find((x) => x.stream === 'addons')).toMatchObject({ total: 50, changePercent: null }); // nothing to compare against
+    expect(s[0]).toMatchObject({ stream: 'plans', total: 255, sharePercent: 100, lastMonth: 150, previousMonth: 100, changePercent: 50 });
   });
 
   it('measures how much revenue the biggest stores make up', () => {

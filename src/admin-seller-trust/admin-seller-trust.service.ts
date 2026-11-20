@@ -417,8 +417,8 @@ export class AdminSellerTrustService {
       const due = store.verificationDueAt ? new Date(store.verificationDueAt) : null;
       const body = due
         ? (due.getTime() <= now.getTime()
-          ? `"${store.name}" is not verified yet, so it is hidden from the Solvexo marketplace and payouts are on hold. Verify your business to lift these limits.`
-          : `Verify "${store.name}" by ${due.toISOString().slice(0, 10)} to stay listed on the Solvexo marketplace and keep receiving payouts.`)
+          ? `"${store.name}" is not verified yet, so it is hidden from the Solvexo marketplace and payouts of any balance Solvexo holds for you are paused. Verify your business to lift these limits.`
+          : `Verify "${store.name}" by ${due.toISOString().slice(0, 10)} to stay listed on the Solvexo marketplace and keep payouts of any balance Solvexo holds for you running.`)
         : `Verify "${store.name}" to get the Verified business badge on your store.`;
       await this.notificationsService.notify({
         recipientId: store.sellerId, recipientRole: 'seller', storeId: String(store._id),

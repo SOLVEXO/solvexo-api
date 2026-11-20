@@ -21,7 +21,6 @@ import { PlatformLegalEntity, PlatformLegalEntitySchema } from '../platform-tax/
 import { PlatformTaxRegistration, PlatformTaxRegistrationSchema } from '../platform-tax/schemas/platform-tax-registration.schema';
 import { PlatformTaxRecord, PlatformTaxRecordSchema } from '../platform-tax/schemas/platform-tax-record.schema';
 import { PlatformPlanInvoice, PlatformPlanInvoiceSchema } from '../platform-plans/schemas/platform-plan-invoice.schema';
-import { PlatformAddonPurchase, PlatformAddonPurchaseSchema } from '../platform-plans/schemas/platform-addon-purchase.schema';
 import { TransactionFeeBill, TransactionFeeBillSchema } from '../platform-plans/schemas/transaction-fee-bill.schema';
 
 async function run() {
@@ -40,7 +39,7 @@ async function run() {
   const ledger = new PlatformLedgerService(
     { repositories: { storeModel } } as any, entities,
     m(PlatformInvoice.name, PlatformInvoiceSchema) as any, m(PlatformPlanInvoice.name, PlatformPlanInvoiceSchema) as any,
-    m(PlatformAddonPurchase.name, PlatformAddonPurchaseSchema) as any, m(TransactionFeeBill.name, TransactionFeeBillSchema) as any,
+    m(TransactionFeeBill.name, TransactionFeeBillSchema) as any,
     m(PlatformTaxRecord.name, PlatformTaxRecordSchema) as any,
   );
 

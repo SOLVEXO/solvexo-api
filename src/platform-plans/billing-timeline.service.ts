@@ -5,7 +5,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { verifyStoreOwnershipStrict } from '@/common/store-ownership.util';
 import { BillingTimelineQueryDto } from './dto/billing-timeline.dto';
 
-export type TimelineKind = 'trial_started' | 'trial_ended' | 'plan_change' | 'credit' | 'payment' | 'payment_failed' | 'refund' | 'addon' | 'transaction_fee';
+export type TimelineKind = 'trial_started' | 'trial_ended' | 'plan_change' | 'credit' | 'payment' | 'payment_failed' | 'refund' | 'transaction_fee';
 export type TimelineStatus = 'success' | 'failed' | 'pending' | 'info' | 'refunded';
 
 export interface TimelineLineItem { kind: string; label: string; amountUSD: number }
@@ -24,17 +24,13 @@ export interface TimelineEvent {
   internal?: { providerChargeId?: string | null; stripeInvoiceId?: string | null; providerRefundId?: string | null };
 }
 
-const ADDON_LABELS: Record<string, string> = {
-  extra_ai_credits: 'Extra AI credits', extra_staff_seat: 'Extra staff seat', priority_marketplace_placement: 'Priority marketplace placement',
-  advanced_tax_compliance: 'Advanced tax compliance', sms_notifications: 'SMS notifications',
-};
-const ALL_KINDS: TimelineKind[] = ['trial_started', 'trial_ended', 'plan_change', 'credit', 'payment', 'payment_failed', 'refund', 'addon', 'transaction_fee'];
+const ALL_KINDS: TimelineKind[] = ['trial_started', 'trial_ended', 'plan_change', 'credit', 'payment', 'payment_failed', 'refund', 'transaction_fee'];
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
  * One chronological, finance-grade record of everything that ever happened to a store's Solvexo billing: trial,
- * plan changes, every payment (with card + line items), every failed attempt (with the reason), refunds, add-ons
+ * plan changes, every payment (with card + line items), every failed attempt (with the reason), refunds
  * and monthly transaction-fee bills. Read-only; the same data feeds the seller's "Billing activity", the admin
  * store timeline, the monthly statement and the CSV export.
  */
@@ -45,7 +41,6 @@ export class BillingTimelineService {
   private get subModel() { return this.db.repositories.sellerPlatformSubscriptionModel; }
   private get invoiceModel() { return this.db.repositories.platformPlanInvoiceModel; }
   private get attemptModel() { return this.db.repositories.platformPlanPaymentAttemptModel; }
-  private get addonModel() { return this.db.repositories.platformAddonPurchaseModel; }
   private get feeModel() { return this.db.repositories.transactionFeeBillModel; }
   private get planModel() { return this.db.repositories.platformPlanModel; }
 
@@ -86,12 +81,11 @@ export class BillingTimelineService {
   /** Builds every event for the store (all time), then derives the summary (all time) and the statement (selected range). */
   async build(storeId: string, q: BillingTimelineQueryDto, admin: boolean) {
     const { from, to, kinds } = this.parseRange(q);
-    const [store, sub, invoices, attempts, addons, fees] = await Promise.all([
+    const [store, sub, invoices, attempts, fees] = await Promise.all([
       this.db.repositories.storeModel.findById(storeId).select('name').lean() as Promise<any>,
       this.subModel.findOne({ storeId, isDelete: false }).lean() as Promise<any>,
       this.invoiceModel.find({ storeId, isDelete: false }).sort({ createdAt: 1 }).lean() as Promise<any[]>,
       this.attemptModel.find({ storeId }).sort({ createdAt: 1 }).lean() as Promise<any[]>,
-      this.addonModel.find({ storeId }).sort({ createdAt: 1 }).lean() as Promise<any[]>,
       this.feeModel.find({ storeId, isDelete: false }).sort({ createdAt: 1 }).lean() as Promise<any[]>,
     ]);
     const planIds = new Set<string>();
@@ -100,7 +94,7 @@ export class BillingTimelineService {
     const plans = planIds.size ? await this.planModel.find({ _id: { $in: [...planIds] } }).select('name').lean() as any[] : [];
     const planName = (id: any) => plans.find(p => String(p._id) === String(id))?.name ?? 'Plan';
 
-    const all = this.collectEvents({ sub, invoices, attempts, addons, fees, planName, admin });
+    const all = this.collectEvents({ sub, invoices, attempts, fees, planName, admin });
     all.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
 
     const inRange = all.filter(e => {
@@ -116,8 +110,8 @@ export class BillingTimelineService {
     };
   }
 
-  private collectEvents(x: { sub: any; invoices: any[]; attempts: any[]; addons: any[]; fees: any[]; planName: (id: any) => string; admin: boolean }): TimelineEvent[] {
-    const { sub, invoices, attempts, addons, fees, planName, admin } = x;
+  private collectEvents(x: { sub: any; invoices: any[]; attempts: any[]; fees: any[]; planName: (id: any) => string; admin: boolean }): TimelineEvent[] {
+    const { sub, invoices, attempts, fees, planName, admin } = x;
     const ev: TimelineEvent[] = [];
 
     if (sub?.startedAt && sub?.trialEndsAt) {
@@ -201,21 +195,6 @@ export class BillingTimelineService {
       }
     }
 
-    for (const a of addons) {
-      const label = ADDON_LABELS[a.addonType] ?? a.addonType;
-      const charges = a.charges?.length ? a.charges : [{ amountUSD: a.priceUSD, taxUSD: 0, chargedAt: a.createdAt, providerChargeId: a.providerChargeId }];
-      charges.forEach((c: any, i: number) => {
-        const total = r2((c.amountUSD ?? 0) + (c.taxUSD ?? 0));
-        ev.push({
-          id: `addon-${a._id}-${i}`, at: new Date(c.chargedAt).toISOString(), kind: 'addon', status: 'success',
-          title: `Add-on: ${label}`, description: `${i === 0 ? 'Purchased' : 'Monthly renewal'}${a.quantity > 1 ? ` · ×${a.quantity}` : ''}${a.status === 'canceled' ? ' · later canceled' : ''}`,
-          amountUSD: total, taxUSD: c.taxUSD || 0,
-          lineItems: c.taxUSD ? [{ kind: 'plan', label, amountUSD: r2(c.amountUSD) }, { kind: 'tax', label: 'Tax', amountUSD: r2(c.taxUSD) }] : undefined,
-          internal: admin ? { providerChargeId: c.providerChargeId ?? null } : undefined,
-        });
-      });
-    }
-
     for (const f of fees) {
       const total = r2((f.amountUSD ?? 0) + (f.taxAmountUSD ?? 0));
       const paid = f.status === 'paid';
@@ -242,10 +221,10 @@ export class BillingTimelineService {
     return out;
   }
 
-  /** Money that actually left the seller's card: paid plan invoices + paid add-on charges + paid transaction-fee bills (refunds subtract). */
+  /** Money that actually left the seller's card: paid plan invoices + paid transaction-fee bills (refunds subtract). */
   private summarise(all: TimelineEvent[], sub: any, invoices: any[], planName: (id: any) => string) {
     const sum = (f: (e: TimelineEvent) => boolean) => r2(all.filter(f).reduce((s, e) => s + (e.amountUSD ?? 0), 0));
-    const paidKinds = (e: TimelineEvent) => e.status === 'success' && (e.kind === 'payment' || e.kind === 'addon' || e.kind === 'transaction_fee');
+    const paidKinds = (e: TimelineEvent) => e.status === 'success' && (e.kind === 'payment' || e.kind === 'transaction_fee');
     const lifetimePaidUSD = sum(paidKinds);
     const refundedUSD = r2(-sum(e => e.kind === 'refund'));
     const now = new Date();
@@ -258,7 +237,6 @@ export class BillingTimelineService {
       taxPaidUSD: r2(all.filter(paidKinds).reduce((s, e) => s + (e.taxUSD ?? 0), 0)),
       breakdown: {
         plans: sum(e => e.status === 'success' && e.kind === 'payment'),
-        addons: sum(e => e.status === 'success' && e.kind === 'addon'),
         transactionFees: sum(e => e.status === 'success' && e.kind === 'transaction_fee'),
         refunds: -refundedUSD,
       },
@@ -276,7 +254,7 @@ export class BillingTimelineService {
 
   /** Totals for the selected range — the "monthly statement" numbers. */
   private statement(events: TimelineEvent[], from: Date | null, to: Date | null) {
-    const paid = events.filter(e => e.status === 'success' && (e.kind === 'payment' || e.kind === 'addon' || e.kind === 'transaction_fee'));
+    const paid = events.filter(e => e.status === 'success' && (e.kind === 'payment' || e.kind === 'transaction_fee'));
     const chargedUSD = r2(paid.reduce((s, e) => s + (e.amountUSD ?? 0), 0));
     const refundedUSD = r2(-events.filter(e => e.kind === 'refund').reduce((s, e) => s + (e.amountUSD ?? 0), 0));
     const taxUSD = r2(paid.reduce((s, e) => s + (e.taxUSD ?? 0), 0));

@@ -7,7 +7,7 @@ describe('BillingTimelineService', () => {
   const iso = (daysAgo: number) => new Date(Date.now() - daysAgo * DAY);
   const chain = (rows: any[]) => ({ sort: () => ({ lean: () => Promise.resolve(rows) }), select: () => ({ lean: () => Promise.resolve(rows) }), lean: () => Promise.resolve(rows) });
 
-  function make(over: { sub?: any; invoices?: any[]; attempts?: any[]; addons?: any[]; fees?: any[]; owner?: string } = {}) {
+  function make(over: { sub?: any; invoices?: any[]; attempts?: any[]; fees?: any[]; owner?: string } = {}) {
     const sub = over.sub ?? {
       _id: 'sub1', storeId: 'st1', status: 'active', platformPlanId: 'pro', billingInterval: 'monthly', amountUSD: 79, creditBalanceUSD: 5,
       startedAt: iso(40), trialEndsAt: iso(37), nextBillingDate: new Date(Date.now() + 10 * DAY),
@@ -28,24 +28,22 @@ describe('BillingTimelineService', () => {
       { _id: 'a1', outcome: 'failed', amountUSD: 79, failureReason: 'Your card has insufficient funds.', createdAt: iso(11), cardBrand: 'visa', cardLast4: '0341', providerChargeId: 'pi_f' },
       { _id: 'a2', outcome: 'success', amountUSD: 60, createdAt: iso(10) },
     ];
-    const addons = over.addons ?? [{ _id: 'ad1', addonType: 'extra_staff_seat', priceUSD: 10, quantity: 1, status: 'active', createdAt: iso(20), charges: [{ amountUSD: 10, taxUSD: 0, chargedAt: iso(20) }] }];
     const fees = over.fees ?? [{ _id: 'f1', periodKey: '2026-10', amountUSD: 12, taxAmountUSD: 0, saleCount: 4, status: 'paid', paidAt: iso(15), createdAt: iso(15) }];
     const db: any = { repositories: {
       storeModel: { findById: jest.fn(() => Object.assign(Promise.resolve({ sellerId: over.owner ?? 'seller-1', isDelete: false }), { select: () => ({ lean: () => Promise.resolve({ _id: 'st1', name: 'Ali Shoes' }) }) })) },
       sellerPlatformSubscriptionModel: { findOne: () => ({ lean: () => Promise.resolve(sub) }) },
       platformPlanInvoiceModel: { find: () => chain(invoices) },
       platformPlanPaymentAttemptModel: { find: () => chain(attempts) },
-      platformAddonPurchaseModel: { find: () => chain(addons) },
       transactionFeeBillModel: { find: () => chain(fees) },
       platformPlanModel: { find: () => ({ select: () => ({ lean: () => Promise.resolve([{ _id: 'grow', name: 'Grow' }, { _id: 'pro', name: 'Pro' }]) }) }) },
     } };
     return new BillingTimelineService(db);
   }
 
-  it('merges trial, plan changes, payments, failed attempt, refund, add-on and fee bill — newest first', async () => {
+  it('merges trial, plan changes, payments, failed attempt, refund and fee bill — newest first', async () => {
     const res = await make().getForSeller('seller-1', 'st1', {});
     const kinds = res.data.events.map(e => e.kind);
-    for (const k of ['trial_started', 'trial_ended', 'plan_change', 'payment', 'payment_failed', 'refund', 'addon', 'transaction_fee']) expect(kinds).toContain(k);
+    for (const k of ['trial_started', 'trial_ended', 'plan_change', 'payment', 'payment_failed', 'refund', 'transaction_fee']) expect(kinds).toContain(k);
     const times = res.data.events.map(e => new Date(e.at).getTime());
     expect([...times].sort((a, b) => b - a)).toEqual(times);
   });
@@ -60,14 +58,14 @@ describe('BillingTimelineService', () => {
     expect(inv.lineItems!.reduce((s, l) => s + l.amountUSD, 0)).toBe(60);
   });
 
-  it('summary: lifetime paid (plans+add-ons+fees), refunds, net, credit balance, card on file', async () => {
+  it('summary: lifetime paid (plans+fees), refunds, net, credit balance, card on file', async () => {
     const { summary } = (await make().getForSeller('seller-1', 'st1', {})).data;
-    expect(summary.lifetimePaidUSD).toBe(29 + 60 + 10 + 12);
+    expect(summary.lifetimePaidUSD).toBe(29 + 60 + 12);
     expect(summary.refundedUSD).toBe(10);
-    expect(summary.netLifetimeUSD).toBe(101);
+    expect(summary.netLifetimeUSD).toBe(91);
     expect(summary.creditBalanceUSD).toBe(5);
     expect(summary.card).toEqual({ brand: 'visa', last4: '4242' });
-    expect(summary.breakdown).toMatchObject({ plans: 89, addons: 10, transactionFees: 12, refunds: -10 });
+    expect(summary.breakdown).toMatchObject({ plans: 89, transactionFees: 12, refunds: -10 });
     expect(summary.failedPaymentsLast30Days).toBe(1);
   });
 
@@ -108,7 +106,7 @@ describe('BillingTimelineService', () => {
     ] };
     const inv = { _id: 'c1', invoiceNumber: 'INV-9', platformPlanId: 'pro', type: 'proration', status: 'paid', amountUSD: 59, taxAmountUSD: 0, paidAt: iso(2), createdAt: iso(2),
       lineItems: [{ kind: 'plan', label: 'Pro plan (monthly)', amountUSD: 79 }, { kind: 'credit', label: 'Account credit applied', amountUSD: -20 }] };
-    const { events } = (await make({ sub, invoices: [inv], attempts: [], addons: [], fees: [] }).getForSeller('seller-1', 'st1', { kinds: 'credit' })).data;
+    const { events } = (await make({ sub, invoices: [inv], attempts: [], fees: [] }).getForSeller('seller-1', 'st1', { kinds: 'credit' })).data;
     expect(events.map(e => e.creditUSD)).toEqual([-20, 20]); // newest first: used, then added
   });
 

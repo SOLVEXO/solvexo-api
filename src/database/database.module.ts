@@ -125,10 +125,6 @@ import { DatabaseService } from './databaseservice';
         name: schema.AiCreditsWallet.name,
         schema: schema.AiCreditsWalletSchema,
       },
-      {
-        name: schema.PlatformAddonPurchase.name,
-        schema: schema.PlatformAddonPurchaseSchema,
-      },
       { name: schema.StoreLocation.name, schema: schema.StoreLocationSchema },
       { name: schema.BookableService.name, schema: schema.BookableServiceSchema },
       { name: schema.ServiceAvailability.name, schema: schema.ServiceAvailabilitySchema },

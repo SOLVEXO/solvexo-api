@@ -2,14 +2,12 @@
 import { Global, Module } from '@nestjs/common';
 import { PlatformPlansController } from './platform-plans.controller';
 import { SellerPlatformSubscriptionsController } from './seller-platform-subscriptions.controller';
-import { PlatformAddonsController } from './platform-addons.controller';
 import { PlatformPlansService } from './platform-plans.service';
 import { PlatformPlanCatalogService } from './platform-plan-catalog.service';
 import { SellerPlatformSubscriptionsService } from './seller-platform-subscriptions.service';
 import { BillingTimelineService } from './billing-timeline.service';
 import { EntitlementsService } from './entitlements.service';
 import { AiCreditsService } from './ai-credits.service';
-import { PlatformAddonsService } from './platform-addons.service';
 import { PlatformPlanNotificationsService } from './platform-plan-notifications.service';
 import { TransactionFeeBillingService } from './transaction-fee-billing.service';
 import { LegacyPlatformSubscriptionBackfillService } from './legacy-platform-subscription-backfill.service';
@@ -35,11 +33,9 @@ import { CriticalAlertService } from '../common/critical-alert.service';
   // Controller order matters here — Express/Nest routing is first-match, in
   // controller-then-method declaration order (same "static-before-dynamic"
   // convention used throughout this codebase's other controllers):
-  //   1. PlatformAddonsController's static "admin/addons" must come before
-  //      PlatformPlansController's parameterized "admin/:id".
-  //   2. PlatformPlansController's static "public"/"admin/*" routes must come
+  //   1. PlatformPlansController's static "public"/"admin/*" routes must come
   //      before SellerPlatformSubscriptionsController's catch-all ":storeId".
-  controllers: [PlatformAddonsController, PlatformPlansController, SellerPlatformSubscriptionsController, TransactionFeesController],
+  controllers: [PlatformPlansController, SellerPlatformSubscriptionsController, TransactionFeesController],
   providers: [
     PlatformPlansService,
     PlatformPlanCatalogService,
@@ -48,13 +44,12 @@ import { CriticalAlertService } from '../common/critical-alert.service';
     LegacyPlatformSubscriptionBackfillService,
     EntitlementsService,
     AiCreditsService,
-    PlatformAddonsService,
     PlatformPlanNotificationsService,
     TransactionFeeBillingService,
     EmailService,
     CriticalAlertService,
     BillingAccessGuard,
   ],
-  exports: [PlatformPlansService, PlatformPlanCatalogService, SellerPlatformSubscriptionsService, EntitlementsService, AiCreditsService, PlatformAddonsService, BillingAccessGuard, TransactionFeeBillingService],
+  exports: [PlatformPlansService, PlatformPlanCatalogService, SellerPlatformSubscriptionsService, EntitlementsService, AiCreditsService, BillingAccessGuard, TransactionFeeBillingService],
 })
 export class PlatformPlansModule {}

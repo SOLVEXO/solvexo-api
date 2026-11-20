@@ -256,17 +256,10 @@ export class EntitlementsService {
    * (pending invites included — an invite holds a seat). POS-only employees
    * (PIN login, no dashboard access) are deliberately NOT counted — Shopify's
    * own rule: "POS only staff ... do not count toward the user limit".
-   * Any still-active legacy "extra staff seat" add-on keeps its paid seats
-   * until that add-on lapses (the add-on itself is no longer sold).
    */
-  async countStaffSeats(storeId: string): Promise<{ used: number; extraSeats: number }> {
-    const [used, extraSeatAddons] = await Promise.all([
-      this.db.repositories.staffMemberModel.countDocuments({ storeId, isDelete: false, status: 'active' }),
-      this.db.repositories.platformAddonPurchaseModel
-        .find({ storeId, addonType: 'extra_staff_seat', status: 'active' }).lean(),
-    ]);
-    const extraSeats = (extraSeatAddons as any[]).reduce((sum: number, a: any) => sum + (a.quantity ?? 1), 0);
-    return { used, extraSeats };
+  async countStaffSeats(storeId: string): Promise<{ used: number }> {
+    const used = await this.db.repositories.staffMemberModel.countDocuments({ storeId, isDelete: false, status: 'active' });
+    return { used };
   }
 
   /** Throws if the store is already at (or over) its staff-account limit. Call BEFORE inviting or re-activating a dashboard staff member. */
@@ -274,8 +267,8 @@ export class EntitlementsService {
     const limits = await this.getLimits(storeId);
     if (limits.maxStaffAccounts === -1) return;
 
-    const { used, extraSeats } = await this.countStaffSeats(storeId);
-    const effectiveLimit = limits.maxStaffAccounts + extraSeats;
+    const { used } = await this.countStaffSeats(storeId);
+    const effectiveLimit = limits.maxStaffAccounts;
     if (used >= effectiveLimit) {
       throw new BadRequestException(
         effectiveLimit === 0
@@ -433,9 +426,9 @@ export class EntitlementsService {
         allowed: limits.maxProducts === -1 || productCount < limits.maxProducts,
       },
       maxStaffAccounts: {
-        limit: limits.maxStaffAccounts === -1 ? -1 : limits.maxStaffAccounts + staffSeats.extraSeats,
+        limit: limits.maxStaffAccounts === -1 ? -1 : limits.maxStaffAccounts,
         used: staffSeats.used,
-        allowed: limits.maxStaffAccounts === -1 || staffSeats.used < limits.maxStaffAccounts + staffSeats.extraSeats,
+        allowed: limits.maxStaffAccounts === -1 || staffSeats.used < limits.maxStaffAccounts,
       },
       maxPosLocations: {
         limit: limits.maxPosLocations, used: posLocationCount,

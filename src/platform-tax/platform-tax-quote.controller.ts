@@ -8,7 +8,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { PlatformTaxService } from './platform-tax.service';
 
-/** What Solvexo's tax will add to a plan fee / add-on for THIS seller's store, so the seller sees it before paying. */
+/** What Solvexo's tax will add to a plan fee for THIS seller's store, so the seller sees it before paying. */
 @ApiTags('Platform Tax')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard)

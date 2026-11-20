@@ -80,7 +80,7 @@ describe('AdminAnalyticsService', () => {
       }),
     } as any;
 
-    adminFinanceService = { getPlatformRevenue: jest.fn().mockResolvedValue({ success: true, data: { planRevenue: { netUSD: 0 }, addons: { grossUSD: 0 }, transactionFees: { collectedUSD: 0 }, totalRevenueUSD: 0 } }) };
+    adminFinanceService = { getPlatformRevenue: jest.fn().mockResolvedValue({ success: true, data: { planRevenue: { netUSD: 0 }, transactionFees: { collectedUSD: 0 }, totalRevenueUSD: 0 } }) };
     service = new AdminAnalyticsService(db, redis, platformPlansService, adminFinanceService);
   });
 
@@ -266,17 +266,16 @@ describe('AdminAnalyticsService', () => {
   });
 
   describe('revenue breakdown — platform revenue matches Finance', () => {
-    const financeData = { planRevenue: { netUSD: 90 }, addons: { grossUSD: 10 }, transactionFees: { collectedUSD: 5 }, totalRevenueUSD: 105 };
+    const financeData = { planRevenue: { netUSD: 100 }, transactionFees: { collectedUSD: 5 }, totalRevenueUSD: 105 };
 
-    it('platform-wide totalPlatformRevenue = plans + add-ons + collected transaction fees (not commission)', async () => {
+    it('platform-wide totalPlatformRevenue = plans + collected transaction fees (not commission)', async () => {
       adminFinanceService.getPlatformRevenue.mockResolvedValue({ success: true, data: financeData });
       transactionModel.aggregate = jest.fn().mockResolvedValue([]);
 
       const result = await service.getRevenueBreakdown({});
 
       expect(result.data.totalPlatformRevenue).toBe(105);
-      expect(result.data.planRevenue).toBe(90);
-      expect(result.data.addonRevenue).toBe(10);
+      expect(result.data.planRevenue).toBe(100);
       expect(result.data.transactionFeeRevenue).toBe(5);
     });
 

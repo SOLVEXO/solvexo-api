@@ -81,7 +81,7 @@ export class AiCreditsService {
     await this.writeLedger(wallet._id, { type: 'spend', amount: -amount, reason });
   }
 
-  /** `purchased: true` marks credits the seller paid for (the extra-credits add-on): they survive the monthly reset until spent. */
+  /** `purchased: true` marks credits the seller paid for (credits bought in the past): they survive the monthly reset until spent. */
   async grant(storeId: string, sellerId: string, amount: number, reason: string, opts?: { purchased?: boolean }): Promise<void> {
     const wallet = await this.getOrCreateWallet(storeId, sellerId);
     const inc: Record<string, number> = { balance: amount };

@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { addonChargeFacts, feeBillFacts, planInvoiceFacts, taxRecordFacts } from './platform-ledger.util';
+import { feeBillFacts, planInvoiceFacts, taxRecordFacts } from './platform-ledger.util';
 import { determine, EntityView, RuleView } from './platform-tax-determination.service';
 import { projectEntity, projectLegacyRules } from './platform-entity.service';
 
@@ -38,15 +38,6 @@ describe('ledger facts: golden tests per source (chargedTax always equals what t
     const r = planInvoiceFacts({ _id: 'r', storeId: 's', status: 'partially_refunded', paidAt: PAID, amountUSD: 29, subtotalUSD: 29, taxAmountUSD: 0, refundedAmountUSD: 10 })!;
     expect(r.refundedUSD).toBe(10);
     expect(r.status).toBe('partially_refunded');
-  });
-  it('add-on: one row per charge, tax known only when the charge stored taxUSD', () => {
-    const rows = addonChargeFacts({ _id: 'a1', storeId: 's1', sellerId: 'u1', charges: [
-      { amountUSD: 10, taxUSD: 0.2, chargedAt: PAID }, { amountUSD: 10, chargedAt: PAID }, { amountUSD: 10, taxUSD: 0, chargedAt: PAID },
-    ] });
-    expect(rows.map((r) => r.sourceId)).toEqual(['a1:0', 'a1:1', 'a1:2']);
-    expect(rows[0]).toMatchObject({ taxKnown: true, netUSD: 10, chargedTaxUSD: 0.2, totalUSD: 10.2 });
-    expect(rows[1]).toMatchObject({ taxKnown: false, chargedTaxUSD: null, totalUSD: null, taxLines: null });
-    expect(rows[2]).toMatchObject({ taxKnown: true, chargedTaxUSD: 0, taxLines: [] });
   });
   it('fee bill: only paid bills, tax known only when the stored bill has taxAmountUSD', () => {
     expect(feeBillFacts({ _id: 'b0', storeId: 's', status: 'awaiting_payment', paidAt: PAID, amountUSD: 5 })).toBeNull();

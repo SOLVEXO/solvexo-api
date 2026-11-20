@@ -20,7 +20,6 @@ import { FbrDiService } from '../fbr-di/fbr-di.service';
 import { PlatformLedgerService } from '../platform-tax/platform-ledger.service';
 import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
 import { AiCreditsService } from '@/platform-plans/ai-credits.service';
-import { PlatformAddonsService } from '@/platform-plans/platform-addons.service';
 import { TransactionFeeBillingService } from '@/platform-plans/transaction-fee-billing.service';
 import { SeoSitemapService } from '@/seo/services/seo-sitemap.service';
 import { SeoMonitoringService } from '@/seo/services/seo-monitoring.service';
@@ -66,7 +65,6 @@ export class SchedulerService {
     private readonly fbrDiService: FbrDiService,
     private readonly platformLedgerService: PlatformLedgerService,
     private readonly aiCreditsService: AiCreditsService,
-    private readonly platformAddonsService: PlatformAddonsService,
     private readonly seoSitemapService: SeoSitemapService,
     private readonly seoMonitoringService: SeoMonitoringService,
     private readonly seoAuditService: SeoAuditService,
@@ -582,19 +580,6 @@ export class SchedulerService {
     await this.runLocked('ai-credits-monthly-reset', 30 * 60_000, async () => {
       const result = await this.aiCreditsService.resetAllMonthlyAllowances();
       this.logger.log(`AI credits reset for ${result.reset} store wallet(s)`);
-    });
-  }
-
-  // Runs hourly (offset from the core platform-plan renewal tick) — charges
-  // every recurring add-on (extra staff seat, priority placement, etc.)
-  // whose monthly billing date has arrived.
-  @Cron('20 * * * *')
-  async runAddonRenewals() {
-    await this.runLocked('platform-addon-renewals', 30 * 60_000, async () => {
-      const result = await this.platformAddonsService.processRecurringAddonRenewals();
-      if (result.processed > 0) {
-        this.logger.log(`Add-on renewals: ${result.processed} processed, ${result.succeeded} succeeded, ${result.failed} failed`);
-      }
     });
   }
 
