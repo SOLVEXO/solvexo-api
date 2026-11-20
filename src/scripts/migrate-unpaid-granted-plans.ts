@@ -100,7 +100,35 @@ async function run() {
     }
   }
 
-  console.log(`\n${APPLY ? 'Migrated' : 'Would migrate'}: ${migrated}   Needs manual review / skipped: ${review}   Candidates examined: ${candidates.length}`);
+  // ── Pass 2: gated stores (locked / trial_ended) that still carry a paid plan they never paid for ──
+  // Under the new flow a gated store has no plan until it pays. Clear the leftover plan so entitlements fall back to the
+  // restricted limits and the billing page asks for a real purchase. Status stays as it is (already gated).
+  const paidStatuses = ['paid', 'partially_refunded', 'refunded'];
+  const leftovers = await subs.find({ isDelete: { $ne: true }, status: { $in: ['trial_ended', 'locked'] }, platformPlanId: { $ne: null } }).toArray();
+  let cleared = 0;
+  for (const s of leftovers) {
+    if ((await invoices.countDocuments({ storeId: s.storeId, status: { $in: paidStatuses } })) > 0) continue; // really paid once: keep the "you were on X" record
+    console.log(`CLEAR   store ${s.storeId} (${s.status}, ${s.legacyFreeEligible ? 'legacy' : 'standard'}, $${s.amountUSD}): leftover plan ${s.platformPlanId} never paid -> no plan`);
+    if (!APPLY) { cleared++; continue; }
+    const set: Record<string, unknown> = { platformPlanId: null, amountUSD: 0, pendingPlanChange: null, scheduledPlanChange: null, lastBillingError: s.lastBillingError ?? REASON, updatedAt: new Date() };
+    if (s.providerSubscriptionId) { set.providerSubscriptionId = null; set.paymentProvider = 'manual'; }
+    const r = await subs.updateOne({ _id: s._id, status: s.status, totalPaidUSD: s.totalPaidUSD }, { $set: set });
+    if (r.modifiedCount) { await stores.updateOne({ _id: new mongoose.Types.ObjectId(String(s.storeId)) }, { $set: { plan: 'starter' } }); cleared++; }
+  }
+
+  // ── Report only: ACTIVE non-legacy stores on a plan with no paid invoice ──
+  // These may be admin-assigned, internal/test accounts or paid offline (manual provider) — a business decision, never auto-changed.
+  const planNames: Record<string, string> = Object.fromEntries((await plans.find({}).toArray()).map((p) => [String(p._id), String(p.name)]));
+  const activeUnpaid = await subs.find({ isDelete: { $ne: true }, status: 'active', legacyFreeEligible: { $ne: true }, platformPlanId: { $ne: null } }).toArray();
+  console.log('\nActive stores with a plan but NO paid invoice (left untouched — decide per store):');
+  let unpaidActive = 0;
+  for (const s of activeUnpaid) {
+    if ((await invoices.countDocuments({ storeId: s.storeId, status: { $in: paidStatuses } })) > 0) continue;
+    unpaidActive++;
+    console.log(`  REPORT  store ${s.storeId}: ${planNames[String(s.platformPlanId)] ?? s.platformPlanId} $${s.amountUSD} via ${s.paymentProvider}`);
+  }
+
+  console.log(`\n${APPLY ? 'Migrated' : 'Would migrate'}: ${migrated}   Leftover plans ${APPLY ? 'cleared' : 'to clear'}: ${cleared}   Needs manual review / skipped: ${review}   Active-unpaid reported: ${unpaidActive}   Past-due candidates examined: ${candidates.length}`);
   await mongoose.disconnect();
 }
 
