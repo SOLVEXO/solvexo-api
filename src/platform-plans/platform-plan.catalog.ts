@@ -34,7 +34,7 @@ export type PlanKey = 'basic' | 'grow' | 'advanced' | 'enterprise';
 
 /** Bump when the limits/features in `PLAN_CATALOG` change — existing plan documents
  *  are re-aligned to the catalog once per bump (see PlatformPlanCatalogService). */
-export const CATALOG_VERSION = 5; // v2: Enterprise became fixed-price · v3: transactionFeeRate now means the Shopify-style third-party gateway fee · v4: one uniform yearly discount (25%), yearly prices re-aligned once · v5: final plan matrix (banners/promotions dead and unlimited, abandoned cart + redirects + B2B on every plan, memberships/licenses/courses Grow+, API & webhooks Advanced+, B2B catalogs and monthly email limits). Re-alignment never touches prices.
+export const CATALOG_VERSION = 6; // v2: Enterprise became fixed-price · v3: transactionFeeRate now means the Shopify-style third-party gateway fee · v4: one uniform yearly discount (25%), yearly prices re-aligned once · v5: final plan matrix (banners/promotions dead and unlimited, abandoned cart + redirects + B2B on every plan, memberships/licenses/courses Grow+, API & webhooks Advanced+, B2B catalogs and monthly email limits). v6: no plan sells AI credits or AI SEO suggestions, and white-label branding is not a plan feature (every seller can switch the "Powered by" credit off). Re-alignment never touches prices.
 
 /** Shopify bills a year up front at 25% off the monthly rate on every plan ($25→$19, $65→$49, $399→$299 a month).
  *  Solvexo applies the same discount to every plan so the catalog is internally consistent. */
@@ -88,7 +88,7 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     intro: { priceUSD: 1, durationCycles: 3 },
     gracePeriodDays: 3,
     limits: {
-      maxProducts: 25, maxStaffAccounts: 1, maxPosLocations: 1, aiCreditsPerMonth: 100,
+      maxProducts: 25, maxStaffAccounts: 1, maxPosLocations: 1, aiCreditsPerMonth: 0,
       transactionFeeRate: 0.02,
       maxMarkets: 3, monthlyEmailSends: 2000, maxB2BCatalogs: 1,
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
@@ -107,12 +107,12 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     intro: { priceUSD: 1, durationCycles: 3 },
     gracePeriodDays: 3,
     limits: {
-      maxProducts: -1, maxStaffAccounts: 5, maxPosLocations: 3, aiCreditsPerMonth: 500,
+      maxProducts: -1, maxStaffAccounts: 5, maxPosLocations: 3, aiCreditsPerMonth: 0,
       transactionFeeRate: 0.01,
       maxMarkets: 5, monthlyEmailSends: 10000, maxB2BCatalogs: 3,
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: true, customRedirectsAllowed: true,
-      seoAiSuggestionsAllowed: true, prioritySupport: true,
+      seoAiSuggestionsAllowed: false, prioritySupport: true,
       whiteLabelAllowed: false, searchConsoleIntegrationAllowed: false,
       calculatedShippingRatesAllowed: false, digitalMembershipsAllowed: true, digitalLicensesAllowed: true, digitalCoursesAllowed: true,
       b2bWholesaleAllowed: true, apiWebhooksAllowed: false, dedicatedAccountManager: false,
@@ -126,13 +126,13 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     intro: { priceUSD: 1, durationCycles: 3 },
     gracePeriodDays: 3,
     limits: {
-      maxProducts: -1, maxStaffAccounts: 15, maxPosLocations: 10, aiCreditsPerMonth: 2000,
+      maxProducts: -1, maxStaffAccounts: 15, maxPosLocations: 10, aiCreditsPerMonth: 0,
       transactionFeeRate: 0.006,
       maxMarkets: 10, monthlyEmailSends: 50000, maxB2BCatalogs: 10,
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: true, customRedirectsAllowed: true,
-      seoAiSuggestionsAllowed: true, prioritySupport: true,
-      whiteLabelAllowed: true, searchConsoleIntegrationAllowed: true,
+      seoAiSuggestionsAllowed: false, prioritySupport: true,
+      whiteLabelAllowed: false, searchConsoleIntegrationAllowed: true,
       calculatedShippingRatesAllowed: true, digitalMembershipsAllowed: true, digitalLicensesAllowed: true, digitalCoursesAllowed: true,
       b2bWholesaleAllowed: true, apiWebhooksAllowed: true, dedicatedAccountManager: false,
       ...DEAD_LIMITS, ...NOT_OFFERED,
@@ -144,13 +144,13 @@ export const PLAN_CATALOG: CatalogPlan[] = [
     monthlyPriceUSD: 299, yearlyPriceUSD: yearlyPriceFor(299), intro: null,
     gracePeriodDays: 7,
     limits: {
-      maxProducts: -1, maxStaffAccounts: -1, maxPosLocations: -1, aiCreditsPerMonth: 10000,
+      maxProducts: -1, maxStaffAccounts: -1, maxPosLocations: -1, aiCreditsPerMonth: 0,
       transactionFeeRate: 0.002,
       maxMarkets: -1, monthlyEmailSends: 200000, maxB2BCatalogs: -1,
       customDomainAllowed: true, emailCampaignsAllowed: true, advancedSeoToolsAllowed: true,
       abandonedCartRecoveryAllowed: true, loyaltyProgramAllowed: true, customRedirectsAllowed: true,
-      seoAiSuggestionsAllowed: true, prioritySupport: true,
-      whiteLabelAllowed: true, searchConsoleIntegrationAllowed: true,
+      seoAiSuggestionsAllowed: false, prioritySupport: true,
+      whiteLabelAllowed: false, searchConsoleIntegrationAllowed: true,
       calculatedShippingRatesAllowed: true, digitalMembershipsAllowed: true, digitalLicensesAllowed: true, digitalCoursesAllowed: true,
       b2bWholesaleAllowed: true, apiWebhooksAllowed: true, dedicatedAccountManager: true,
       ...DEAD_LIMITS, ...NOT_OFFERED,
@@ -193,8 +193,6 @@ export const FLAG_FEATURES: { key: FlagKey; label: string }[] = [
   { key: 'abandonedCartRecoveryAllowed', label: 'Abandoned cart recovery' },
   { key: 'loyaltyProgramAllowed', label: 'Loyalty & rewards program' },
   { key: 'customRedirectsAllowed', label: 'Custom redirects & canonical rules' },
-  { key: 'seoAiSuggestionsAllowed', label: 'AI SEO suggestions' },
-  { key: 'whiteLabelAllowed', label: 'White-label branding' },
   { key: 'searchConsoleIntegrationAllowed', label: 'Google Search Console integration' },
   { key: 'calculatedShippingRatesAllowed', label: 'Live carrier shipping rates at checkout' },
   { key: 'b2bWholesaleAllowed', label: 'Wholesale (B2B)' },
@@ -331,8 +329,7 @@ export function buildFeatureBullets(
   if (changed('maxPosLocations')) {
     lines.push(l.maxPosLocations === -1 ? 'Unlimited POS & inventory locations' : `${money(l.maxPosLocations)} POS / inventory location${l.maxPosLocations === 1 ? '' : 's'}`);
   }
-  // AI credits are only spent by AI SEO suggestions, so a plan without them does not advertise credits it can not use.
-  if (changed('aiCreditsPerMonth') && l.aiCreditsPerMonth > 0 && l.seoAiSuggestionsAllowed) lines.push(`${money(l.aiCreditsPerMonth)} AI credits every month (for AI SEO suggestions)`);
+  // AI credits and AI SEO suggestions are not offered (v6), so no plan advertises them.
   if (changed('maxMarkets')) lines.push(l.maxMarkets === -1 ? 'Sell in unlimited currencies' : `Sell in up to ${money(l.maxMarkets)} currencies`);
   // Store banners and promotions are dead (see DEAD_LIMITS) and are never advertised.
   if (changed('monthlyEmailSends') && l.monthlyEmailSends > 0) lines.push(`${money(l.monthlyEmailSends)} marketing emails a month`);

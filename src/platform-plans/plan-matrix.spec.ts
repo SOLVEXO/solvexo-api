@@ -2,7 +2,7 @@
 import { PLAN_CATALOG, CATALOG_VERSION, assertCatalogValid, buildFeatureBullets } from './platform-plan.catalog';
 import { EntitlementsService } from './entitlements.service';
 
-// The final plan matrix (catalog v5). Plain describe/it/expect only, so it also runs on scripts/mini-jest.cjs.
+// The final plan matrix (catalog v6). Plain describe/it/expect only, so it also runs on scripts/mini-jest.cjs.
 const KEYS = ['basic', 'grow', 'advanced', 'enterprise'];
 const limitsOf = (key: string): any => (PLAN_CATALOG.find((p) => p.key === key) as any).limits;
 const column = (field: string) => KEYS.map((k) => limitsOf(k)[field]);
@@ -24,9 +24,9 @@ function service(limits: any, emailsUsed = 0) {
   return new EntitlementsService(db);
 }
 
-describe('plan catalog v5 — the final matrix', () => {
-  it('is internally valid (limits, tier order, prices) and is version 5', () => {
-    expect(CATALOG_VERSION).toBe(5);
+describe('plan catalog v6 — the final matrix', () => {
+  it('is internally valid (limits, tier order, prices) and is version 6', () => {
+    expect(CATALOG_VERSION).toBe(6);
     expect(() => assertCatalogValid()).not.toThrow();
   });
 
@@ -35,7 +35,6 @@ describe('plan catalog v5 — the final matrix', () => {
     expect(column('maxStaffAccounts')).toEqual([1, 5, 15, -1]);
     expect(column('maxPosLocations')).toEqual([1, 3, 10, -1]);
     expect(column('maxMarkets')).toEqual([3, 5, 10, -1]);
-    expect(column('aiCreditsPerMonth')).toEqual([100, 500, 2000, 10000]);
     expect(column('transactionFeeRate')).toEqual([0.02, 0.01, 0.006, 0.002]);
     expect(column('monthlyEmailSends')).toEqual([2000, 10000, 50000, 200000]);
     expect(column('maxB2BCatalogs')).toEqual([1, 3, 10, -1]);
@@ -47,17 +46,27 @@ describe('plan catalog v5 — the final matrix', () => {
     }
   });
 
-  it('memberships, license keys, courses, loyalty, AI SEO and priority support start at Grow', () => {
-    for (const f of ['digitalMembershipsAllowed', 'digitalLicensesAllowed', 'digitalCoursesAllowed', 'loyaltyProgramAllowed', 'seoAiSuggestionsAllowed', 'prioritySupport']) {
+  it('memberships, license keys, courses, loyalty and priority support start at Grow', () => {
+    for (const f of ['digitalMembershipsAllowed', 'digitalLicensesAllowed', 'digitalCoursesAllowed', 'loyaltyProgramAllowed', 'prioritySupport']) {
       expect(column(f)).toEqual([false, true, true, true]);
     }
   });
 
-  it('API & webhooks, white-label, Search Console and live courier rates start at Advanced; the account manager is Enterprise only', () => {
-    for (const f of ['apiWebhooksAllowed', 'whiteLabelAllowed', 'searchConsoleIntegrationAllowed', 'calculatedShippingRatesAllowed']) {
+  it('API & webhooks, Search Console and live courier rates start at Advanced; the account manager is Enterprise only', () => {
+    for (const f of ['apiWebhooksAllowed', 'searchConsoleIntegrationAllowed', 'calculatedShippingRatesAllowed']) {
       expect(column(f)).toEqual([false, false, true, true]);
     }
     expect(column('dedicatedAccountManager')).toEqual([false, false, false, true]);
+  });
+
+  it('AI credits, AI SEO suggestions and white-label are not sold: off / zero on every plan and never advertised', () => {
+    expect(column('aiCreditsPerMonth')).toEqual([0, 0, 0, 0]);
+    expect(column('seoAiSuggestionsAllowed')).toEqual([false, false, false, false]);
+    expect(column('whiteLabelAllowed')).toEqual([false, false, false, false]);
+    for (const plan of PLAN_CATALOG) {
+      const text = buildFeatureBullets(plan as never, null).join(' ');
+      expect(text).not.toMatch(/AI credits|AI SEO|White-label/i);
+    }
   });
 
   it('what has nothing behind it is off everywhere', () => {
