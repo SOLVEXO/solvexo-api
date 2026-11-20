@@ -770,7 +770,9 @@ export class SellerPlatformSubscriptionsService {
     const s: any = sub;
     const since = s.status === 'past_due' ? (s.pastDueSince ?? s.currentPeriodEnd ?? null) : null;
     const lockDate = since ? new Date(new Date(since).getTime() + PAST_DUE_LOCK_DAYS * 24 * 60 * 60 * 1000) : null;
-    return { success: true, data: { ...sub, plan, lockDate } };
+    // The seller only learns THAT the plan is provided by support (never who gave it or why).
+    const complimentary = s.complimentary ? { active: true, since: s.complimentary.grantedAt } : null;
+    return { success: true, data: { ...sub, complimentary, plan, lockDate } };
   }
 
   /** Seller's own platform-plan billing history for one store — invoice list + download links. */
@@ -931,8 +933,18 @@ export class SellerPlatformSubscriptionsService {
     return { success: true, message: `Extended by ${days} day(s)`, data: { subscription: sub } };
   }
 
-  /** Manually comps a store onto a plan — cancels any live Stripe subscription first (never runs alongside real recurring billing for the same store), never creates an invoice/charge. */
-  async adminAssignPlan(adminId: string, storeId: string, planId: string, reason?: string) {
+  /**
+   * Gives a store a plan WITHOUT charging (partner, test account, goodwill...). Recorded as a "complimentary" plan: the
+   * admin must say why, may set a review date, renewals never charge it, it never goes past_due / locks, and the seller
+   * sees "Provided by Solvexo support". Revenue (amountUSD) is 0 so it is never counted as MRR; the plan's list price is
+   * kept in `complimentary.planPriceUSD`. Assigning a FREE plan is just a plain free plan (nothing complimentary).
+   */
+  async adminAssignPlan(adminId: string, storeId: string, planId: string, reason: string, reviewAt?: string | null) {
+    const cleanReason = (reason ?? '').trim();
+    if (cleanReason.length < 3) throw new BadRequestException('Say why this store gets a complimentary plan (at least a few words)');
+    const review = reviewAt ? new Date(reviewAt) : null;
+    if (review && (isNaN(review.getTime()) || review.getTime() <= Date.now())) throw new BadRequestException('The review date must be in the future');
+
     const sub = await this.subModel.findOne({ storeId, isDelete: false });
     if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
     const plan = await this.planModel.findOne({ _id: planId, isDelete: false, status: 'active' });
@@ -946,11 +958,16 @@ export class SellerPlatformSubscriptionsService {
       sub.providerSubscriptionId = null;
     }
 
+    const admin: any = await this.db.repositories.adminModel.findById(adminId).select('name email').lean().catch(() => null);
+    const adminName: string | null = admin?.name ?? admin?.email ?? null;
     const now = new Date();
+    const listPrice = plan.isFree ? 0 : (plan.monthlyPriceUSD ?? 0);
     sub.platformPlanId = (plan as any)._id.toString();
-    sub.amountUSD = plan.isFree ? 0 : (plan.monthlyPriceUSD ?? 0);
+    sub.amountUSD = 0; // complimentary: never revenue, never renewed
     sub.billingInterval = 'monthly';
     sub.paymentProvider = 'manual';
+    sub.pendingPlanChange = null;
+    sub.lastBillingError = null;
     sub.scheduledPlanChange = null;
     sub.status = 'active';
     sub.failedPaymentAttempts = 0; sub.pastDueSince = null;
@@ -959,13 +976,17 @@ export class SellerPlatformSubscriptionsService {
     sub.cancelReason = null;
     sub.currentPeriodStart = now;
     sub.currentPeriodEnd = this.addPeriod(now, 'monthly');
-    sub.nextBillingDate = sub.currentPeriodEnd;
+    sub.nextBillingDate = review ?? sub.currentPeriodEnd;
     sub.gracePeriodEndsAt = null;
     sub.storefrontGatedAt = null;
+    sub.complimentary = plan.isFree ? null : {
+      grantedBy: adminId, grantedByName: adminName, grantedAt: now, reason: cleanReason, reviewAt: review, planPriceUSD: listPrice,
+      reminderSoonFor: null, reminderDueFor: null,
+    };
     sub.planHistory = [...(sub.planHistory ?? []), {
-      fromPlanId: oldPlanId, fromPlanName: (oldPlan as any)?.name ?? 'Unknown',
+      fromPlanId: oldPlanId, fromPlanName: (oldPlan as any)?.name ?? (oldPlanId ? 'Unknown' : 'No plan'),
       toPlanId: (plan as any)._id.toString(), toPlanName: plan.name,
-      proratedAmountUSD: 0, changedAt: now, amountUSD: sub.amountUSD, interval: 'monthly',
+      proratedAmountUSD: 0, changedAt: now, amountUSD: 0, interval: 'monthly', source: 'admin', reason: cleanReason,
     }];
     await sub.save();
     await this.syncFeaturedBadge(storeId, plan);
@@ -973,7 +994,7 @@ export class SellerPlatformSubscriptionsService {
 
     this.activityLogService.log({
       storeId, category: 'platform_plans', action: 'admin_assigned_plan',
-      description: `Admin manually assigned "${plan.name}" plan (no charge)${reason ? ` (reason: ${reason})` : ''}`,
+      description: `Admin gave a complimentary "${plan.name}" plan (no charge) — reason: ${cleanReason}${review ? ` — review on ${review.toDateString()}` : ''}`,
       actorId: adminId, actorRole: 'admin', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
     });
     const { storeName } = await this.getSellerAndStoreNames(sub.sellerId, storeId);
@@ -986,6 +1007,134 @@ export class SellerPlatformSubscriptionsService {
     }).catch(() => {});
 
     return { success: true, message: `Assigned "${plan.name}" plan`, data: { subscription: sub } };
+  }
+
+  /** Ends a complimentary plan: the store goes back to the "Select a plan" gate (no plan, nothing charged). */
+  async adminRemoveComplimentary(adminId: string, storeId: string, reason?: string) {
+    const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+    if (!sub.complimentary) throw new BadRequestException('This store does not have a complimentary plan');
+
+    const oldPlan: any = sub.platformPlanId ? await this.planModel.findById(sub.platformPlanId).lean() : null;
+    const now = new Date();
+    await this.markTrialEnded(sub);
+    sub.platformPlanId = null;
+    sub.amountUSD = 0;
+    sub.complimentary = null;
+    sub.pendingPlanChange = null;
+    sub.scheduledPlanChange = null;
+    sub.lastBillingError = 'Your complimentary plan from Solvexo support has ended — choose a plan to continue.';
+    sub.planHistory = [...(sub.planHistory ?? []), {
+      fromPlanId: oldPlan?._id ? String(oldPlan._id) : null, fromPlanName: oldPlan?.name ?? 'Complimentary plan',
+      toPlanId: '', toPlanName: 'No plan (complimentary ended)', proratedAmountUSD: 0, changedAt: now, amountUSD: 0, interval: 'monthly',
+      source: 'admin', reason: reason?.trim() || null,
+    }];
+    await sub.save();
+    await this.syncFeaturedBadge(storeId, null);
+
+    this.activityLogService.log({
+      storeId, category: 'platform_plans', action: 'admin_removed_complimentary',
+      description: `Admin ended the complimentary plan${reason ? ` (reason: ${reason})` : ''} — the store must choose a plan`,
+      actorId: adminId, actorRole: 'admin', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+    });
+    const { storeName } = await this.getSellerAndStoreNames(sub.sellerId, storeId);
+    this.notificationsService.notify({
+      recipientId: sub.sellerId, recipientRole: 'seller', storeId,
+      type: NOTIFICATION_TYPES.PLATFORM_PLAN_ADMIN_ACTION,
+      title: 'Your complimentary plan has ended',
+      body: `${storeName}'s complimentary plan from Solvexo support has ended — choose a plan to keep selling. Your data is safe.`,
+      data: { subscriptionId: String(sub._id) },
+    }).catch(() => {});
+    return { success: true, message: 'Complimentary plan removed — the store must now choose a plan', data: { subscription: sub } };
+  }
+
+  /** Moves (or clears, with null) the review date of a complimentary plan; reminders for the old date are forgotten. */
+  async adminUpdateComplimentaryReview(adminId: string, storeId: string, reviewAt: string | null | undefined) {
+    const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+    if (!sub.complimentary) throw new BadRequestException('This store does not have a complimentary plan');
+    const review = reviewAt ? new Date(reviewAt) : null;
+    if (review && (isNaN(review.getTime()) || review.getTime() <= Date.now())) throw new BadRequestException('The review date must be in the future');
+    sub.complimentary = { ...sub.complimentary, reviewAt: review, reminderSoonFor: null, reminderDueFor: null };
+    sub.markModified('complimentary');
+    await sub.save();
+    this.activityLogService.log({
+      storeId, category: 'platform_plans', action: 'admin_complimentary_review_changed',
+      description: review ? `Admin set the complimentary-plan review date to ${review.toDateString()}` : 'Admin cleared the complimentary-plan review date',
+      actorId: adminId, actorRole: 'admin', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+    });
+    return { success: true, data: { subscription: sub } };
+  }
+
+  /** Every store currently on an admin-given plan, with who/why/when and the review state — the admin's "Complimentary" list. */
+  async adminListComplimentary() {
+    const subs: any[] = await this.subModel.find({ complimentary: { $ne: null }, isDelete: false }).lean();
+    const storeIds = subs.map(s => s.storeId);
+    const planIds = [...new Set(subs.map(s => String(s.platformPlanId)).filter(Boolean))];
+    const [stores, plans] = await Promise.all([
+      storeIds.length ? (this.storeModel.find({ _id: { $in: storeIds } }).select('name').lean() as Promise<any[]>) : Promise.resolve([] as any[]),
+      planIds.length ? (this.planModel.find({ _id: { $in: planIds } }).select('name').lean() as Promise<any[]>) : Promise.resolve([] as any[]),
+    ]);
+    const storeName = (id: string) => stores.find(s => String(s._id) === String(id))?.name ?? 'Store';
+    const planName = (id: string) => plans.find(p => String(p._id) === String(id))?.name ?? 'Plan';
+    const now = Date.now();
+    const items = subs.map(s => {
+      const c = s.complimentary;
+      const reviewAt = c.reviewAt ? new Date(c.reviewAt) : null;
+      const daysToReview = reviewAt ? Math.ceil((reviewAt.getTime() - now) / 86400000) : null;
+      return {
+        storeId: s.storeId, storeName: storeName(s.storeId), sellerId: s.sellerId, planName: planName(s.platformPlanId), planPriceUSD: c.planPriceUSD ?? 0,
+        reason: c.reason, grantedBy: c.grantedByName ?? c.grantedBy, grantedAt: c.grantedAt, reviewAt, daysToReview,
+        reviewState: reviewAt === null ? 'none' : daysToReview! <= 0 ? 'overdue' : daysToReview! <= 7 ? 'soon' : 'ok',
+        status: s.status,
+      };
+    }).sort((a, b) => (a.reviewAt ? a.reviewAt.getTime() : Infinity) - (b.reviewAt ? b.reviewAt.getTime() : Infinity));
+    return {
+      success: true,
+      data: {
+        items, count: items.length,
+        dueSoon: items.filter(i => i.reviewState === 'soon').length, overdue: items.filter(i => i.reviewState === 'overdue').length,
+        monthlyValueUSD: this.round(items.reduce((s, i) => s + (i.planPriceUSD ?? 0), 0)),
+      },
+    };
+  }
+
+  /**
+   * Daily: tells the admins when a complimentary plan's review date is within 7 days, and again once it has passed
+   * (each only once per review date). It never removes anything by itself — keeping or ending the plan is an admin decision.
+   */
+  async sendComplimentaryReviewReminders(): Promise<{ soon: number; overdue: number }> {
+    const now = new Date();
+    const horizon = new Date(now.getTime() + 7 * 86400000);
+    const subs = await this.subModel.find({ 'complimentary.reviewAt': { $ne: null, $lte: horizon }, isDelete: false });
+    let soon = 0, overdue = 0;
+    for (const sub of subs) {
+      try {
+        const c: any = sub.complimentary;
+        if (!c?.reviewAt) continue;
+        const reviewAt = new Date(c.reviewAt);
+        const isOverdue = reviewAt.getTime() <= now.getTime();
+        const alreadySent = (isOverdue ? c.reminderDueFor : c.reminderSoonFor);
+        if (alreadySent && new Date(alreadySent).getTime() === reviewAt.getTime()) continue;
+        const { storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+        const planName = ((await this.planModel.findById(sub.platformPlanId).select('name').lean()) as any)?.name ?? 'plan';
+        await this.notificationsService.notifyAdmins({
+          type: NOTIFICATION_TYPES.ADMIN_COMPLIMENTARY_REVIEW,
+          title: isOverdue ? 'Complimentary plan needs a decision' : 'Complimentary plan review coming up',
+          body: isOverdue
+            ? `${storeName}'s complimentary ${planName} plan passed its review date (${reviewAt.toDateString()}) — keep it or end it. Reason: ${c.reason}`
+            : `${storeName}'s complimentary ${planName} plan is up for review on ${reviewAt.toDateString()} — keep it or end it. Reason: ${c.reason}`,
+          data: { storeId: sub.storeId, link: '/admin/billing' },
+        });
+        sub.complimentary = { ...c, ...(isOverdue ? { reminderDueFor: reviewAt } : { reminderSoonFor: reviewAt }) };
+        sub.markModified('complimentary');
+        await sub.save();
+        if (isOverdue) overdue++; else soon++;
+      } catch (err: any) {
+        this.logger.error(`sendComplimentaryReviewReminders: failed for store ${sub.storeId}: ${err?.message}`);
+      }
+    }
+    return { soon, overdue };
   }
 
   /** Force-locks a store immediately (e.g. a ToS enforcement action) — distinct from the seller's own graceful "cancel at period end". Cancels any live Stripe subscription first. Reuses the exact same terminal-state helpers dunning exhaustion already uses. */
@@ -1371,6 +1520,7 @@ export class SellerPlatformSubscriptionsService {
     sub.canceledAt = null;
     sub.pendingPlanChange = null;
     sub.lastBillingError = null;
+    sub.complimentary = null; // a real purchase replaces any admin-given plan
     // Any change of plan — including re-subscribing before a scheduled
     // cancellation reached period end — implicitly clears that schedule.
     const hadPendingCancellation = sub.cancelAtPeriodEnd;
@@ -1600,6 +1750,7 @@ export class SellerPlatformSubscriptionsService {
 
     const sub = await this.subModel.findOne({ storeId, isDelete: false });
     if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+    if (sub.complimentary) throw new BadRequestException('Your plan is provided by Solvexo support and has no billing — contact support to change or end it');
     if ((sub.amountUSD ?? 0) === 0) throw new BadRequestException('You are already on the free plan — there is nothing to cancel');
     if (sub.cancelAtPeriodEnd) throw new BadRequestException(`Cancellation is already scheduled for ${sub.currentPeriodEnd.toDateString()}`);
 
@@ -1701,6 +1852,7 @@ export class SellerPlatformSubscriptionsService {
       paymentProvider: 'manual',
       amountUSD: { $gt: 0 }, // free-plan stores never "renew" a charge
       cancelAtPeriodEnd: { $ne: true }, // a scheduled cancellation reverts to free at period end instead of renewing
+      complimentary: null, // a plan an admin gave for free is never charged (see adminAssignPlan)
       nextBillingDate: { $lte: now },
       isDelete: false,
     });
@@ -2033,7 +2185,7 @@ export class SellerPlatformSubscriptionsService {
     const windowEnd = new Date(now.getTime() + REMINDER_WINDOW_DAYS * 24 * 60 * 60 * 1000);
 
     const due = await this.subModel.find({
-      status: 'active', paymentProvider: 'manual', amountUSD: { $gt: 0 },
+      status: 'active', paymentProvider: 'manual', amountUSD: { $gt: 0 }, complimentary: null,
       cancelAtPeriodEnd: { $ne: true }, // a scheduled cancellation won't actually renew — no false "you'll be charged" reminder
       nextBillingDate: { $gte: now, $lte: windowEnd },
       isDelete: false,
@@ -2136,6 +2288,7 @@ export class SellerPlatformSubscriptionsService {
         amountUSD: this.round(pending.amountUSD), interval: pending.interval,
       }];
       sub.pendingPlanChange = null;
+      sub.complimentary = null; // a real purchase replaces any admin-given plan
       sub.paymentProvider = 'stripe';
       sub.scheduledPlanChange = null;
     }
@@ -2475,6 +2628,7 @@ export class SellerPlatformSubscriptionsService {
         subscriptionStatus: sub?.status ?? 'none', nextBillingDate: sub?.nextBillingDate ?? null,
         totalPaidUSD: sub?.totalPaidUSD ?? 0,
         billingSyncError: sub?.billingSyncError ?? null,
+        isComplimentary: !!sub?.complimentary,
       };
     });
 

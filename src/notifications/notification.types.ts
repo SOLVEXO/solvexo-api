@@ -92,6 +92,8 @@ export const NOTIFICATION_TYPES = {
   ADMIN_REFUND_REQUEST: 'admin_refund_request',
   ADMIN_PAYOUT_REQUEST: 'admin_payout_request',
   ADMIN_PLATFORM_BILLING_FAILED: 'admin_platform_billing_failed',
+  // A complimentary (admin-given) plan's review date is near / has passed — an admin must keep or end it.
+  ADMIN_COMPLIMENTARY_REVIEW: 'admin_complimentary_review',
   ADMIN_FEE_PAYMENT_REPORTED: 'admin_fee_payment_reported',
   /** A store's own FBR digital invoice was rejected / could not be sent / has an unknown outcome (the seller must look at it). */
   FBR_INVOICE_PROBLEM: 'fbr_invoice_problem',
@@ -181,6 +183,7 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.ADMIN_REFUND_REQUEST]: 'admin',
   [NOTIFICATION_TYPES.ADMIN_PAYOUT_REQUEST]: 'admin',
   [NOTIFICATION_TYPES.ADMIN_PLATFORM_BILLING_FAILED]: 'admin',
+  [NOTIFICATION_TYPES.ADMIN_COMPLIMENTARY_REVIEW]: 'admin',
   [NOTIFICATION_TYPES.ADMIN_FEE_PAYMENT_REPORTED]: 'admin',
   [NOTIFICATION_TYPES.ADMIN_PROMOTION_REQUEST]: 'admin',
   [NOTIFICATION_TYPES.ADMIN_STORE_APP_REQUEST]: 'admin',

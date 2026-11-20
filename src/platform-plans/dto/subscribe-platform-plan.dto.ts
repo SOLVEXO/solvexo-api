@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean, IsNumber, Min, MaxLength } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean, IsNumber, IsDateString, Min, MinLength, MaxLength } from 'class-validator';
 
 export class SubscribePlatformPlanDto {
   @ApiProperty({ description: 'PlatformPlan _id to subscribe this store to' })
@@ -69,7 +69,23 @@ export class AdminAssignPlanDto {
   @IsString() @IsNotEmpty()
   planId: string;
 
-  @ApiPropertyOptional({ description: 'Free-text reason, logged for support/audit' })
+  @ApiProperty({ description: 'Why this store gets a complimentary plan (partner, test account, goodwill...). Required — kept on the store and shown in the admin list' })
+  @IsString() @IsNotEmpty() @MinLength(3) @MaxLength(500)
+  reason: string;
+
+  @ApiPropertyOptional({ description: 'ISO date when an admin should review (keep / remove) this complimentary plan. Omit for no review date' })
+  @IsOptional() @IsDateString()
+  reviewAt?: string;
+}
+
+export class AdminComplimentaryReviewDto {
+  @ApiPropertyOptional({ description: 'New review date (ISO). Omit / null to clear it' })
+  @IsOptional() @IsDateString()
+  reviewAt?: string | null;
+}
+
+export class AdminRemoveComplimentaryDto {
+  @ApiPropertyOptional({ description: 'Free-text reason, logged for audit' })
   @IsOptional() @IsString() @MaxLength(500)
   reason?: string;
 }

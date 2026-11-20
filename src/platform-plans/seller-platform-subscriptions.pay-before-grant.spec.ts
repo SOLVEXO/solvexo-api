@@ -77,6 +77,7 @@ describe('SellerPlatformSubscriptionsService — pay before grant', () => {
       sellerPlatformSubscriptionModel: subModel, platformPlanModel: planModel, platformPlanInvoiceModel: invoiceModel,
       platformPlanPaymentAttemptModel: { countDocuments: jest.fn().mockResolvedValue(0), create: jest.fn() },
       storeModel, sellerModel,
+      adminModel: { findById: jest.fn(() => ({ select: () => ({ lean: () => ({ catch: () => Promise.resolve({ name: 'Admin Amy' }) }) }) })) },
     } };
     const service: any = new (SellerPlatformSubscriptionsService as any)(
       db, gateway, { log: jest.fn() }, notifications, notificationsService, criticalAlerts, { transaction: jest.fn((fn: any) => fn({})) },
@@ -277,6 +278,97 @@ describe('SellerPlatformSubscriptionsService — pay before grant', () => {
     it('active and paid → pro-rata credit as before', () => {
       const { service } = make(makeSub());
       expect(service.computeProration({ ...base, status: 'active', totalPaidUSD: 29 }, PRO, 'monthly').unusedCredit).toBeGreaterThan(15);
+    });
+  });
+
+  // ── Complimentary (admin-given) plans ─────────────────────────────────────
+  describe('complimentary plans', () => {
+    const inDays = (d: number) => new Date(Date.now() + d * DAY).toISOString();
+    const comp = (over: Record<string, any> = {}) => ({ grantedBy: 'a', grantedByName: 'Admin Amy', grantedAt: new Date(), reason: 'Partner agency', reviewAt: null, planPriceUSD: 79, ...over });
+
+    it('assigning needs a reason and a future review date', async () => {
+      const { service } = make(makeSub({ status: 'trial_ended' }));
+      await expect(service.adminAssignPlan('admin-1', 'store-1', PRO._id, '  ', undefined)).rejects.toThrow(/Say why/);
+      await expect(service.adminAssignPlan('admin-1', 'store-1', PRO._id, 'partner', new Date(Date.now() - DAY).toISOString())).rejects.toThrow(/future/);
+    });
+
+    it('records who/why/when, gives the plan for free (no revenue) and keeps the list price', async () => {
+      const sub = makeSub({ status: 'trial_ended', providerSubscriptionId: 'sub_old' });
+      const { service, gateway } = make(sub);
+      await service.adminAssignPlan('admin-1', 'store-1', PRO._id, 'Partner agency', inDays(30));
+      expect(gateway.cancelProviderSubscription).toHaveBeenCalledWith('sub_old');
+      expect(sub.status).toBe('active');
+      expect(sub.platformPlanId).toBe(PRO._id);
+      expect(sub.amountUSD).toBe(0);
+      expect(sub.paymentProvider).toBe('manual');
+      expect(sub.complimentary).toMatchObject({ grantedBy: 'admin-1', grantedByName: 'Admin Amy', reason: 'Partner agency', planPriceUSD: 79 });
+      expect(sub.complimentary.reviewAt).toBeInstanceOf(Date);
+      expect(sub.planHistory[0]).toMatchObject({ source: 'admin', reason: 'Partner agency', amountUSD: 0 });
+    });
+
+    it('a FREE plan is just a plain free plan, not complimentary', async () => {
+      const sub = makeSub({ status: 'trial_ended' });
+      const { service } = make(sub);
+      await service.adminAssignPlan('admin-1', 'store-1', FREE._id, 'free tier');
+      expect(sub.complimentary).toBeNull();
+    });
+
+    it('the renewal job never selects a complimentary store', async () => {
+      const { service, subModel } = make(makeSub());
+      await service.processRenewals();
+      expect(subModel.find.mock.calls[0][0]).toMatchObject({ complimentary: null, paymentProvider: 'manual' });
+    });
+
+    it('removing it sends the store back to the Select-a-plan gate; removing a non-complimentary store is refused', async () => {
+      const sub = makeSub({ status: 'active', platformPlanId: PRO._id, complimentary: comp() });
+      const { service } = make(sub);
+      await service.adminRemoveComplimentary('admin-1', 'store-1', 'review done');
+      expect(sub.status).toBe('trial_ended');
+      expect(sub.platformPlanId).toBeNull();
+      expect(sub.complimentary).toBeNull();
+      expect(sub.lastBillingError).toMatch(/complimentary plan/);
+      await expect(service.adminRemoveComplimentary('admin-1', 'store-1')).rejects.toThrow(/does not have/);
+    });
+
+    it('a real payment replaces the complimentary plan', async () => {
+      const sub = makeSub({ status: 'active', platformPlanId: PRO._id, providerSubscriptionId: PROVIDER_SUB, pendingPlanChange: pendingOf('first_purchase'), complimentary: comp() });
+      const { service } = make(sub);
+      await service.handleInvoicePaymentSucceeded(paidInvoice());
+      expect(sub.complimentary).toBeNull();
+      expect(sub.platformPlanId).toBe(GROW._id);
+    });
+
+    it('the seller cannot cancel a complimentary plan and never sees who gave it or why', async () => {
+      const sub = makeSub({ status: 'active', platformPlanId: PRO._id, complimentary: comp({ reason: 'secret reason' }) });
+      const { service, subModel } = make(sub);
+      jest.spyOn(service, 'verifyStoreOwnership').mockResolvedValue({});
+      await expect(service.cancelSubscription('seller-1', 'store-1')).rejects.toThrow(/provided by Solvexo support/);
+      subModel.findOne = jest.fn(() => ({ lean: () => Promise.resolve(sub) }));
+      const res: any = await service.getStorePlan('seller-1', 'store-1');
+      expect(res.data.complimentary).toEqual({ active: true, since: expect.any(Date) });
+      expect(JSON.stringify(res.data.complimentary)).not.toContain('secret');
+    });
+
+    it('review reminders: once when due within 7 days, once more when overdue, never twice for the same date', async () => {
+      const sub = makeSub({ status: 'active', platformPlanId: PRO._id, complimentary: comp({ reviewAt: new Date(Date.now() + 3 * DAY) }) });
+      const { service, notificationsService } = make(sub);
+      expect(await service.sendComplimentaryReviewReminders()).toEqual({ soon: 1, overdue: 0 });
+      expect(notificationsService.notifyAdmins).toHaveBeenCalledTimes(1);
+      expect(await service.sendComplimentaryReviewReminders()).toEqual({ soon: 0, overdue: 0 });
+      sub.complimentary.reviewAt = new Date(Date.now() - DAY);
+      expect(await service.sendComplimentaryReviewReminders()).toEqual({ soon: 0, overdue: 1 });
+      expect(notificationsService.notifyAdmins).toHaveBeenCalledTimes(2);
+    });
+
+    it('the admin list shows reason, who, review state and totals', async () => {
+      const sub = makeSub({ status: 'active', platformPlanId: PRO._id, complimentary: comp({ reviewAt: new Date(Date.now() + 3 * DAY) }) });
+      const { service } = make(sub);
+      service.subModel.find = jest.fn(() => ({ lean: () => Promise.resolve([sub]) }));
+      service.storeModel.find = jest.fn(() => ({ select: () => ({ lean: () => Promise.resolve([{ _id: 'store-1', name: 'Ali Shoes' }]) }) }));
+      service.planModel.find = jest.fn(() => ({ select: () => ({ lean: () => Promise.resolve([{ _id: PRO._id, name: 'Pro' }]) }) }));
+      const { data } = (await service.adminListComplimentary()) as any;
+      expect(data.items[0]).toMatchObject({ storeName: 'Ali Shoes', planName: 'Pro', reason: 'Partner agency', grantedBy: 'Admin Amy', reviewState: 'soon' });
+      expect(data).toMatchObject({ count: 1, dueSoon: 1, overdue: 0, monthlyValueUSD: 79 });
     });
   });
 

@@ -526,6 +526,16 @@ export class SchedulerService {
     });
   }
 
+  // Daily at 09:00: reminds the admins about complimentary (admin-given) plans whose review date is within 7 days or has
+  // passed. Never removes anything by itself.
+  @Cron('0 9 * * *')
+  async remindComplimentaryPlanReviews() {
+    await this.runLocked('complimentary-plan-review-reminders', 10 * 60_000, async () => {
+      const r = await this.sellerPlatformSubscriptionsService.sendComplimentaryReviewReminders();
+      if (r.soon || r.overdue) this.logger.log(`Complimentary plan reminders: ${r.soon} upcoming, ${r.overdue} overdue`);
+    });
+  }
+
   // Runs daily, after the trial/renewal jobs above (so a store locked/trial-
   // ended earlier in this same run is eligible immediately, not a day late)
   // — hides the storefront of any locked/trial-ended store whose own grace

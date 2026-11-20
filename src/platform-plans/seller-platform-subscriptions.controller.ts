@@ -11,7 +11,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
-import { ChangePlatformPlanDto, CancelPlatformPlanDto, BillingPortalDto, ConfirmOnboardingPaymentMethodDto, SaveOnboardingDraftDto, AdminExtendSubscriptionDto, AdminAssignPlanDto, AdminUnlockOrLockDto } from './dto/subscribe-platform-plan.dto';
+import { ChangePlatformPlanDto, CancelPlatformPlanDto, BillingPortalDto, ConfirmOnboardingPaymentMethodDto, SaveOnboardingDraftDto, AdminExtendSubscriptionDto, AdminAssignPlanDto, AdminUnlockOrLockDto, AdminComplimentaryReviewDto, AdminRemoveComplimentaryDto } from './dto/subscribe-platform-plan.dto';
 import { RefundInvoiceDto } from './dto/refund-invoice.dto';
 import { ListInvoicesQueryDto } from './dto/list-invoices.dto';
 import { BillingTimelineQueryDto } from './dto/billing-timeline.dto';
@@ -60,7 +60,36 @@ export class SellerPlatformSubscriptionsController {
   @Roles('admin')
   @Post('admin/stores/:storeId/assign-plan')
   adminAssignPlan(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminAssignPlanDto) {
-    return this.sellerPlatformSubscriptionsService.adminAssignPlan(req.user.userId, storeId, dto.planId, dto.reason);
+    return this.sellerPlatformSubscriptionsService.adminAssignPlan(req.user.userId, storeId, dto.planId, dto.reason, dto.reviewAt);
+  }
+
+  // Complimentary (admin-given) plans: the admin list, ending one, and moving its review date.
+  // The list route has 3 segments on purpose so it can never be swallowed by PlatformPlansController's `admin/:id`.
+  @RequirePermission('billing.manage')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('admin')
+  @Get('admin/stores/complimentary/list')
+  adminListComplimentary() {
+    return this.sellerPlatformSubscriptionsService.adminListComplimentary();
+  }
+
+  @RequirePermission('billing.manage')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('admin')
+  @Post('admin/stores/:storeId/complimentary/remove')
+  adminRemoveComplimentary(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminRemoveComplimentaryDto) {
+    return this.sellerPlatformSubscriptionsService.adminRemoveComplimentary(req.user.userId, storeId, dto.reason);
+  }
+
+  @RequirePermission('billing.manage')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('admin')
+  @Post('admin/stores/:storeId/complimentary/review')
+  adminComplimentaryReview(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminComplimentaryReviewDto) {
+    return this.sellerPlatformSubscriptionsService.adminUpdateComplimentaryReview(req.user.userId, storeId, dto.reviewAt ?? null);
   }
 
   @RequirePermission('billing.manage')

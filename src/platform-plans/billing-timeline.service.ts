@@ -132,8 +132,10 @@ export class BillingTimelineService {
       const money = prorated > 0 ? `$ ${r2(prorated).toFixed(2)} charged` : prorated < 0 ? `$ ${r2(-prorated).toFixed(2)} credited to your account` : 'no charge';
       ev.push({
         id: `plan-${sub._id}-${i}`, at: new Date(h.changedAt).toISOString(), kind: 'plan_change', status: 'info',
-        title: h.fromPlanId ? `Plan changed: ${h.fromPlanName} → ${h.toPlanName}` : `Plan started: ${h.toPlanName}`,
-        description: `${h.toPlanName}${h.interval ? ` (${h.interval})` : ''}${h.amountUSD != null ? ` at $ ${r2(h.amountUSD).toFixed(2)}` : ''} — ${money}.`,
+        title: h.source === 'admin' ? `Plan set by Solvexo support: ${h.toPlanName}` : h.fromPlanId ? `Plan changed: ${h.fromPlanName} → ${h.toPlanName}` : `Plan started: ${h.toPlanName}`,
+        description: h.source === 'admin'
+          ? `Provided by Solvexo support — no charge${admin && h.reason ? `. Reason: ${h.reason}` : ''}.`
+          : `${h.toPlanName}${h.interval ? ` (${h.interval})` : ''}${h.amountUSD != null ? ` at $ ${r2(h.amountUSD).toFixed(2)}` : ''} — ${money}.`,
         amountUSD: null,
       });
       if (prorated < 0) {

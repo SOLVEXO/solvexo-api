@@ -63,6 +63,7 @@ describe('SellerPlatformSubscriptionsService — grace period + admin overrides'
         platformPlanModel: planModel,
         storeModel,
         sellerModel,
+        adminModel: { findById: jest.fn(() => ({ select: () => ({ lean: () => ({ catch: () => Promise.resolve({ name: 'Admin Amy' }) }) }) })) },
       },
     } as unknown as DatabaseService;
 
@@ -183,7 +184,7 @@ describe('SellerPlatformSubscriptionsService — grace period + admin overrides'
 
   // ── adminAssignPlan ───────────────────────────────────────────────────────
   describe('adminAssignPlan', () => {
-    it('cancels any live Stripe subscription first, then comps the store onto the new plan with no charge', async () => {
+    it('cancels any live Stripe subscription first, then gives the store a complimentary plan with no charge and no revenue', async () => {
       const sub = asDoc({
         _id: 'sub-1', storeId: 'store-1', sellerId: 'seller-1', status: 'locked',
         platformPlanId: 'old-plan', providerSubscriptionId: 'sub_stripe_123', planHistory: [],
@@ -198,7 +199,8 @@ describe('SellerPlatformSubscriptionsService — grace period + admin overrides'
       expect(gateway.cancelProviderSubscription).toHaveBeenCalledWith('sub_stripe_123');
       expect(sub!.providerSubscriptionId).toBeNull();
       expect(sub!.platformPlanId).toBe('new-plan');
-      expect(sub!.amountUSD).toBe(49);
+      expect(sub!.amountUSD).toBe(0); // complimentary: never revenue (the list price is kept on `complimentary`)
+      expect(sub!.complimentary).toMatchObject({ reason: 'comp for outage', planPriceUSD: 49, grantedByName: 'Admin Amy' });
       expect(sub!.paymentProvider).toBe('manual');
       expect(sub!.status).toBe('active');
       expect(sub!.gracePeriodEndsAt).toBeNull();
@@ -211,7 +213,7 @@ describe('SellerPlatformSubscriptionsService — grace period + admin overrides'
       subModel.findOne = jest.fn().mockResolvedValue(sub);
       planModel.findOne.mockResolvedValue(null);
 
-      await expect(service.adminAssignPlan('admin-1', 'store-1', 'missing-plan')).rejects.toThrow(NotFoundException);
+      await expect(service.adminAssignPlan('admin-1', 'store-1', 'missing-plan', 'test account')).rejects.toThrow(NotFoundException);
     });
   });
 

@@ -132,6 +132,16 @@ export class SellerPlatformSubscription {
   // Set when the plan change succeeded but pointing the Stripe subscription at the new price failed (needs reconciling).
   @Prop({ type: String, default: null }) billingSyncError: string | null;
 
+  // A plan an ADMIN gave this store without charging (partner, test account, goodwill...). While set, renewals never
+  // charge it, it never goes past_due / locks, and the seller sees "Provided by Solvexo support". It is cleared when the
+  // seller pays for a real plan or the admin removes it. `reviewAt` = when an admin should decide to keep or remove it
+  // (null = no review date); `reminderSoonFor` / `reminderDueFor` remember the reviewAt a reminder was already sent for.
+  @Prop({ type: Object, default: null }) complimentary: {
+    grantedBy: string; grantedByName: string | null; grantedAt: Date; reason: string;
+    reviewAt: Date | null; planPriceUSD: number;
+    reminderSoonFor?: Date | null; reminderDueFor?: Date | null;
+  } | null;
+
   @Prop({ type: [Object], default: [] }) planHistory: Array<{
     // Null for the very first plan a store ever buys — moving FROM the
     // trial (no plan attached) TO a real one.
@@ -140,6 +150,8 @@ export class SellerPlatformSubscription {
     // The new plan's price and interval at the time of the change, so MRR history (admin SaaS metrics) doesn't
     // depend on today's plan prices. Absent on entries written before these fields existed.
     amountUSD?: number; interval?: 'monthly' | 'yearly';
+    // 'admin' for a plan given/removed by support (shown as "Assigned by Solvexo support"); the reason is admin-only.
+    source?: 'admin'; reason?: string | null;
   }>;
   // When the store was last locked (unpaid / canceled with no free fallback). MRR history uses it as the end of
   // paid revenue; older locked rows without it fall back to gracePeriodEndsAt.
