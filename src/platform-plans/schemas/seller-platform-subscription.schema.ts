@@ -124,7 +124,7 @@ export class SellerPlatformSubscription {
     planId: string; interval: 'monthly' | 'yearly'; amountUSD: number;
     stripeSubscriptionId?: string | null; paymentIntentId?: string | null; invoiceId?: string | null;
     chargedUSD?: number; subtotalUSD?: number; taxUSD?: number;
-    lineItems?: Array<{ kind: string; label: string; amountUSD: number }>;
+    lineItems?: Array<{ kind: 'plan' | 'credit' | 'discount' | 'tax' | 'other'; label: string; amountUSD: number }>;
     createdAt: Date;
   } | null;
   // Why the last payment attempt failed — shown on the billing page / "Select a plan" gate. Cleared on a successful payment.
