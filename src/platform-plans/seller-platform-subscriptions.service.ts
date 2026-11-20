@@ -24,7 +24,9 @@ import { getInvoiceSubscriptionId, getInvoicePaymentIntentId } from '@/common/st
 const MAX_RENEWAL_ATTEMPTS = 8;
 const RETRY_INTERVAL_DAYS = 4;
 /** Days a store may stay 'past_due' (unpaid renewal) before it is locked, like Shopify freezing an unpaid store. */
-export const PAST_DUE_LOCK_DAYS = 7;
+export const PAST_DUE_LOCK_DAYS = 1;
+/** Human wording for the overdue period in messages ("1 day" / "3+ days"). */
+const OVERDUE_LABEL = PAST_DUE_LOCK_DAYS === 1 ? '1 day' : `${PAST_DUE_LOCK_DAYS}+ days`;
 // Fallback grace period (days a locked/trial-ended store's storefront stays
 // browsable before Store.privacyMode gates it — see expireGracePeriods())
 // for the one case with no PlatformPlan to read gracePeriodDays from: a
@@ -2239,7 +2241,7 @@ export class SellerPlatformSubscriptionsService {
           }
           this.activityLogService.log({
             storeId: sub.storeId, category: 'platform_plans', action: 'plan_downgraded_past_due',
-            description: `Legacy store moved to the free plan: renewal unpaid for ${PAST_DUE_LOCK_DAYS}+ days`,
+            description: `Legacy store moved to the free plan: renewal unpaid for ${OVERDUE_LABEL}`,
             actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
           });
           continue;
@@ -2257,18 +2259,18 @@ export class SellerPlatformSubscriptionsService {
           recipientId: sub.sellerId, recipientRole: 'seller', storeId: sub.storeId,
           type: NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_FAILED,
           title: 'Store locked',
-          body: `${storeName} was locked because the plan payment is ${PAST_DUE_LOCK_DAYS}+ days overdue — update your payment method to unlock it. Your data is safe.`,
+          body: `${storeName} was locked because the plan payment is ${OVERDUE_LABEL} overdue — update your payment method to unlock it. Your data is safe.`,
           data: { subscriptionId: String(sub._id) },
         }).catch(() => {});
         this.notificationsService.notifyAdmins({
           type: NOTIFICATION_TYPES.ADMIN_PLATFORM_BILLING_FAILED,
           title: 'Store locked — payment overdue',
-          body: `${storeName} was locked: plan payment overdue for ${PAST_DUE_LOCK_DAYS}+ days.`,
+          body: `${storeName} was locked: plan payment overdue for ${OVERDUE_LABEL}.`,
           data: { storeId: sub.storeId, link: '/admin/billing' },
         }).catch(() => {});
         this.activityLogService.log({
           storeId: sub.storeId, category: 'platform_plans', action: 'plan_locked_past_due',
-          description: `Store locked (selling restricted): renewal unpaid for ${PAST_DUE_LOCK_DAYS}+ days`,
+          description: `Store locked (selling restricted): renewal unpaid for ${OVERDUE_LABEL}`,
           actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
         });
       } catch (err: any) {

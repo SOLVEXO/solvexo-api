@@ -27,6 +27,8 @@ import mongoose from 'mongoose';
 import Stripe from 'stripe';
 
 const APPLY = process.argv.includes('--apply');
+// Explicit opt-in: also gate ACTIVE non-legacy stores that hold a plan but never paid (admin-assigned / offline-paid ones included).
+const GATE_ACTIVE_UNPAID = process.argv.includes('--gate-active-unpaid');
 const GRACE_DAYS = 3;
 const REASON = 'Your plan payment was never completed, so the plan was not activated. Please choose a plan and pay to continue.';
 
@@ -121,14 +123,24 @@ async function run() {
   const planNames: Record<string, string> = Object.fromEntries((await plans.find({}).toArray()).map((p) => [String(p._id), String(p.name)]));
   const activeUnpaid = await subs.find({ isDelete: { $ne: true }, status: 'active', legacyFreeEligible: { $ne: true }, platformPlanId: { $ne: null } }).toArray();
   console.log('\nActive stores with a plan but NO paid invoice (left untouched — decide per store):');
-  let unpaidActive = 0;
+  let unpaidActive = 0, gatedActive = 0;
   for (const s of activeUnpaid) {
     if ((await invoices.countDocuments({ storeId: s.storeId, status: { $in: paidStatuses } })) > 0) continue;
     unpaidActive++;
-    console.log(`  REPORT  store ${s.storeId}: ${planNames[String(s.platformPlanId)] ?? s.platformPlanId} $${s.amountUSD} via ${s.paymentProvider}`);
+    console.log(`  ${GATE_ACTIVE_UNPAID ? 'GATE  ' : 'REPORT'} store ${s.storeId}: ${planNames[String(s.platformPlanId)] ?? s.platformPlanId} $${s.amountUSD} via ${s.paymentProvider}`);
+    if (!GATE_ACTIVE_UNPAID || !APPLY) continue;
+    const now = new Date();
+    const set: Record<string, unknown> = {
+      platformPlanId: null, amountUSD: 0, status: 'trial_ended', pendingPlanChange: null, scheduledPlanChange: null, lastBillingError: REASON,
+      pastDueSince: null, failedPaymentAttempts: 0, cancelAtPeriodEnd: false, canceledAt: null, cancelReason: null,
+      gracePeriodEndsAt: new Date(now.getTime() + GRACE_DAYS * 86400000), storefrontGatedAt: null, updatedAt: now,
+    };
+    // Filter on the current status/payments so a row that changed meanwhile (seller just paid) is not overwritten.
+    const r = await subs.updateOne({ _id: s._id, status: 'active', totalPaidUSD: s.totalPaidUSD }, { $set: set });
+    if (r.modifiedCount) { await stores.updateOne({ _id: new mongoose.Types.ObjectId(String(s.storeId)) }, { $set: { plan: 'starter' } }); gatedActive++; }
   }
 
-  console.log(`\n${APPLY ? 'Migrated' : 'Would migrate'}: ${migrated}   Leftover plans ${APPLY ? 'cleared' : 'to clear'}: ${cleared}   Needs manual review / skipped: ${review}   Active-unpaid reported: ${unpaidActive}   Past-due candidates examined: ${candidates.length}`);
+  console.log(`\n${APPLY ? 'Migrated' : 'Would migrate'}: ${migrated}   Leftover plans ${APPLY ? 'cleared' : 'to clear'}: ${cleared}   Needs manual review / skipped: ${review}   Active-unpaid ${GATE_ACTIVE_UNPAID ? (APPLY ? `gated: ${gatedActive}` : 'to gate') : 'reported'}: ${unpaidActive}   Past-due candidates examined: ${candidates.length}`);
   await mongoose.disconnect();
 }
 
