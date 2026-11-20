@@ -47,6 +47,8 @@ export const NOTIFICATION_TYPES = {
   // Fires from the admin support tools (unlock/assign-plan/extend) — see
   // SellerPlatformSubscriptionsService.adminUnlockStore/adminAssignPlan.
   PLATFORM_PLAN_ADMIN_ACTION: 'platform_plan_admin_action',
+  // A platform-plan payment was received (Stripe invoice paid) — see SellerPlatformSubscriptionsService.handleInvoicePaymentSucceeded.
+  PLATFORM_PLAN_PAYMENT_RECEIVED: 'platform_plan_payment_received',
   PROMOTION_REQUEST_SUBMITTED: 'promotion_request_submitted',
   PROMOTION_APPROVED: 'promotion_approved',
   PROMOTION_REJECTED: 'promotion_rejected',
@@ -141,6 +143,7 @@ export const NOTIFICATION_CATEGORY: Record<string, 'orders' | 'messages' | 'prom
   [NOTIFICATION_TYPES.PLATFORM_PLAN_TRIAL_ENDED]: 'subscriptions',
   [NOTIFICATION_TYPES.PLATFORM_PLAN_STOREFRONT_HIDDEN]: 'subscriptions',
   [NOTIFICATION_TYPES.PLATFORM_PLAN_ADMIN_ACTION]: 'subscriptions',
+  [NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_RECEIVED]: 'subscriptions',
   [NOTIFICATION_TYPES.PROMOTION_REQUEST_SUBMITTED]: 'promotions',
   [NOTIFICATION_TYPES.PROMOTION_APPROVED]: 'promotions',
   [NOTIFICATION_TYPES.PROMOTION_REJECTED]: 'promotions',

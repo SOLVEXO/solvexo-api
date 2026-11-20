@@ -116,6 +116,21 @@ export class SellerPlatformSubscription {
     planId: string; planName: string; interval: 'monthly' | 'yearly'; amountUSD: number; scheduledAt: Date;
   } | null;
 
+  // A paid plan purchase that has been STARTED but not yet PAID. The plan (platformPlanId/amountUSD/limits/Store.plan)
+  // is applied only once the payment succeeds (invoice.payment_succeeded, or the confirmed 3DS charge) — never before.
+  // Cleared on success, on incomplete_expired/abandon, and when the trial-end charge fails.
+  @Prop({ type: Object, default: null }) pendingPlanChange: {
+    kind: 'first_purchase' | 'trial_conversion' | 'upgrade';
+    planId: string; interval: 'monthly' | 'yearly'; amountUSD: number;
+    stripeSubscriptionId?: string | null; paymentIntentId?: string | null; invoiceId?: string | null;
+    chargedUSD?: number; subtotalUSD?: number; taxUSD?: number;
+    createdAt: Date;
+  } | null;
+  // Why the last payment attempt failed — shown on the billing page / "Select a plan" gate. Cleared on a successful payment.
+  @Prop({ type: String, default: null }) lastBillingError: string | null;
+  // Set when the plan change succeeded but pointing the Stripe subscription at the new price failed (needs reconciling).
+  @Prop({ type: String, default: null }) billingSyncError: string | null;
+
   @Prop({ type: [Object], default: [] }) planHistory: Array<{
     // Null for the very first plan a store ever buys — moving FROM the
     // trial (no plan attached) TO a real one.

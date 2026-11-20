@@ -133,7 +133,9 @@ export class SellerPlatformSubscriptionsService {
     const totalPeriodMs = sub.currentPeriodEnd.getTime() - sub.currentPeriodStart.getTime();
     const remainingMs = Math.max(0, sub.currentPeriodEnd.getTime() - now.getTime());
     const remainingRatio = totalPeriodMs > 0 ? Math.min(1, remainingMs / totalPeriodMs) : 0;
-    const unusedCredit = this.round((sub.amountUSD ?? 0) * remainingRatio);
+    // Credit only for a period that was actually PAID: an unpaid/pending/past_due plan has nothing to credit back.
+    const periodWasPaid = sub.status === 'active' && (sub.totalPaidUSD ?? 0) > 0;
+    const unusedCredit = periodWasPaid ? this.round((sub.amountUSD ?? 0) * remainingRatio) : 0;
     const totalCreditAvailable = this.round(unusedCredit + (sub.creditBalanceUSD ?? 0));
     const netDue = this.round(newAmountUSD - totalCreditAvailable);
 
@@ -1056,6 +1058,8 @@ export class SellerPlatformSubscriptionsService {
 
     let invoice: any = null;
     let message: string;
+    let chargedProviderId: string | null = null; // set once a card was really charged — drives the "charged but not saved" alert
+    let chargedTotalUSD = 0;
 
     if (isFreeMoveIn) {
       sub.creditBalanceUSD = 0; // moving to free forfeits any remaining paid-tier credit
@@ -1072,6 +1076,13 @@ export class SellerPlatformSubscriptionsService {
       const isMidTrial = sub.status === 'trialing' && sub.trialEndsAt && new Date(sub.trialEndsAt).getTime() > now.getTime();
       const billImmediately = !!(dto as any).billImmediately;
 
+      // A previous purchase attempt that was never paid (abandoned checkout / failed card): drop its dead Stripe
+      // subscription so this retry can never be routed into the ad-hoc "existing subscription" charge path.
+      // A still-valid trial commitment (Stripe trial_end pending) is kept — the branch below re-points it.
+      if (sub.pendingPlanChange && !(sub.pendingPlanChange.kind === 'trial_conversion' && isMidTrial && !billImmediately)) {
+        await this.abandonPendingPurchase(sub);
+      }
+
       if (isMidTrial && !billImmediately && sub.providerSubscriptionId) {
         // Already trial-converted once (has a Stripe subscription with
         // trial_end pending) and now switching to a DIFFERENT plan before
@@ -1081,14 +1092,26 @@ export class SellerPlatformSubscriptionsService {
         // immediate-top-up-charge path that's only correct outside a trial).
         if (this.gateway.isProviderDrivenBilling) {
           const newProviderPriceId = newInterval === 'yearly' ? newPlan.stripeYearlyPriceId : newPlan.stripeMonthlyPriceId;
-          if (newProviderPriceId) {
-            await this.gateway.updateProviderSubscriptionPrice(sub.providerSubscriptionId, newProviderPriceId, 'none');
+          let priceId = newProviderPriceId;
+          if (!priceId) {
+            // The target plan has no Stripe price yet — create it, never leave the pending subscription on the OLD price.
+            const { providerProductId, providerPriceId } = await this.gateway.getOrCreatePrice({
+              planId: newPlan._id.toString(), planName: `Platform: ${newPlan.name}`, storeId,
+              amountUSD: newAmountUSD, interval: newInterval, existingProductId: newPlan.stripeProductId,
+            });
+            newPlan.stripeProductId = providerProductId;
+            if (newInterval === 'yearly') newPlan.stripeYearlyPriceId = providerPriceId; else newPlan.stripeMonthlyPriceId = providerPriceId;
+            await newPlan.save();
+            priceId = providerPriceId;
           }
+          await this.gateway.updateProviderSubscriptionPrice(sub.providerSubscriptionId, priceId, 'none');
         }
-        sub.platformPlanId = newPlanId;
-        sub.billingInterval = newInterval;
-        sub.amountUSD = this.round(newAmountUSD);
-        sub.planHistory = [...(sub.planHistory ?? []), historyEntry];
+        // Nothing is paid yet — only the PENDING commitment moves; the plan itself is applied when the trial-end invoice is paid.
+        sub.pendingPlanChange = {
+          kind: 'trial_conversion', planId: String(newPlanId), interval: newInterval, amountUSD: this.round(newAmountUSD),
+          stripeSubscriptionId: sub.providerSubscriptionId, createdAt: now,
+        };
+        sub.markModified?.('pendingPlanChange');
         await sub.save();
         this.activityLogService.log({
           storeId, category: 'platform_plans', action: 'plan_changed',
@@ -1163,28 +1186,22 @@ export class SellerPlatformSubscriptionsService {
         // manual off-session charge with no providerCustomerId, which can
         // only fail.
         sub.paymentProvider = 'stripe';
-        sub.status = created.status === 'trialing' ? 'trialing' : (created.status === 'active' ? 'active' : 'past_due');
-
-        sub.platformPlanId = newPlanId;
-        sub.billingInterval = newInterval;
-        sub.amountUSD = this.round(newAmountUSD);
-        // A trial-conversion commit does NOT reset the billing period — the
-        // store keeps its existing trialEndsAt/currentPeriodEnd until Stripe
-        // actually bills at that date; only a real, non-trial subscription
-        // creation starts a fresh period right now.
-        if (!trialEndUnixSeconds) {
-          sub.currentPeriodStart = now;
-          sub.currentPeriodEnd = this.addPeriod(now, newInterval);
-          sub.nextBillingDate = sub.currentPeriodEnd;
-        }
-        sub.planHistory = [...(sub.planHistory ?? []), historyEntry];
+        // NOTHING is granted here: platformPlanId/amountUSD/status/period stay exactly as they were (trialing,
+        // trial_ended, locked...). The plan is applied by handleInvoicePaymentSucceeded once Stripe confirms payment.
+        sub.pendingPlanChange = {
+          kind: trialEndUnixSeconds ? 'trial_conversion' : 'first_purchase',
+          planId: String(newPlanId), interval: newInterval, amountUSD: this.round(newAmountUSD),
+          stripeSubscriptionId: created.providerSubscriptionId, createdAt: now,
+        };
+        sub.lastBillingError = null;
+        sub.markModified?.('pendingPlanChange');
         await sub.save();
 
         this.activityLogService.log({
           storeId, category: 'platform_plans', action: 'plan_changed',
           description: trialEndUnixSeconds
             ? `Store committed to "${newPlan.name}" — billing starts when the trial ends`
-            : `Store moved to "${newPlan.name}" (awaiting Stripe payment confirmation)`,
+            : `Plan purchase of "${newPlan.name}" started — plan applies once payment is confirmed`,
           actorId: sellerId, actorRole: 'seller', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
         });
 
@@ -1193,7 +1210,7 @@ export class SellerPlatformSubscriptionsService {
           message: trialEndUnixSeconds
             ? `You're set for "${newPlan.name}" — billing starts automatically when your trial ends`
             : `Subscribing to "${newPlan.name}" — confirm payment to activate`,
-          data: { subscription: sub, requiresAction: !!created.clientSecret, clientSecret: created.clientSecret ?? null },
+          data: { subscription: sub, pending: true, requiresAction: !!created.clientSecret, clientSecret: created.clientSecret ?? null },
         };
       }
 
@@ -1206,31 +1223,103 @@ export class SellerPlatformSubscriptionsService {
       const dueTaxUSD = dueQuote?.taxUSD ?? 0;
       const dueTotalUSD = this.round(netDue + dueTaxUSD);
       const charge = await this.gateway.chargeSubscription(sub._id.toString(), dueTotalUSD, { providerCustomerId: chargeCustomerId, idempotencyKey });
-      invoice = await this.invoiceModel.create({
-        storeId, sellerId, platformPlanId: newPlanId,
-        invoiceNumber: await this.generateInvoiceNumber(), type: isFirstPaidPurchase ? 'initial' : 'proration',
-        amountUSD: dueTotalUSD, subtotalUSD: netDue, taxAmountUSD: dueTaxUSD, taxRatePercent: dueTaxUSD > 0 ? dueQuote!.ratePercent : 0,
-        taxLabel: dueTaxUSD > 0 ? dueQuote!.label : null, taxCountry: dueTaxUSD > 0 ? dueQuote!.country : null,
-        status: charge.success ? 'paid' : 'failed',
-        paidAt: charge.success ? now : null, providerChargeId: charge.providerChargeId,
-        paymentMethodType: charge.paymentMethodType ?? 'manual',
-      });
-      await this.recordAttempt({
-        storeId, sellerId, attemptType: 'proration', outcome: charge.success ? 'success' : 'failed',
-        amountUSD: dueTotalUSD, failureReason: charge.success ? null : (charge.failureReason ?? 'Payment declined'),
-        failureCode: charge.failureCode ?? null, invoiceId: invoice._id.toString(), providerChargeId: charge.providerChargeId,
-      });
-      if (!charge.success) throw new BadRequestException(`Payment of $ ${dueTotalUSD.toFixed(2)} failed — plan was not changed`);
+
+      // 3DS / SCA required: nothing is granted yet. Remember what is being bought and hand the client secret back so
+      // the browser can confirm the card; confirmPendingPlanChange() applies the plan once the charge has succeeded.
+      if (!charge.success && charge.requiresAction && charge.clientSecret) {
+        sub.pendingPlanChange = {
+          kind: 'upgrade', planId: String(newPlanId), interval: newInterval, amountUSD: this.round(newAmountUSD),
+          paymentIntentId: charge.providerChargeId, chargedUSD: dueTotalUSD, subtotalUSD: netDue, taxUSD: dueTaxUSD, createdAt: now,
+        };
+        sub.markModified?.('pendingPlanChange');
+        await sub.save();
+        return {
+          success: true,
+          message: 'Your bank needs you to confirm this payment',
+          data: { subscription: sub, pending: true, requiresAction: true, clientSecret: charge.clientSecret },
+        };
+      }
+
+      try {
+        invoice = await this.invoiceModel.create({
+          storeId, sellerId, platformPlanId: newPlanId,
+          invoiceNumber: await this.generateInvoiceNumber(), type: isFirstPaidPurchase ? 'initial' : 'proration',
+          amountUSD: dueTotalUSD, subtotalUSD: netDue, taxAmountUSD: dueTaxUSD, taxRatePercent: dueTaxUSD > 0 ? dueQuote!.ratePercent : 0,
+          taxLabel: dueTaxUSD > 0 ? dueQuote!.label : null, taxCountry: dueTaxUSD > 0 ? dueQuote!.country : null,
+          status: charge.success ? 'paid' : 'failed',
+          paidAt: charge.success ? now : null, providerChargeId: charge.providerChargeId,
+          paymentMethodType: charge.paymentMethodType ?? 'manual',
+        });
+        await this.recordAttempt({
+          storeId, sellerId, attemptType: 'proration', outcome: charge.success ? 'success' : 'failed',
+          amountUSD: dueTotalUSD, failureReason: charge.success ? null : (charge.failureReason ?? 'Payment declined'),
+          failureCode: charge.failureCode ?? null, invoiceId: invoice._id.toString(), providerChargeId: charge.providerChargeId,
+        });
+      } catch (err: any) {
+        if (charge.success) await this.reportChargedButNotSaved(sub, charge.providerChargeId, dueTotalUSD, err);
+        throw err;
+      }
+      if (!charge.success) {
+        // The plan was NOT changed — remember why so the billing page can show it.
+        sub.lastBillingError = charge.failureReason ?? 'Payment declined';
+        await sub.save().catch(() => undefined);
+        throw new BadRequestException(`Payment of $ ${dueTotalUSD.toFixed(2)} failed — plan was not changed`);
+      }
 
       sub.totalPaidUSD = this.round((sub.totalPaidUSD ?? 0) + dueTotalUSD);
       sub.creditBalanceUSD = 0;
       message = `Changed to "${newPlan.name}" — $ ${dueTotalUSD.toFixed(2)} charged${dueTaxUSD > 0 ? ` (includes $ ${dueTaxUSD.toFixed(2)} ${dueQuote!.label ?? 'tax'})` : ''}`;
+      chargedProviderId = charge.providerChargeId;
+      chargedTotalUSD = dueTotalUSD;
     } else {
       sub.creditBalanceUSD = this.round(-netDue);
       message = `Changed to "${newPlan.name}" — $ ${sub.creditBalanceUSD.toFixed(2)} credited to your account`;
     }
 
-    sub.platformPlanId = newPlanId;
+    try {
+      await this.finalizeImmediateChange(sub, { sellerId, storeId, newPlan, newInterval, newAmountUSD, netDue, isFreeMoveIn, message, historyEntry });
+    } catch (err: any) {
+      // The seller was already charged: this must never be a silent half-state.
+      if (chargedProviderId) await this.reportChargedButNotSaved(sub, chargedProviderId, chargedTotalUSD, err);
+      throw err;
+    }
+
+    return { success: true, message, data: { subscription: sub, invoice } };
+  }
+
+  /** A card was charged but the local record could not be written — log at error level + alert so it can be reconciled by hand. */
+  private async reportChargedButNotSaved(sub: any, providerChargeId: string | null | undefined, amountUSD: number, err: any): Promise<void> {
+    this.logger.error(`CHARGED BUT NOT SAVED: store ${sub.storeId} charge ${providerChargeId ?? '?'} $${amountUSD} — ${err?.message}`);
+    await this.criticalAlerts.send({
+      title: 'Platform plan: seller charged but plan change not saved',
+      message: 'A platform-plan charge succeeded but the subscription/invoice could not be saved — reconcile manually.',
+      context: { storeId: sub.storeId, sellerId: sub.sellerId, providerChargeId: providerChargeId ?? null, amountUSD, error: err?.message },
+    }).catch(() => undefined);
+  }
+
+  /** Cancels the dead Stripe subscription of an unpaid purchase attempt and forgets it, so a retry starts clean. Never sets 'canceled'. */
+  private async abandonPendingPurchase(sub: any): Promise<void> {
+    const pending = sub.pendingPlanChange;
+    if (pending?.stripeSubscriptionId && sub.providerSubscriptionId === pending.stripeSubscriptionId) {
+      try { await this.gateway.cancelProviderSubscription(pending.stripeSubscriptionId); }
+      catch (err: any) { this.logger.warn(`Could not cancel abandoned Stripe subscription ${pending.stripeSubscriptionId}: ${err?.message}`); }
+      sub.providerSubscriptionId = null;
+      sub.paymentProvider = 'manual';
+    }
+    sub.pendingPlanChange = null;
+  }
+
+  /**
+   * Applies a plan change that is already PAID (or free / credit-only) to the subscription: the one place an immediate
+   * change becomes visible (limits, Store.plan cache via the save hook, badge, storefront unlock, Stripe price sync).
+   */
+  private async finalizeImmediateChange(sub: any, p: {
+    sellerId: string; storeId: string; newPlan: any; newInterval: 'monthly' | 'yearly'; newAmountUSD: number;
+    netDue: number; isFreeMoveIn: boolean; message: string; historyEntry: any;
+  }): Promise<void> {
+    const { sellerId, storeId, newPlan, newInterval, newAmountUSD, netDue, isFreeMoveIn, message, historyEntry } = p;
+    const now = new Date();
+    sub.platformPlanId = String(newPlan._id);
     sub.billingInterval = newInterval;
     sub.amountUSD = this.round(newAmountUSD);
     sub.currentPeriodStart = now;
@@ -1238,6 +1327,8 @@ export class SellerPlatformSubscriptionsService {
     sub.nextBillingDate = sub.currentPeriodEnd;
     sub.failedPaymentAttempts = 0; sub.pastDueSince = null;
     sub.canceledAt = null;
+    sub.pendingPlanChange = null;
+    sub.lastBillingError = null;
     // Any change of plan — including re-subscribing before a scheduled
     // cancellation reached period end — implicitly clears that schedule.
     const hadPendingCancellation = sub.cancelAtPeriodEnd;
@@ -1257,20 +1348,20 @@ export class SellerPlatformSubscriptionsService {
       const newProviderPriceId = newInterval === 'yearly' ? newPlan.stripeYearlyPriceId : newPlan.stripeMonthlyPriceId;
       if (newProviderPriceId) {
         try {
-          // The local currentPeriodStart/End was just reset to a fresh
-          // full period starting `now` (lines above) — netDue already
-          // charged/credited the difference for that fresh period, in
-          // full, right now. Without also moving Stripe's own billing
-          // anchor to `now`, Stripe would keep invoicing on its OLD
-          // schedule for the (already-updated) new price, which either
-          // double-bills an upgrade (charged here, then invoiced again by
-          // Stripe at the old date) or fires out of step with what the
-          // local record now says. `proration_behavior: 'none'` still
-          // applies, so Stripe itself generates no extra invoice for the
-          // anchor move.
+          // The local period was just reset to a fresh full period starting `now` and netDue was charged in full,
+          // so Stripe's own billing anchor must move to `now` too — else Stripe would invoice again on its old schedule.
           await this.gateway.updateProviderSubscriptionPrice(sub.providerSubscriptionId, newProviderPriceId, 'none', true);
+          if (sub.billingSyncError) { sub.billingSyncError = null; await sub.save(); }
         } catch (err: any) {
-          this.logger.warn(`Failed to sync Stripe platform-plan price for store ${storeId}: ${err?.message}`);
+          // Not silent: the seller paid and has the plan, but Stripe still bills the OLD price. Flag it for reconciling.
+          this.logger.error(`Stripe platform-plan price sync FAILED for store ${storeId} (plan changed locally, Stripe still on old price): ${err?.message}`);
+          sub.billingSyncError = `Stripe price sync failed on ${now.toISOString()}: ${err?.message ?? 'unknown error'}`;
+          await sub.save().catch(() => undefined);
+          this.criticalAlerts.send({
+            title: 'Platform plan: Stripe price sync failed after a plan change',
+            message: 'The seller changed plan but Stripe is still on the old price — fix the subscription price in Stripe.',
+            context: { storeId, sellerId, providerSubscriptionId: sub.providerSubscriptionId, error: err?.message },
+          }).catch(() => undefined);
         }
       }
     }
@@ -1284,8 +1375,7 @@ export class SellerPlatformSubscriptionsService {
     const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sellerId, storeId);
     if (sellerEmail) {
       // Fire-and-forget: the plan change (and any charge) is already done, so a slow or
-      // failing mail server must never hold the seller's request open — it used to,
-      // and with SMTP down the checkout request just hung until the client timed out.
+      // failing mail server must never hold the seller's request open.
       const confirmation = isFreeMoveIn
         ? this.notifications.sendMovedToFreePlan(billingRecipients, { sellerName, storeName, planName: newPlan.name })
         : netDue > 0
@@ -1299,8 +1389,67 @@ export class SellerPlatformSubscriptionsService {
         this.logger.warn(`Plan-change email to ${sellerEmail} failed for store ${storeId}: ${err?.message}`);
       });
     }
+  }
 
-    return { success: true, message, data: { subscription: sub, invoice } };
+  /**
+   * Called by the browser after `stripe.confirmCardPayment` on a 3DS upgrade charge. Verifies the PaymentIntent with
+   * Stripe (never trusts the client) and only then applies the pending upgrade. Idempotent. Stripe-subscription based
+   * purchases (first purchase / trial conversion) are applied by the invoice webhook instead — this just reports state.
+   */
+  async confirmPendingPlanChange(sellerId: string, storeId: string) {
+    await this.verifyStoreOwnership(storeId, sellerId);
+    const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
+    const pending = sub.pendingPlanChange;
+    if (!pending) return { success: true, data: { subscription: sub, pending: false, applied: true } };
+    if (pending.kind !== 'upgrade' || !pending.paymentIntentId) {
+      return { success: true, data: { subscription: sub, pending: true, applied: false } };
+    }
+
+    const status = await this.gateway.getPaymentIntentStatus(pending.paymentIntentId, sub._id.toString());
+    if (status !== 'succeeded') {
+      if (status === 'requires_payment_method' || status === 'canceled' || status === null) {
+        sub.pendingPlanChange = null;
+        sub.lastBillingError = 'Your card could not be authenticated — the plan was not changed.';
+        await sub.save();
+        throw new BadRequestException('Payment was not completed — the plan was not changed');
+      }
+      return { success: true, data: { subscription: sub, pending: true, applied: false } };
+    }
+
+    const [oldPlan, newPlan] = await Promise.all([
+      this.planModel.findById(sub.platformPlanId),
+      this.planModel.findOne({ _id: pending.planId, isDelete: false }),
+    ]);
+    if (!newPlan) throw new NotFoundException('Target platform plan not found');
+    const now = new Date();
+    const chargedUSD = pending.chargedUSD ?? pending.subtotalUSD ?? 0;
+    try {
+      if (!(await this.invoiceModel.exists({ providerChargeId: pending.paymentIntentId, status: 'paid' }))) {
+        await this.invoiceModel.create({
+          storeId, sellerId, platformPlanId: pending.planId,
+          invoiceNumber: await this.generateInvoiceNumber(), type: 'proration',
+          amountUSD: chargedUSD, subtotalUSD: pending.subtotalUSD ?? chargedUSD, taxAmountUSD: pending.taxUSD ?? 0, taxRatePercent: 0,
+          status: 'paid', paidAt: now, providerChargeId: pending.paymentIntentId, paymentMethodType: 'card',
+        });
+        sub.totalPaidUSD = this.round((sub.totalPaidUSD ?? 0) + chargedUSD);
+      }
+      sub.creditBalanceUSD = 0;
+      const historyEntry = {
+        fromPlanId: sub.platformPlanId, fromPlanName: (oldPlan as any)?.name ?? 'Unknown',
+        toPlanId: pending.planId, toPlanName: newPlan.name, proratedAmountUSD: pending.subtotalUSD ?? chargedUSD, changedAt: now,
+        amountUSD: pending.amountUSD, interval: pending.interval,
+      };
+      await this.finalizeImmediateChange(sub, {
+        sellerId, storeId, newPlan, newInterval: pending.interval, newAmountUSD: pending.amountUSD,
+        netDue: pending.subtotalUSD ?? chargedUSD, isFreeMoveIn: false,
+        message: `Changed to "${newPlan.name}" — $ ${chargedUSD.toFixed(2)} charged`, historyEntry,
+      });
+    } catch (err: any) {
+      await this.reportChargedButNotSaved(sub, pending.paymentIntentId, chargedUSD, err);
+      throw err;
+    }
+    return { success: true, data: { subscription: sub, pending: false, applied: true } };
   }
 
   /**
@@ -1617,6 +1766,13 @@ export class SellerPlatformSubscriptionsService {
 
     let expired = 0;
     for (const sub of due) {
+      if (sub.pendingPlanChange) {
+        // A plan was chosen but its (trial-end) payment has not been confirmed. Never flip to 'active' on the clock
+        // alone — the invoice webhook grants the plan. Give Stripe a day to bill; after that the attempt is dead.
+        const overdueMs = now.getTime() - new Date(sub.trialEndsAt as Date).getTime();
+        if (sub.pendingPlanChange.kind === 'trial_conversion' && overdueMs < 24 * 60 * 60 * 1000) continue;
+        await this.abandonPendingPurchase(sub);
+      }
       if (sub.paymentProvider === 'stripe' && sub.providerSubscriptionId) {
         // A real Stripe subscription exists — Stripe itself will invoice at
         // trial end and we react via webhook; just clear our local flag.
@@ -1879,8 +2035,19 @@ export class SellerPlatformSubscriptionsService {
     // Stripe's retry paying the same invoice must still be recorded as paid.
     if (await this.invoiceModel.exists({ stripeInvoiceId: invoice.id, status: { $ne: 'failed' } })) return;
 
+    // A purchase that was started but not yet paid: THIS payment is what finally grants the plan.
+    const pending = sub.pendingPlanChange && sub.pendingPlanChange.kind !== 'upgrade'
+      && sub.pendingPlanChange.stripeSubscriptionId === providerSubscriptionId ? sub.pendingPlanChange : null;
+    // A $0 invoice at the start of a Stripe trial is not a payment — nothing is granted until the trial-end charge succeeds.
+    if (pending?.kind === 'trial_conversion' && (invoice.amount_paid ?? 0) <= 0) return;
+    const pendingPlan: any = pending ? await this.planModel.findById(pending.planId).lean() : null;
+    if (pending && !pendingPlan) {
+      this.logger.error(`Paid invoice ${invoice.id} for store ${sub.storeId} but pending plan ${pending.planId} no longer exists — plan NOT applied, reconcile manually`);
+      return;
+    }
+
     // Stripe already moved the subscription to the scheduled price for this cycle — mirror it locally (see changePlan).
-    if (invoice.billing_reason === 'subscription_cycle') await this.applyScheduledPlanChange(sub);
+    if (!pending && invoice.billing_reason === 'subscription_cycle') await this.applyScheduledPlanChange(sub);
 
     const amountUSD = this.round((invoice.amount_paid ?? 0) / 100);
     // Solvexo's own tax inside what the seller paid (0 when the invoice carries none): a snapshot taken from Stripe's
@@ -1906,6 +2073,24 @@ export class SellerPlatformSubscriptionsService {
     // Wrapping both together also makes a Stripe webhook retry safe: if the
     // transaction rolls back, the dedup check above (`invoiceModel.exists`)
     // correctly sees no invoice yet and the whole handler re-runs cleanly.
+    const previousPlanId = sub.platformPlanId;
+    if (pending && pendingPlan) {
+      const previousPlanName = previousPlanId ? ((await this.planModel.findById(previousPlanId).select('name').lean()) as any)?.name ?? 'Unknown' : 'Trial';
+      // Applied in memory first so the paid invoice below references the plan that was actually bought.
+      sub.platformPlanId = String(pending.planId);
+      sub.billingInterval = pending.interval;
+      sub.amountUSD = this.round(pending.amountUSD);
+      sub.planHistory = [...(sub.planHistory ?? []), {
+        fromPlanId: previousPlanId, fromPlanName: previousPlanName,
+        toPlanId: String(pending.planId), toPlanName: pendingPlan.name, proratedAmountUSD: amountUSD, changedAt: new Date(),
+        amountUSD: this.round(pending.amountUSD), interval: pending.interval,
+      }];
+      sub.pendingPlanChange = null;
+      sub.paymentProvider = 'stripe';
+      sub.scheduledPlanChange = null;
+    }
+    sub.lastBillingError = null;
+
     await this.withTransaction(async (session) => {
       await this.invoiceModel.create([{
         // Non-null: only reachable for a sub with a real `providerSubscriptionId`
@@ -1935,10 +2120,36 @@ export class SellerPlatformSubscriptionsService {
     await this.syncFeaturedBadge(sub.storeId, plan);
 
     this.activityLogService.log({
-      storeId: sub.storeId, category: 'platform_plans', action: 'plan_renewed',
-      description: `Platform-plan Stripe invoice ${invoice.id} paid — $ ${amountUSD.toFixed(2)}`,
+      storeId: sub.storeId, category: 'platform_plans', action: pending ? 'plan_changed' : 'plan_renewed',
+      description: pending
+        ? `Plan "${pendingPlan.name}" activated — Stripe invoice ${invoice.id} paid, $ ${amountUSD.toFixed(2)}`
+        : `Platform-plan Stripe invoice ${invoice.id} paid — $ ${amountUSD.toFixed(2)}`,
       actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
     });
+
+    // Fire-and-forget payment-received email + in-app notification. Runs once per Stripe invoice: the dedup at the
+    // top of this handler already returned for any repeat delivery, and the ad-hoc changePlan path never reaches here.
+    void this.sendPaymentReceivedNotifications(sub, invoice, amountUSD, (plan as any)?.name ?? 'your plan');
+  }
+
+  private async sendPaymentReceivedNotifications(sub: any, invoice: any, amountUSD: number, planName: string): Promise<void> {
+    try {
+      const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+      if (sellerEmail) {
+        await this.notifications.sendPaymentReceived(billingRecipients, {
+          sellerName, storeName, planName, amountUSD, invoiceUrl: invoice.hosted_invoice_url ?? null,
+        }).catch((err: any) => this.logger.warn(`Payment-received email failed for store ${sub.storeId}: ${err?.message}`));
+      }
+      this.notificationsService.notify({
+        recipientId: sub.sellerId, recipientRole: 'seller', storeId: sub.storeId,
+        type: NOTIFICATION_TYPES.PLATFORM_PLAN_PAYMENT_RECEIVED,
+        title: 'Payment received',
+        body: `We received your $ ${amountUSD.toFixed(2)} payment for ${storeName} (${planName}). Thank you!`,
+        data: { subscriptionId: String(sub._id) },
+      }).catch(() => {});
+    } catch (err: any) {
+      this.logger.warn(`Payment-received notifications failed for store ${sub.storeId}: ${err?.message}`);
+    }
   }
 
   /**
@@ -1951,13 +2162,33 @@ export class SellerPlatformSubscriptionsService {
    * period end for rows that became past_due before that field existed.
    */
   async lockOverduePastDue(now: Date = new Date()): Promise<{ locked: number }> {
-    const rows = await this.subModel.find({ status: 'past_due', isDelete: false, legacyFreeEligible: { $ne: true } });
+    const rows = await this.subModel.find({ status: 'past_due', isDelete: false });
     const limitMs = PAST_DUE_LOCK_DAYS * 24 * 60 * 60 * 1000;
     let locked = 0;
     for (const sub of rows) {
       try {
         const since: Date | null = (sub as any).pastDueSince ?? (sub as any).currentPeriodEnd ?? null;
         if (!since || now.getTime() - new Date(since).getTime() < limitMs) continue;
+
+        // Legacy (grandfathered) stores have a free plan to fall back to; everyone else is locked.
+        if ((sub as any).legacyFreeEligible) {
+          const freePlan = await this.downgradeToFree(sub);
+          if (!freePlan) { this.logger.error(`lockOverduePastDue: legacy store ${sub.storeId} is overdue but no free plan exists to downgrade to`); continue; }
+          await sub.save();
+          locked++;
+          const { sellerName, sellerEmail, billingRecipients, storeName } = await this.getSellerAndStoreNames(sub.sellerId, sub.storeId);
+          if (sellerEmail) {
+            await this.notifications.sendDowngradedDueToFailedPayments(billingRecipients, {
+              sellerName, storeName, planName: (freePlan as any).name, maxAttempts: MAX_RENEWAL_ATTEMPTS,
+            }).catch(() => {});
+          }
+          this.activityLogService.log({
+            storeId: sub.storeId, category: 'platform_plans', action: 'plan_downgraded_past_due',
+            description: `Legacy store moved to the free plan: renewal unpaid for ${PAST_DUE_LOCK_DAYS}+ days`,
+            actorRole: 'system', targetId: sub._id.toString(), targetType: 'seller_platform_subscription',
+          });
+          continue;
+        }
 
         await this.lockStore(sub);
         await sub.save();
@@ -2025,6 +2256,27 @@ export class SellerPlatformSubscriptionsService {
     if (invoice.id && sub.lastFailedStripeInvoiceId === invoice.id) return;
     if (invoice.id) sub.lastFailedStripeInvoiceId = invoice.id;
     const amountUSD = this.round((invoice.amount_due ?? 0) / 100);
+
+    // A purchase that was never paid: the seller stays EXACTLY where they were (trialing / trial_ended / active on the
+    // old plan / locked) — no plan was granted, so there is nothing to put into dunning or past_due.
+    const pending = sub.pendingPlanChange && sub.pendingPlanChange.kind !== 'upgrade'
+      && sub.pendingPlanChange.stripeSubscriptionId === providerSubscriptionId ? sub.pendingPlanChange : null;
+    if (pending) {
+      sub.lastBillingError = invoice.last_finalization_error?.message
+        ?? 'Your card was declined or could not be authenticated — no plan was activated.';
+      if (pending.kind === 'trial_conversion') {
+        // The trial-end charge failed: the trial is over and no plan was bought → blocking "Select a plan" gate again.
+        // Like Shopify, the Stripe subscription and the pending purchase are KEPT so Stripe's own retries can still
+        // collect the payment (handleInvoicePaymentSucceeded then applies the plan and lifts the gate). A seller who picks
+        // another plan meanwhile has this attempt cancelled by changePlan; when Stripe gives up, subscription.deleted clears it.
+        if (sub.legacyFreeEligible) { await this.abandonPendingPurchase(sub); await this.downgradeToFree(sub); } else await this.markTrialEnded(sub);
+      }
+      // first_purchase: keep the pending purchase so the browser can retry the same PaymentIntent with another card;
+      // it is cleaned up by incomplete_expired / the next attempt.
+      await sub.save();
+      this.logger.warn(`Pending plan purchase payment failed for store ${sub.storeId} (${pending.kind}) — prior state kept`);
+      return;
+    }
     // Stripe's REAL next retry (null once Stripe stops retrying) — the seller is told this date, not our own guess.
     const stripeRetryAt: Date | null = typeof invoice.next_payment_attempt === 'number' ? new Date(invoice.next_payment_attempt * 1000) : null;
     await this.applyDunningFailure(sub, amountUSD, stripeRetryAt);
@@ -2056,6 +2308,20 @@ export class SellerPlatformSubscriptionsService {
       active: 'active', trialing: 'trialing', past_due: 'past_due',
       unpaid: 'past_due', canceled: 'canceled', incomplete_expired: 'canceled',
     };
+    // A purchase started but never paid: Stripe's own status must not grant, downgrade or cancel anything here.
+    const pendingHere = sub.pendingPlanChange && sub.pendingPlanChange.kind !== 'upgrade'
+      && sub.pendingPlanChange.stripeSubscriptionId === subscription.id;
+    if (pendingHere) {
+      if (subscription.status === 'incomplete_expired') {
+        // Abandoned checkout: forget the dead Stripe subscription (never 'canceled'), so a retry starts clean.
+        sub.pendingPlanChange = null;
+        sub.providerSubscriptionId = null;
+        sub.paymentProvider = 'manual';
+        sub.lastBillingError = sub.lastBillingError ?? 'The payment was not completed in time — no plan was activated.';
+        await sub.save();
+      }
+      return;
+    }
     const mapped = statusMap[subscription.status];
     if (mapped && mapped !== sub.status) {
       // Never un-lock through this event: 'locked' is a local state that only a successful payment clears.
@@ -2088,6 +2354,14 @@ export class SellerPlatformSubscriptionsService {
     // webhook from overriding a valid newer subscription.
     const sub = await this.subModel.findOne({ providerSubscriptionId: subscription.id, isDelete: false });
     if (!sub) return;
+    // An unpaid purchase attempt that Stripe deleted: just forget it — the seller's prior state is untouched.
+    if (sub.pendingPlanChange && sub.pendingPlanChange.kind !== 'upgrade' && sub.pendingPlanChange.stripeSubscriptionId === subscription.id) {
+      sub.pendingPlanChange = null;
+      sub.providerSubscriptionId = null;
+      sub.paymentProvider = 'manual';
+      await sub.save();
+      return;
+    }
     // Covers both a scheduled cancelSubscription() reaching its period end
     // on Stripe's side and any other way a Stripe subscription permanently
     // ends. Legacy grandfathered stores land on the free plan exactly as
@@ -2135,6 +2409,7 @@ export class SellerPlatformSubscriptionsService {
         platformPlan: plan ? { id: plan._id, name: plan.name, isFree: plan.isFree } : null,
         subscriptionStatus: sub?.status ?? 'none', nextBillingDate: sub?.nextBillingDate ?? null,
         totalPaidUSD: sub?.totalPaidUSD ?? 0,
+        billingSyncError: sub?.billingSyncError ?? null,
       };
     });
 

@@ -219,6 +219,8 @@ export class EntitlementsService {
 
   async getLimits(storeId: string): Promise<PlatformPlanLimits> {
     const { plan, subscription } = await this.resolvePlan(storeId);
+    // 'canceled' (Stripe subscription ended) behaves like trial_ended: no paid limits, restricted FALLBACK only.
+    if (subscription?.status === 'canceled') return FALLBACK_LIMITS;
     const base: PlatformPlanLimits = plan?.limits ? { ...NEW_FIELD_DEFAULTS, ...(plan.limits as PlatformPlanLimits) } : FALLBACK_LIMITS;
     return this.applyTrialOverride(base, subscription);
   }
@@ -394,7 +396,9 @@ export class EntitlementsService {
    */
   async getEntitlementsSummary(storeId: string) {
     const { plan, subscription } = await this.resolvePlan(storeId);
-    const base: PlatformPlanLimits = plan?.limits ? { ...NEW_FIELD_DEFAULTS, ...(plan.limits as PlatformPlanLimits) } : FALLBACK_LIMITS;
+    const base: PlatformPlanLimits = subscription?.status === 'canceled'
+      ? FALLBACK_LIMITS
+      : plan?.limits ? { ...NEW_FIELD_DEFAULTS, ...(plan.limits as PlatformPlanLimits) } : FALLBACK_LIMITS;
     const limits: PlatformPlanLimits = this.applyTrialOverride(base, subscription);
 
     const [productCount, staffSeats, posLocationCount, aiWallet, allActivePlans] = await Promise.all([

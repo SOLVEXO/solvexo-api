@@ -65,6 +65,23 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
     return this.provider.chargeSubscription(subscriptionId, amountUSD, context);
   }
 
+  /**
+   * Live status of a PaymentIntent we created for `internalSubscriptionId` (null if it is not ours / not found / manual provider).
+   * Used to verify a 3DS confirmation server-side instead of trusting the browser.
+   */
+  async getPaymentIntentStatus(paymentIntentId: string, internalSubscriptionId: string): Promise<string | null> {
+    const client = this.stripeClient;
+    if (!client || !paymentIntentId) return null;
+    try {
+      const pi = await client.paymentIntents.retrieve(paymentIntentId);
+      if (String(pi.metadata?.internalSubscriptionId ?? '') !== String(internalSubscriptionId)) return null;
+      return pi.status;
+    } catch (err: any) {
+      this.logger.warn(`getPaymentIntentStatus(${paymentIntentId}) failed: ${err?.message}`);
+      return null;
+    }
+  }
+
   chargeOneTime(referenceId: string, amountUSD: number, context?: ChargeContext): Promise<ChargeResult> {
     return this.provider.chargeOneTime(referenceId, amountUSD, context);
   }

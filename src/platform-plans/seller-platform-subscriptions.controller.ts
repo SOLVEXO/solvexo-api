@@ -193,6 +193,17 @@ export class SellerPlatformSubscriptionsController {
     return this.sellerPlatformSubscriptionsService.changePlan(actingSellerId(req.user), storeId, dto, req.headers['idempotency-key']);
   }
 
+  /** After the browser confirmed a 3DS charge: verifies it with Stripe and only then applies the pending plan change. Idempotent. */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.billing.manage')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post(':storeId/confirm-pending-plan-change')
+  confirmPendingPlanChange(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.sellerPlatformSubscriptionsService.confirmPendingPlanChange(actingSellerId(req.user), storeId);
+  }
+
   /** Dry-run of change-plan's exact proration math — what the "confirm your plan change" modal shows before the seller commits. */
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
