@@ -417,9 +417,9 @@ export class EntitlementsService {
 
     return {
       // `plan` is legitimately null while trialing (see `getActivePlanForStore`'s
-      // doc comment) — "Trial" there, never a borrowed/fake plan name; the
-      // genuine no-subscription-row-at-all fallback still reads "Starter (default)".
-      currentPlanName: plan?.name ?? (subscription?.status === 'trialing' ? 'Trial' : 'Starter (default)'),
+      // doc comment) — "Free trial" there, and "No plan" for a store that has not (or no longer) paid for one;
+      // never a borrowed/fake plan name.
+      currentPlanName: plan?.name ?? (subscription?.status === 'trialing' ? 'Free trial' : 'No plan'),
       currentPlanId: plan?._id?.toString?.() ?? null,
       maxProducts: {
         limit: limits.maxProducts, used: productCount,
