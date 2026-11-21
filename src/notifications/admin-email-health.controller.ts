@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -24,7 +24,7 @@ export class AdminEmailHealthController {
 
   @RequirePermission('config.manage')
   @Post('test')
-  test(@Req() req: any) {
-    return this.health.sendTest(req.user.userId);
+  test(@Req() req: any, @Query('channel') channel?: string) {
+    return this.health.sendTest(req.user.userId, channel === 'marketing' ? 'marketing' : 'transactional');
   }
 }

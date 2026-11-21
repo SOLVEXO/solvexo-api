@@ -22,6 +22,19 @@ export class EmailDailyStat {
 
   @Prop({ type: Date, default: null })
   lastErrorAt: Date | null;
+
+  /** Bulk mail sent through the dedicated marketing sender (MARKETING_SMTP_*); the fields above are the platform sender. */
+  @Prop({ default: 0 })
+  marketingSent: number;
+
+  @Prop({ default: 0 })
+  marketingFailed: number;
+
+  @Prop({ type: String, default: null })
+  marketingLastError: string | null;
+
+  @Prop({ type: Date, default: null })
+  marketingLastErrorAt: Date | null;
 }
 
 export const EmailDailyStatSchema = SchemaFactory.createForClass(EmailDailyStat);

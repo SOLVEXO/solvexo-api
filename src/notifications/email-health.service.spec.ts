@@ -76,7 +76,7 @@ describe('EmailHealthService', () => {
     const { svc } = make([{ date: today, sent: 7, failed: 2, lastError: 'Invalid login', lastErrorAt: new Date() }]);
     const res = await svc.getHealth();
     expect(res.data.days).toHaveLength(14);
-    expect(res.data.days[13]).toEqual({ date: today, sent: 7, failed: 2 });
+    expect(res.data.days[13]).toEqual({ date: today, sent: 7, failed: 2, marketingSent: 0, marketingFailed: 0 });
     expect(res.data.totals).toEqual({ sent: 7, failed: 2 });
     expect(res.data.configured).toBe(true);
     expect(res.data.host).toBe('smtp.test.dev');
@@ -95,5 +95,51 @@ describe('EmailHealthService', () => {
     const good = await b.svc.sendTest('admin1');
     expect(good).toEqual({ success: true, message: 'Test email sent to admin@solvexo.test.' });
     expect(b.email.sendMail.mock.calls[0][0]).toBe('admin@solvexo.test');
+  });
+
+  it('keeps marketing sends and failures apart from platform email, with their own alert', async () => {
+    const { svc, updateOne, notifications } = make();
+    svc.onModuleInit();
+    emailEvents.emit('result', { ok: true, channel: 'marketing' });
+    for (let i = 0; i < 5; i++) emailEvents.emit('result', { ok: false, channel: 'marketing', error: 'Quota exceeded' });
+    await flush();
+    expect(updateOne.mock.calls[0][1]).toEqual({ $inc: { marketingSent: 1 } });
+    expect(updateOne.mock.calls[1][1].$inc).toEqual({ marketingFailed: 1 });
+    expect(updateOne.mock.calls[1][1].$set.marketingLastError).toBe('Quota exceeded');
+    expect(notifications.notifyAdmins).toHaveBeenCalledTimes(1);
+    expect(notifications.notifyAdmins.mock.calls[0][0].title).toBe('Marketing emails are failing to send');
+    expect(notifications.notifyAdmins.mock.calls[0][0].body).toContain('Sign-up codes and order emails are not affected');
+    const res = await svc.getHealth();
+    expect(res.data.consecutiveFailures).toBe(0);
+    expect(res.data.marketing.consecutiveFailures).toBe(5);
+  });
+
+  it('reports the marketing sender (never its password) and its 14-day totals', async () => {
+    process.env.MARKETING_SMTP_HOST = 'smtp-relay.brevo.com';
+    process.env.MARKETING_SMTP_USER = 'brevo-user';
+    process.env.MARKETING_SMTP_PASSWORD = 'brevo-key';
+    process.env.MARKETING_SMTP_FROM = 'news@mail.solvexo.store';
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const { svc } = make([{ date: today, sent: 3, failed: 0, marketingSent: 120, marketingFailed: 4, marketingLastError: 'Rate limited', marketingLastErrorAt: new Date() }]);
+      const res = await svc.getHealth();
+      expect(res.data.marketing).toMatchObject({ configured: true, host: 'smtp-relay.brevo.com', port: 587, from: 'news@mail.solvexo.store', lastError: 'Rate limited', totals: { sent: 120, failed: 4 } });
+      expect(JSON.stringify(res)).not.toContain('brevo-key');
+    } finally {
+      delete process.env.MARKETING_SMTP_HOST; delete process.env.MARKETING_SMTP_USER; delete process.env.MARKETING_SMTP_PASSWORD; delete process.env.MARKETING_SMTP_FROM;
+    }
+  });
+
+  it('tests the marketing sender with a bulk-style mail, and says how to set it up when it is missing', async () => {
+    const { svc, email } = make();
+    email.hasMarketingSender = jest.fn(() => false);
+    const missing = await svc.sendTest('admin-1', 'marketing');
+    expect(missing.success).toBe(false);
+    expect(missing.message).toContain('MARKETING_SMTP_HOST');
+    email.hasMarketingSender = jest.fn(() => true);
+    const ok = await svc.sendTest('admin-1', 'marketing');
+    expect(ok.success).toBe(true);
+    expect(email.testConnection).toHaveBeenLastCalledWith('marketing');
+    expect(email.sendMail.mock.calls.at(-1)[4]).toHaveProperty('List-Unsubscribe');
   });
 });
