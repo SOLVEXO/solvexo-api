@@ -16,6 +16,10 @@ import {
   SalesChatSessionSchema,
 } from './schemas/sales-chat-session.schema';
 import { SalesPartnersService } from './sales-partners.service';
+import { PartnerOnboardingService } from './partner-onboarding.service';
+import { PartnerApplyController, PartnerPortalOnboardingController, PartnerProgrammeController } from './partner-programme.controller';
+import { PartnerProgrammeSettings, PartnerProgrammeSettingsSchema } from './schemas/partner-programme-settings.schema';
+import { AdminTeamModule } from '../admin-team/admin-team.module';
 import {
   SalesPartner,
   SalesPartnerSchema,
@@ -83,6 +87,7 @@ import {
     ExchangeRateModule,
     AiTextModule,
     UploadModule,
+    AdminTeamModule,
     MongooseModule.forFeature([
       { name: SalesLead.name, schema: SalesLeadSchema },
       { name: SalesActivity.name, schema: SalesActivitySchema },
@@ -97,6 +102,7 @@ import {
       { name: SalesPartnerReferral.name, schema: SalesPartnerReferralSchema },
       { name: SalesCommission.name, schema: SalesCommissionSchema },
       { name: SalesPayout.name, schema: SalesPayoutSchema },
+      { name: PartnerProgrammeSettings.name, schema: PartnerProgrammeSettingsSchema },
       { name: SalesChatSession.name, schema: SalesChatSessionSchema },
       { name: SalesWaConversation.name, schema: SalesWaConversationSchema },
       { name: SalesWaMessage.name, schema: SalesWaMessageSchema },
@@ -107,12 +113,16 @@ import {
     SalesOpsController,
     SalesPublicController,
     PartnerPortalController,
+    PartnerApplyController,
+    PartnerProgrammeController,
+    PartnerPortalOnboardingController,
   ],
   providers: [
     SalesOpsService,
     SalesCaptureService,
     SalesGrowthService,
     SalesPartnersService,
+    PartnerOnboardingService,
     SalesAgentService,
     SalesWhatsAppService,
     SalesVisitsService,
