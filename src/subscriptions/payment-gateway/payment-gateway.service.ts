@@ -82,6 +82,27 @@ export class PaymentGatewayService implements IPaymentGateway, OnModuleInit {
     }
   }
 
+  /**
+   * The latest invoice of a Stripe subscription WE created for `internalSubscriptionId` (its metadata must match), with
+   * its PaymentIntent expanded — or null when it is not ours / not found / manual provider. Lets a paid purchase be
+   * applied from Stripe's own record when its webhook is late or never arrived. Never throws.
+   */
+  async getLatestSubscriptionInvoice(providerSubscriptionId: string, internalSubscriptionId: string): Promise<any> {
+    const client = this.stripeClient;
+    if (!client || !providerSubscriptionId) return null;
+    try {
+      const subscription: any = await client.subscriptions.retrieve(providerSubscriptionId, { expand: ['latest_invoice'] });
+      if (String(subscription?.metadata?.internalSubscriptionId ?? '') !== String(internalSubscriptionId)) return null;
+      const latest = subscription.latest_invoice;
+      const invoiceId = typeof latest === 'string' ? latest : latest?.id;
+      if (!invoiceId) return null;
+      return await client.invoices.retrieve(invoiceId);
+    } catch (err: any) {
+      this.logger.warn(`getLatestSubscriptionInvoice(${providerSubscriptionId}) failed: ${err?.message}`);
+      return null;
+    }
+  }
+
   /** Card brand + last 4 of the payment method behind a PaymentIntent (null for non-card / not found / manual provider). Best-effort, never throws. */
   async getCardForPaymentIntent(paymentIntentId: string | null | undefined): Promise<{ brand: string; last4: string } | null> {
     const client = this.stripeClient;
