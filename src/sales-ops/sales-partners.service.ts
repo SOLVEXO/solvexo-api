@@ -979,6 +979,9 @@ export class SalesPartnersService {
       payoutMethod: p.payoutMethod,
       payoutDetails: p.payoutDetails ?? null,
       status: p.status,
+      /** Channel Partner Programme stage; null = set up before the programme (treated as live). */
+      stage: p.stage ?? null,
+      tier: p.tier ?? null,
       createdAt: p.createdAt,
     };
     return forManager ? { ...base, notes: p.notes ?? null } : base;
