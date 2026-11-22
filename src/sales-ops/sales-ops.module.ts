@@ -17,8 +17,10 @@ import {
 } from './schemas/sales-chat-session.schema';
 import { SalesPartnersService } from './sales-partners.service';
 import { PartnerOnboardingService } from './partner-onboarding.service';
-import { PartnerApplyController, PartnerPortalDealsController, PartnerPortalOnboardingController, PartnerProgrammeController } from './partner-programme.controller';
+import { PartnerApplyController, PartnerPortalDealsController, PartnerPortalScorecardController, PartnerPortalOnboardingController, PartnerProgrammeController } from './partner-programme.controller';
 import { PartnerDealsService } from './partner-deals.service';
+import { PartnerScorecardService } from './partner-scorecard.service';
+import { PartnerLog, PartnerLogSchema } from './schemas/partner-log.schema';
 import { PartnerDeal, PartnerDealSchema } from './schemas/partner-deal.schema';
 import { PartnerProgrammeSettings, PartnerProgrammeSettingsSchema } from './schemas/partner-programme-settings.schema';
 import { AdminTeamModule } from '../admin-team/admin-team.module';
@@ -106,6 +108,7 @@ import {
       { name: SalesPayout.name, schema: SalesPayoutSchema },
       { name: PartnerProgrammeSettings.name, schema: PartnerProgrammeSettingsSchema },
       { name: PartnerDeal.name, schema: PartnerDealSchema },
+      { name: PartnerLog.name, schema: PartnerLogSchema },
       { name: SalesChatSession.name, schema: SalesChatSessionSchema },
       { name: SalesWaConversation.name, schema: SalesWaConversationSchema },
       { name: SalesWaMessage.name, schema: SalesWaMessageSchema },
@@ -120,6 +123,7 @@ import {
     PartnerProgrammeController,
     PartnerPortalOnboardingController,
     PartnerPortalDealsController,
+    PartnerPortalScorecardController,
   ],
   providers: [
     SalesOpsService,
@@ -128,6 +132,7 @@ import {
     SalesPartnersService,
     PartnerOnboardingService,
     PartnerDealsService,
+    PartnerScorecardService,
     SalesAgentService,
     SalesWhatsAppService,
     SalesVisitsService,
