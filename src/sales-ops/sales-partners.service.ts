@@ -927,7 +927,8 @@ export class SalesPartnersService {
   }
 
   /** Merchants paying Solvexo right now (any store with live MRR). */
-  private async payingSellers(sellerIds: string[]): Promise<Set<string>> {
+  /** Also used by the partner scorecard. */
+  async payingSellers(sellerIds: string[]): Promise<Set<string>> {
     const ids = [...new Set(sellerIds)];
     if (!ids.length) return new Set();
     const r = this.db.repositories;

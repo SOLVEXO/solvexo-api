@@ -12,6 +12,7 @@ import { RequirePermission } from '../auth/decorators/require-permission.decorat
 import { KYC_DOCUMENT_MAX_BYTES } from '../upload/upload-file-validation';
 import { type PartnerApplicationInput, PartnerOnboardingService, type PartnerProfileInput } from './partner-onboarding.service';
 import { type DealInput, PartnerDealsService } from './partner-deals.service';
+import { PartnerScorecardService } from './partner-scorecard.service';
 import type { ProgrammeSettings } from './partner-programme.util';
 import { salesActor } from './sales-ops.util';
 
@@ -39,7 +40,22 @@ export class PartnerApplyController {
 @RequirePermission('sales.manage')
 @Controller('api/admin/sales/partner-programme')
 export class PartnerProgrammeController {
-  constructor(private readonly svc: PartnerOnboardingService, private readonly deals: PartnerDealsService) {}
+  constructor(private readonly svc: PartnerOnboardingService, private readonly deals: PartnerDealsService, private readonly scores: PartnerScorecardService) {}
+
+  // ── Scorecard (B13) ──
+  @Get('scorecards')
+  leaderboard() { return this.scores.leaderboard(); }
+
+  @Get('scorecards/:id')
+  scorecard(@Param('id') id: string) { return this.scores.detail(id); }
+
+  @Post('scorecards/:id/log')
+  addLog(@Req() req: any, @Param('id') id: string, @Body() dto: { type?: string; summary?: string; details?: string; plan?: string; about?: string; at?: string; visibleToPartner?: boolean }) {
+    return this.scores.addLog(salesActor(req.user), id, dto ?? {});
+  }
+
+  @Post('scorecards/:id/log/:logId/resolve')
+  resolve(@Param('id') id: string, @Param('logId') logId: string) { return this.scores.resolveComplaint(id, logId); }
 
   // ── Deal registration (B7) ──
   @Get('deals')
@@ -161,4 +177,18 @@ export class PartnerPortalDealsController {
 
   @Post(':id/extension')
   extension(@Req() req: any, @Param('id') id: string, @Body() dto: { progress?: string; note?: string }) { return this.deals.requestExtension(salesActor(req.user), id, dto ?? {}); }
+}
+
+/** The partner's own scorecard (B13). */
+@ApiTags('Admin Partner Portal')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+@Roles('admin')
+@RequirePermission('partner.portal', 'sales.access', 'sales.manage')
+@Controller('api/admin/partner-portal/scorecard')
+export class PartnerPortalScorecardController {
+  constructor(private readonly scores: PartnerScorecardService) {}
+
+  @Get()
+  mine(@Req() req: any) { return this.scores.mine(salesActor(req.user)); }
 }
