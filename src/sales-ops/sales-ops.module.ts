@@ -17,7 +17,9 @@ import {
 } from './schemas/sales-chat-session.schema';
 import { SalesPartnersService } from './sales-partners.service';
 import { PartnerOnboardingService } from './partner-onboarding.service';
-import { PartnerApplyController, PartnerPortalOnboardingController, PartnerProgrammeController } from './partner-programme.controller';
+import { PartnerApplyController, PartnerPortalDealsController, PartnerPortalOnboardingController, PartnerProgrammeController } from './partner-programme.controller';
+import { PartnerDealsService } from './partner-deals.service';
+import { PartnerDeal, PartnerDealSchema } from './schemas/partner-deal.schema';
 import { PartnerProgrammeSettings, PartnerProgrammeSettingsSchema } from './schemas/partner-programme-settings.schema';
 import { AdminTeamModule } from '../admin-team/admin-team.module';
 import {
@@ -103,6 +105,7 @@ import {
       { name: SalesCommission.name, schema: SalesCommissionSchema },
       { name: SalesPayout.name, schema: SalesPayoutSchema },
       { name: PartnerProgrammeSettings.name, schema: PartnerProgrammeSettingsSchema },
+      { name: PartnerDeal.name, schema: PartnerDealSchema },
       { name: SalesChatSession.name, schema: SalesChatSessionSchema },
       { name: SalesWaConversation.name, schema: SalesWaConversationSchema },
       { name: SalesWaMessage.name, schema: SalesWaMessageSchema },
@@ -116,6 +119,7 @@ import {
     PartnerApplyController,
     PartnerProgrammeController,
     PartnerPortalOnboardingController,
+    PartnerPortalDealsController,
   ],
   providers: [
     SalesOpsService,
@@ -123,6 +127,7 @@ import {
     SalesGrowthService,
     SalesPartnersService,
     PartnerOnboardingService,
+    PartnerDealsService,
     SalesAgentService,
     SalesWhatsAppService,
     SalesVisitsService,
