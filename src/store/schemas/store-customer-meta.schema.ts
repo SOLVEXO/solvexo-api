@@ -43,6 +43,20 @@ export class StoreCustomerMeta {
   @Prop({ type: Boolean, default: false })
   marketingOptIn: boolean;
 
+  // SMS / WhatsApp marketing consent, recorded per store (from a customer import today). Nothing sends SMS or
+  // WhatsApp marketing yet; this keeps the consent, and when it was given, ready for when it does.
+  @Prop({ type: Boolean, default: false })
+  smsMarketingOptIn: boolean;
+
+  @Prop({ type: Date, default: null })
+  smsMarketingConsentAt: Date | null;
+
+  @Prop({ type: Boolean, default: false })
+  whatsappMarketingOptIn: boolean;
+
+  @Prop({ type: Date, default: null })
+  whatsappMarketingConsentAt: Date | null;
+
   // Platform-admin-only: blocks this one buyer from checking out at this one
   // store, without touching their account elsewhere (AdminUsersService.suspend
   // is the separate, platform-wide ban — a seller may own many stores, and a
