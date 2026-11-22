@@ -103,6 +103,15 @@ export interface ProgrammeSettings {
   minPayoutPKR: number | null;
   statementDay: number;
   payoutDay: number;
+  /** B4.1: card processing fee taken out of the commission base (e.g. 2.9 % + US$0.30). null = not set yet. */
+  cardFeePercent: number | null;
+  cardFeeFixedUSD: number | null;
+  /** Set automatically when the card fee changes: only payments from this date use it (B4.10). */
+  cardFeeFrom: string | null;
+  /** B4.7: withholding tax deducted from payouts, in %, unless set per partner. null = none. */
+  withholdingTaxPercent: number | null;
+  /** B4.4: days' notice after which commission on a seller the partner stopped supporting ends. */
+  supportNoticeDays: number;
   agreementVersion: string;
   /** A3 #9 */
   signingEntity: string | null;
@@ -130,6 +139,11 @@ export const DEFAULT_PROGRAMME_SETTINGS: ProgrammeSettings = {
   minPayoutPKR: null,
   statementDay: 10,
   payoutDay: 15,
+  cardFeePercent: null,
+  cardFeeFixedUSD: null,
+  cardFeeFrom: null,
+  withholdingTaxPercent: null,
+  supportNoticeDays: 60,
   agreementVersion: '0.1',
   signingEntity: null,
   approvedKeys: [],
@@ -138,7 +152,8 @@ export const DEFAULT_PROGRAMME_SETTINGS: ProgrammeSettings = {
 export const SETTING_KEYS = [
   'tiers', 'pilotDays', 'termMonths', 'noticeDays', 'dealResponseWorkingDays', 'dealProtectionDays',
   'pilotMinPayingSellers', 'pilotMinLiveStores', 'pilotMaxComplaintRatePercent', 'activationBonusPKR', 'minPayoutPKR',
-  'statementDay', 'payoutDay', 'agreementVersion', 'signingEntity',
+  'statementDay', 'payoutDay', 'agreementVersion', 'signingEntity', 'cardFeePercent', 'cardFeeFixedUSD', 'withholdingTaxPercent',
+  'supportNoticeDays',
 ] as const;
 
 const intOrNull = (v: unknown, min: number, max: number): number | null => {
@@ -169,6 +184,12 @@ export function mergeSettings(cur: ProgrammeSettings, input: Partial<ProgrammeSe
   num('minPayoutPKR', 0, 10_000_000, true);
   num('statementDay', 1, 28, false);
   num('payoutDay', 1, 28, false);
+  num('cardFeePercent', 0, 20, true);
+  num('cardFeeFixedUSD', 0, 10, true);
+  num('withholdingTaxPercent', 0, 50, true);
+  num('supportNoticeDays', 0, 365, false);
+  // The card fee applies from the moment it changes, so commission already earned is never reduced (B4.10).
+  if (out.cardFeePercent !== cur.cardFeePercent || out.cardFeeFixedUSD !== cur.cardFeeFixedUSD) out.cardFeeFrom = new Date().toISOString();
   if (out.payoutDay < out.statementDay) throw new Error('Payout day must be on or after the statement day');
   if ('agreementVersion' in input) {
     const v = String(input.agreementVersion ?? '').trim().slice(0, 20);

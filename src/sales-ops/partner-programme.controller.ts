@@ -54,6 +54,11 @@ export class PartnerProgrammeController {
     return this.scores.addLog(salesActor(req.user), id, dto ?? {});
   }
 
+  @Post('scorecards/:id/conduct')
+  conduct(@Req() req: any, @Param('id') id: string, @Body() dto: { action?: string; reason?: string; details?: string; plan?: string; dueAt?: string }) {
+    return this.scores.conduct(salesActor(req.user), id, dto ?? {});
+  }
+
   @Post('scorecards/:id/log/:logId/resolve')
   resolve(@Param('id') id: string, @Param('logId') logId: string) { return this.scores.resolveComplaint(id, logId); }
 

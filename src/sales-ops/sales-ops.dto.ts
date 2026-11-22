@@ -11,6 +11,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
   Min,
   ValidateIf,
@@ -299,6 +300,8 @@ export class CommissionPlanDto {
 }
 
 export class PartnerDto {
+  /** B4.7: withholding tax on this partner's payouts, in % (null = the programme default). */
+  @IsOptional() @IsNumber() @Min(0) @Max(50) whtPercent?: number | null;
   @IsOptional() @IsString() @MaxLength(120) name?: string;
   @IsOptional() @IsString() @MaxLength(20) kind?: string;
   @IsOptional() @IsString() @MaxLength(40) code?: string;

@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { EmailService } from '../otp/services/email.service';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
@@ -31,7 +32,63 @@ export class PartnerScorecardService {
     @InjectModel(SalesCommission.name) private readonly ledger: Model<SalesCommissionDocument>,
     @InjectModel(PartnerDeal.name) private readonly deals: Model<PartnerDealDocument>,
     @InjectModel(PartnerLog.name) private readonly logs: Model<PartnerLogDocument>,
+    private readonly email: EmailService,
   ) {}
+
+  /**
+   * Programme B9/B13/B14 conduct: a written warning, a 60-day improvement plan, suspension (only for serious cases, with
+   * the reason in writing; earns nothing new but earned commission is still paid), and reinstatement. Each is recorded
+   * in the partner's log, shown to the partner, and emailed to them.
+   */
+  async conduct(actor: SalesActor, id: string, input: { action?: string; reason?: string; details?: string; plan?: string; dueAt?: string }) {
+    const p = await this.find(id);
+    const reason = clean(input.reason, 500);
+    if (!reason) throw new BadRequestException('Give the reason in writing: the partner receives it.');
+    const now = new Date();
+    const due = input.dueAt ? new Date(input.dueAt) : new Date(now.getTime() + 60 * 86_400_000);
+    if (isNaN(due.getTime())) throw new BadRequestException('That date is not valid.');
+    let type: string;
+    let subject: string;
+    let body: string;
+    switch (input.action) {
+      case 'warning':
+        type = 'warning'; subject = 'Written warning from Solvexo';
+        body = `This is a written warning under the partner programme: ${reason}. You have until ${due.toISOString().slice(0, 10)} to put it right.`;
+        break;
+      case 'improvement_plan': {
+        const plan = clean(input.plan, 4000);
+        if (!plan) throw new BadRequestException('Write down what must change (the plan).');
+        type = 'improvement_plan'; subject = 'Your 60-day improvement plan';
+        body = `We have agreed an improvement plan because ${reason}. What needs to change: ${plan}. Review date: ${due.toISOString().slice(0, 10)}.`;
+        break;
+      }
+      case 'suspend':
+        if (p.suspendedAt) throw new BadRequestException('This partner is already suspended.');
+        type = 'suspension'; subject = 'Your Solvexo partnership is suspended';
+        body = `Your partnership is suspended because ${reason}. You earn no new commission while suspended; commission already earned is still paid.`;
+        await this.partners.updateOne({ _id: p._id }, { $set: { status: 'paused', suspendedAt: now, suspendReason: reason } });
+        break;
+      case 'reinstate':
+        if (!p.suspendedAt) throw new BadRequestException('This partner is not suspended.');
+        type = 'reinstated'; subject = 'Your Solvexo partnership is active again';
+        body = `Your partnership is active again: ${reason}.`;
+        await this.partners.updateOne({ _id: p._id }, { $set: { status: 'active', suspendedAt: null, suspendReason: null } });
+        break;
+      default:
+        throw new BadRequestException('Choose warning, improvement plan, suspend or reinstate.');
+    }
+    await this.logs.create({
+      partnerId: String(p._id), type, at: now, by: actor.adminId, summary: reason, details: clean(input.details, 4000),
+      plan: type === 'improvement_plan' ? clean(input.plan, 4000) : null,
+      dueAt: type === 'warning' || type === 'improvement_plan' ? due : null, visibleToPartner: true,
+    });
+    if (p.email) {
+      const esc = (x: string) => x.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+      void this.email.sendMail(p.email, subject, `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1c1d1b"><p>Hi ${esc(p.name)},</p><p>${esc(body)}</p>
+        <p>If you disagree, reply within 14 days: disputes go first to a discussion between the named contacts (B15).</p></div>`).catch(() => false);
+    }
+    return this.detail(id);
+  }
 
   async leaderboard() {
     const ps: any[] = await this.partners.find(SELLING).lean();
@@ -103,7 +160,7 @@ export class PartnerScorecardService {
     const lastQbr = logs.find((l) => l.type === 'qbr');
     const DAY = 86_400_000;
     return {
-      partner: { _id: String(p._id), name: p.name, tier: p.tier ?? null, territory: p.territory ?? null, stage: p.stage ?? 'live', agreement: p.agreement ?? null },
+      partner: { _id: String(p._id), name: p.name, tier: p.tier ?? null, territory: p.territory ?? null, stage: p.stage ?? 'live', agreement: p.agreement ?? null, status: p.status, suspendedAt: p.suspendedAt ?? null, suspendReason: p.suspendReason ?? null },
       scorecard: card,
       milestones: pilotMilestones(card, s),
       milestonesApproved: ['pilotMinPayingSellers', 'pilotMinLiveStores', 'pilotMaxComplaintRatePercent'].every((k) => s.approvedKeys.includes(k)),
