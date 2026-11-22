@@ -24,6 +24,10 @@ export class SalesPartnerReferral {
   /** Payments from this date earn commission (the merchant's sign-up, or the date a manager chose). */
   @Prop({ type: Date, required: true }) effectiveFrom: Date;
   @Prop({ type: String, default: null }) createdByAdminId: string | null;
+  /** B4.4: written notice that the partner stopped supporting this seller; commission ends `supportNoticeDays` later. */
+  @Prop({ type: Date, default: null }) supportNoticeAt: Date | null;
+  @Prop({ type: String, default: null }) supportNoticeReason: string | null;
+  @Prop({ type: Date, default: null }) commissionEndsAt: Date | null;
 }
 
 export const SalesPartnerReferralSchema =

@@ -262,6 +262,13 @@ export class SalesOpsController {
     return this.partners.removeReferral(id, sellerId);
   }
 
+  /** B4.4: written 60-day notice that the partner stopped supporting a seller (or withdraw it with cancel: true). */
+  @RequirePermission('sales.manage')
+  @Post('partners/:id/referrals/:sellerId/support-notice')
+  supportNotice(@Req() req: any, @Param('id') id: string, @Param('sellerId') sellerId: string, @Body() dto: { reason?: string; cancel?: boolean }) {
+    return this.partners.supportNotice(salesActor(req.user), id, sellerId, dto ?? {});
+  }
+
   @RequirePermission('sales.manage')
   @Post('partners/:id/adjustments')
   adjustment(

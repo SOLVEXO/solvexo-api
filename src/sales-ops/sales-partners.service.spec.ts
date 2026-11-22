@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { DEFAULT_PROGRAMME_SETTINGS } from './partner-programme.util';
 import { SalesPartnersService } from './sales-partners.service';
 import { salesActor } from './sales-ops.util';
 import { model } from './sales-ops.fakes.testspec';
@@ -134,6 +135,10 @@ function setup() {
     referrals as any,
     ledger as any,
     payouts as any,
+    // Programme settings: nothing set yet (no card fee, no bonus, no withholding tax), as on a fresh install.
+    { settings: async () => DEFAULT_PROGRAMME_SETTINGS } as any,
+    { sendMail: jest.fn(async () => true) } as any,
+    { notifyManagers: jest.fn(async () => undefined) } as any,
   );
   return { svc, partners, plans, referrals, ledger, payouts, fx };
 }

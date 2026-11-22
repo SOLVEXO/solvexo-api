@@ -79,4 +79,14 @@ describe('partner programme rules', () => {
     expect(eligibleTier(s, 120, 1, null)).toBe('silver'); // Gold needs 2 certified salespeople
     expect(eligibleTier(s, 120, 2, null)).toBe('gold');
   });
+
+  it('dates the card fee from when it is set, so earlier commission is never reduced', () => {
+    const before = Date.now();
+    const s = mergeSettings(DEFAULT_PROGRAMME_SETTINGS, { cardFeePercent: 2.9, cardFeeFixedUSD: 0.3 });
+    expect(new Date(s.cardFeeFrom!).getTime()).toBeGreaterThanOrEqual(before);
+    const unchanged = mergeSettings(s, { pilotDays: 120 });
+    expect(unchanged.cardFeeFrom).toBe(s.cardFeeFrom);
+    expect(() => mergeSettings(DEFAULT_PROGRAMME_SETTINGS, { withholdingTaxPercent: 80 })).not.toThrow(); // clamped
+    expect(mergeSettings(DEFAULT_PROGRAMME_SETTINGS, { withholdingTaxPercent: 80 }).withholdingTaxPercent).toBe(50);
+  });
 });

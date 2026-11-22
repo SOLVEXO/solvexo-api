@@ -13,6 +13,10 @@ export class SalesPayout {
   /** Bank / JazzCash / Easypaisa transaction reference. */
   @Prop({ type: String, default: null }) reference: string | null;
   @Prop({ type: Date, required: true }) paidAt: Date;
+  /** B4.7: withholding tax deducted (amountPKR is the gross commission settled; netPKR what was transferred). */
+  @Prop({ type: Number, default: 0 }) whtPercent: number;
+  @Prop({ type: Number, default: 0 }) whtPKR: number;
+  @Prop({ type: Number, default: null }) netPKR: number | null;
   @Prop({ type: [String], default: [] }) commissionIds: string[];
   @Prop({ type: String, default: null }) note: string | null;
   @Prop({ type: String, default: null }) createdByAdminId: string | null;

@@ -108,6 +108,14 @@ export class SalesPartner {
   staff: any[];
   /** Demo stores issued to the partner (not for resale): store ids. */
   @Prop({ type: [String], default: [] }) demoStoreIds: string[];
+  /** B4.7: withholding tax for this partner's payouts, in %; null = the programme default. */
+  @Prop({ type: Number, default: null }) whtPercent: number | null;
+  /** B14: suspended (earns nothing new; earned commission is still paid). */
+  @Prop({ type: Date, default: null }) suspendedAt: Date | null;
+  @Prop({ type: String, default: null }) suspendReason: string | null;
+  /** B4.5: last month (YYYY-MM) whose statement was sent, and the last month an overdue payout was flagged. */
+  @Prop({ type: String, default: null }) statementSentFor: string | null;
+  @Prop({ type: String, default: null }) payoutOverdueFlaggedFor: string | null;
   /** Manager ticks on the onboarding checklist: key → { at, by }. */
   @Prop({ type: Object, default: {} }) checklist: Record<string, { at: Date; by: string | null } | null>;
 }

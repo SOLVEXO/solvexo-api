@@ -16,7 +16,7 @@ export class SalesCommission {
   @Prop({ type: String, default: null, index: true }) invoiceId: string | null;
   @Prop({
     type: String,
-    enum: ['bounty', 'percent', 'adjustment'],
+    enum: ['bounty', 'percent', 'adjustment', 'activation'],
     required: true,
   })
   type: string;

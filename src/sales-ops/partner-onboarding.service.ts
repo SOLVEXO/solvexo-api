@@ -15,6 +15,7 @@ import { SalesPartner, SalesPartnerDocument } from './schemas/sales-partner.sche
 import { SalesPartnerReferral, SalesPartnerReferralDocument } from './schemas/sales-partner-referral.schema';
 import { PartnerProgrammeSettings, PartnerProgrammeSettingsDocument } from './schemas/partner-programme-settings.schema';
 import { PartnerDeal, PartnerDealDocument } from './schemas/partner-deal.schema';
+import { PartnerLog, PartnerLogDocument } from './schemas/partner-log.schema';
 import {
   CHECKLIST, type ChecklistKey, DEFAULT_PROGRAMME_SETTINGS, ENTITY_TYPES, type EntityType, PARTNER_DOC_LABELS, PARTNER_DOC_TYPES,
   PARTNER_MODELS, PARTNER_TIERS, type PartnerDocType, type PartnerStage, type ProgrammeSettings, RESELLER_MODES,
@@ -83,6 +84,7 @@ export class PartnerOnboardingService {
     @InjectModel(SalesPartnerReferral.name) private readonly referrals: Model<SalesPartnerReferralDocument>,
     @InjectModel(PartnerProgrammeSettings.name) private readonly settingsModel: Model<PartnerProgrammeSettingsDocument>,
     @InjectModel(PartnerDeal.name) private readonly deals: Model<PartnerDealDocument>,
+    @InjectModel(PartnerLog.name) private readonly logs: Model<PartnerLogDocument>,
   ) {}
 
   // ── Settings ─────────────────────────────────────────────────────────────
@@ -246,6 +248,12 @@ export class PartnerOnboardingService {
     pick('model', PARTNER_MODELS);
     pick('resellerMode', RESELLER_MODES);
     pick('tier', PARTNER_TIERS);
+    // B3: a partner moves down a tier only after a written warning and 60 days to recover.
+    const rank = (t: string | null | undefined) => (PARTNER_TIERS as readonly string[]).indexOf(t ?? 'registered');
+    if ('tier' in input && rank(set.tier as string | null) < rank(p.tier)) {
+      const warned: any = await this.logs.findOne({ partnerId: String(p._id), type: { $in: ['warning', 'improvement_plan'] }, at: { $lte: new Date(Date.now() - 60 * 86_400_000) } }).select('_id').lean();
+      if (!warned) throw new BadRequestException('A partner moves down a tier only after a written warning and 60 days to recover (B3). Give a warning first.');
+    }
     if ('territory' in input) set.territory = clean(input.territory, 160);
     if ('exclusive' in input) set.exclusive = input.exclusive === true;
     for (const k of ['exclusiveFrom', 'exclusiveUntil'] as const) {
