@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { buildDowngradeWarnings } from './downgrade-warnings.util';
 import { EntitlementsService } from './entitlements.service';
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException, Logger, Optional } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException, ForbiddenException, Logger, Optional } from '@nestjs/common';
 import { PlatformTaxService } from '@/platform-tax/platform-tax.service';
 import { invoiceTaxSnapshot } from '@/platform-tax/platform-tax.util';
 import { OnEvent } from '@nestjs/event-emitter';
@@ -1254,6 +1254,17 @@ export class SellerPlatformSubscriptionsService {
       // subscription so this retry can never be routed into the ad-hoc "existing subscription" charge path.
       // A still-valid trial commitment (Stripe trial_end pending) is kept — the branch below re-points it.
       if (sub.pendingPlanChange && !(sub.pendingPlanChange.kind === 'trial_conversion' && isMidTrial && !billImmediately)) {
+        // The earlier attempt may in fact have been PAID (its webhook just hasn't landed): apply it instead of
+        // cancelling a paid Stripe subscription and charging the seller a second time.
+        const earlierPlanId = sub.pendingPlanChange.planId;
+        if (await this.applyPaidPendingPurchase(sub)) {
+          const earlierPlan: any = await this.planModel.findById(earlierPlanId).select('name').lean();
+          const fresh: any = await this.subModel.findById(sub._id);
+          if (String(earlierPlanId) === String(newPlanId)) {
+            return { success: true, message: `Your payment for "${earlierPlan?.name ?? 'this plan'}" went through — the plan is active`, data: { subscription: fresh, pending: false, applied: true } };
+          }
+          throw new ConflictException(`Your earlier payment for "${earlierPlan?.name ?? 'a plan'}" went through and that plan is now active. Reload the page, then change plan from there if you still want to.`);
+        }
         await this.abandonPendingPurchase(sub);
       }
 
@@ -1489,6 +1500,49 @@ export class SellerPlatformSubscriptionsService {
   }
 
   /** Cancels the dead Stripe subscription of an unpaid purchase attempt and forgets it, so a retry starts clean. Never sets 'canceled'. */
+  /**
+   * A Stripe-billed purchase (first purchase / trial conversion) whose first invoice Stripe has ALREADY PAID but whose
+   * webhook has not applied it yet (late, lost, or failed): applies it now from Stripe's own invoice, through the same
+   * code the webhook runs. True when the plan was applied. Never charges anything.
+   */
+  private async applyPaidPendingPurchase(sub: any): Promise<boolean> {
+    const pending = sub?.pendingPlanChange;
+    if (!pending || pending.kind === 'upgrade' || !pending.stripeSubscriptionId) return false;
+    const invoice = await this.gateway.getLatestSubscriptionInvoice(pending.stripeSubscriptionId, String(sub._id));
+    if (!invoice || invoice.status !== 'paid') return false;
+    if (pending.kind === 'trial_conversion' && (invoice.amount_paid ?? 0) <= 0) return false; // trial not over: nothing paid yet
+    await this.handleInvoicePaymentSucceeded(invoice);
+    const fresh: any = await this.subModel.findById(sub._id).lean();
+    const applied = !!fresh && !fresh.pendingPlanChange && String(fresh.platformPlanId) === String(pending.planId);
+    if (applied) this.logger.warn(`Plan purchase for store ${sub.storeId} was paid but not applied by the webhook — applied from Stripe invoice ${invoice.id}`);
+    return applied;
+  }
+
+  /**
+   * Safety net (scheduler, every 10 minutes): purchases still pending two minutes after they started are checked with
+   * Stripe, and the paid ones are applied. Covers a webhook that is late, misconfigured or failed, so a seller who paid
+   * is never left locked out.
+   */
+  async reconcilePendingPurchases(now = new Date()): Promise<{ checked: number; applied: number }> {
+    const rows: any[] = await this.subModel
+      .find({
+        isDelete: false,
+        'pendingPlanChange.kind': { $in: ['first_purchase', 'trial_conversion'] },
+        'pendingPlanChange.stripeSubscriptionId': { $ne: null },
+        'pendingPlanChange.createdAt': { $lt: new Date(now.getTime() - 2 * 60_000) },
+      })
+      .limit(200);
+    let applied = 0;
+    for (const sub of rows) {
+      try {
+        if (await this.applyPaidPendingPurchase(sub)) applied++;
+      } catch (err: any) {
+        this.logger.error(`Could not reconcile pending plan purchase for store ${sub.storeId}: ${err?.message}`);
+      }
+    }
+    return { checked: rows.length, applied };
+  }
+
   private async abandonPendingPurchase(sub: any): Promise<void> {
     const pending = sub.pendingPlanChange;
     if (pending?.stripeSubscriptionId && sub.providerSubscriptionId === pending.stripeSubscriptionId) {
@@ -1595,6 +1649,11 @@ export class SellerPlatformSubscriptionsService {
     const pending = sub.pendingPlanChange;
     if (!pending) return { success: true, data: { subscription: sub, pending: false, applied: true } };
     if (pending.kind !== 'upgrade' || !pending.paymentIntentId) {
+      // First purchase / trial conversion: normally applied by the invoice webhook, but checked with Stripe here too,
+      // so a paid purchase becomes active at once even when the webhook is late or never arrives.
+      if (await this.applyPaidPendingPurchase(sub)) {
+        return { success: true, data: { subscription: await this.subModel.findById(sub._id), pending: false, applied: true } };
+      }
       return { success: true, data: { subscription: sub, pending: true, applied: false } };
     }
 
@@ -2226,8 +2285,26 @@ export class SellerPlatformSubscriptionsService {
   // Stripe webhook handlers — same shape as SubscriptionsService's
   // ═══════════════════════════════════════════════════════════════════════
 
+  /** Per-invoice queue: the webhook and a direct Stripe check (confirmPendingPlanChange / reconcile) never record the same payment twice. */
+  private static readonly invoiceLocks = new Map<string, Promise<void>>();
+
   @OnEvent('stripe.invoice.payment_succeeded')
   async handleInvoicePaymentSucceeded(invoice: any): Promise<void> {
+    const key = String(invoice?.id ?? '');
+    if (!key) return this.applyPaidInvoice(invoice);
+    const locks = SellerPlatformSubscriptionsService.invoiceLocks;
+    const previous = locks.get(key) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(() => this.applyPaidInvoice(invoice));
+    const tail = run.catch(() => undefined);
+    locks.set(key, tail);
+    try {
+      await run;
+    } finally {
+      if (locks.get(key) === tail) locks.delete(key);
+    }
+  }
+
+  private async applyPaidInvoice(invoice: any): Promise<void> {
     const providerSubscriptionId: string | undefined = getInvoiceSubscriptionId(invoice);
     if (!providerSubscriptionId) return;
     const sub = await this.subModel.findOne({ providerSubscriptionId, isDelete: false });

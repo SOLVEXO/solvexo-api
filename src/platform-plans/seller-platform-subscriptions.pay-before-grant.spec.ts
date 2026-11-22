@@ -41,6 +41,7 @@ describe('SellerPlatformSubscriptionsService — pay before grant', () => {
     const subModel = {
       findOne: jest.fn().mockImplementation((f: any) => Promise.resolve(f?.providerSubscriptionId ? (f.providerSubscriptionId === sub.providerSubscriptionId ? sub : null) : sub)),
       find: jest.fn().mockResolvedValue([sub]), updateOne: jest.fn().mockResolvedValue({}),
+      findById: jest.fn(() => Object.assign(Promise.resolve(sub), { lean: jest.fn().mockResolvedValue(sub) })),
     };
     const planModel = {
       findById: jest.fn((id: string) => {
@@ -64,6 +65,8 @@ describe('SellerPlatformSubscriptionsService — pay before grant', () => {
       createProviderSubscription: jest.fn().mockResolvedValue({ providerSubscriptionId: PROVIDER_SUB, clientSecret: 'pi_secret', status: 'incomplete' }),
       cancelProviderSubscription: jest.fn().mockResolvedValue(undefined),
       chargeSubscription: jest.fn(), updateProviderSubscriptionPrice: jest.fn().mockResolvedValue(undefined),
+      // Stripe's record of an earlier attempt: null = nothing paid (the usual abandoned checkout).
+      getLatestSubscriptionInvoice: jest.fn().mockResolvedValue(null),
       ...gatewayOver,
     };
     const notifications: any = {
@@ -128,6 +131,37 @@ describe('SellerPlatformSubscriptionsService — pay before grant', () => {
       expect(gateway.chargeSubscription).not.toHaveBeenCalled();
       expect(sub.providerSubscriptionId).toBe(PROVIDER_SUB);
       expect(sub.pendingPlanChange.stripeSubscriptionId).toBe(PROVIDER_SUB);
+    });
+
+    it('a retry after an attempt that WAS paid (webhook not in yet) applies that payment and never charges again', async () => {
+      const sub = makeSub({ status: 'trial_ended', trialEndsAt: new Date(NOW.getTime() - DAY), providerSubscriptionId: 'sub_paid', stripeCustomerId: 'cus_1', paymentProvider: 'stripe',
+        pendingPlanChange: pendingOf('first_purchase', { stripeSubscriptionId: 'sub_paid' }) });
+      const { service, gateway, invoiceModel } = make(sub, {
+        getLatestSubscriptionInvoice: jest.fn().mockResolvedValue(paidInvoice({ subscription: 'sub_paid', status: 'paid' })),
+      });
+      jest.spyOn(service, 'verifyStoreOwnership').mockResolvedValue({});
+      const res: any = await service.changePlan('seller-1', 'store-1', { platformPlanId: GROW._id, billingInterval: 'monthly', billImmediately: true });
+
+      expect(gateway.cancelProviderSubscription).not.toHaveBeenCalled();
+      expect(gateway.createProviderSubscription).not.toHaveBeenCalled();
+      expect(gateway.chargeSubscription).not.toHaveBeenCalled();
+      expect(invoiceModel.create).toHaveBeenCalledTimes(1);
+      expect(sub.platformPlanId).toBe(GROW._id);
+      expect(sub.pendingPlanChange).toBeNull();
+      expect(res.data).toMatchObject({ pending: false, applied: true });
+    });
+
+    it('a retry for a DIFFERENT plan after a paid attempt stops and says the earlier plan is active', async () => {
+      const sub = makeSub({ status: 'trial_ended', trialEndsAt: new Date(NOW.getTime() - DAY), providerSubscriptionId: 'sub_paid', stripeCustomerId: 'cus_1', paymentProvider: 'stripe',
+        pendingPlanChange: pendingOf('first_purchase', { stripeSubscriptionId: 'sub_paid' }) });
+      const { service, gateway } = make(sub, {
+        getLatestSubscriptionInvoice: jest.fn().mockResolvedValue(paidInvoice({ subscription: 'sub_paid', status: 'paid' })),
+      });
+      jest.spyOn(service, 'verifyStoreOwnership').mockResolvedValue({});
+      await expect(service.changePlan('seller-1', 'store-1', { platformPlanId: PRO._id, billingInterval: 'monthly', billImmediately: true }))
+        .rejects.toThrow('Your earlier payment for "Grow" went through');
+      expect(gateway.createProviderSubscription).not.toHaveBeenCalled();
+      expect(sub.platformPlanId).toBe(GROW._id);
     });
 
     it('wrong seller / store still gets 403', async () => {
