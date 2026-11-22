@@ -2690,6 +2690,8 @@ export class StoreService {
           tags: { $ifNull: ['$meta.tags', []] },
           notes: { $ifNull: ['$meta.notes', ''] },
           isArchived: { $ifNull: ['$meta.isArchived', false] },
+          smsMarketingOptIn: { $ifNull: ['$meta.smsMarketingOptIn', false] },
+          whatsappMarketingOptIn: { $ifNull: ['$meta.whatsappMarketingOptIn', false] },
           // Shopify's four states: subscribed · pending (double opt-in not
           // confirmed yet) · unsubscribed (opted out) · not_subscribed (never
           // agreed). Campaigns only ever reach `subscribed`.
@@ -2948,10 +2950,35 @@ export class StoreService {
     const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
     if (!store) throw new UnauthorizedException('Store not found or unauthorized');
     const { userModel } = this.databaseService.repositories;
+    const { posCustomerModel, storeCustomerMetaModel, addressModel } = this.databaseService.repositories;
     return importCustomersCsv(
       {
         exists: async (email) => !!(await userModel.exists({ storeId, email: String(email), isDelete: { $ne: true } })),
-        create: (dto) => this.createStoreCustomer(sellerId, storeId, dto, ip, userAgent),
+        create: async (dto) => {
+          const res = await this.createStoreCustomer(sellerId, storeId, { name: dto.name, email: dto.email, phone: dto.phone, marketingConsent: dto.marketingConsent }, ip, userAgent);
+          const userId = res.data._id;
+          const now = new Date();
+          const set: Record<string, unknown> = {};
+          if (dto.tags) set.tags = dto.tags;
+          if (dto.notes) set.notes = dto.notes;
+          if (dto.smsConsent) Object.assign(set, { smsMarketingOptIn: true, smsMarketingConsentAt: now });
+          if (dto.whatsappConsent) Object.assign(set, { whatsappMarketingOptIn: true, whatsappMarketingConsentAt: now });
+          if (Object.keys(set).length) await storeCustomerMetaModel.updateOne({ storeId, userId }, { $set: set });
+          // The customer's first saved address becomes their default, as at checkout.
+          if (dto.address && !(await addressModel.exists({ userId, isDelete: false }))) {
+            await addressModel.create({ userId, label: 'Home', ...dto.address, addressLine2: dto.address.addressLine2 ?? undefined, country: dto.address.country ?? undefined, isDefault: true });
+          }
+          return res;
+        },
+        shopExists: async (phone) => !!(await posCustomerModel.exists({ storeId, phone, isDelete: false })),
+        createShop: async (dto) => {
+          const consent = dto.smsConsent || dto.whatsappConsent;
+          await posCustomerModel.create({
+            storeId, name: dto.name, phone: dto.phone, email: null, address: dto.address, notes: dto.notes,
+            smsMarketingConsent: dto.smsConsent, whatsappMarketingConsent: dto.whatsappConsent, marketingConsentAt: consent ? new Date() : null,
+            userId: null, createdBy: sellerId, source: 'import',
+          });
+        },
       },
       text,
       { consentConfirmed },
@@ -3000,6 +3027,7 @@ export class StoreService {
             _id: 1, name: 1, email: 1, phone: 1, createdAt: 1,
             orderCount: 1, totalSpent: 1, lastOrderAt: 1, segment: 1,
             tags: 1, notes: 1, isArchived: 1, marketingOptIn: 1, isErased: 1,
+            smsMarketingOptIn: 1, whatsappMarketingOptIn: 1,
             marketingStatus: 1, marketingSource: 1, marketingConsentAt: 1, marketingUnsubscribedAt: 1,
             isSubscriberOnly: 1,
           },
@@ -3500,6 +3528,8 @@ export class StoreService {
         tags: meta?.tags ?? [],
         notes: meta?.notes ?? '',
         marketingOptIn: meta?.marketingOptIn ?? false,
+        smsMarketingOptIn: (meta as any)?.smsMarketingOptIn ?? false,
+        whatsappMarketingOptIn: (meta as any)?.whatsappMarketingOptIn ?? false,
       },
       orders: orders.map((o: any) => ({
         orderNumber: o.orderNumber,
