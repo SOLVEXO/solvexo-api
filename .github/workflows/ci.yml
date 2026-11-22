@@ -6,6 +6,13 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # A hung test run fails after 45 minutes instead of holding the runner for GitHub's 6-hour default.
+    timeout-minutes: 45
+    env:
+      # The full suite needs more than Node's default ~2 GB heap: without this, jest dies with "heap out of memory"
+      # (exit 134) while loading the suites. Same settings as tests.yml, which runs these suites on feature/jamibranch.
+      NODE_OPTIONS: --max-old-space-size=4096
+      JWT_SECRET: ci-only-jwt-secret
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
