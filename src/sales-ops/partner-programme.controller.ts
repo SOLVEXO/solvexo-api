@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Patch, Post, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -11,6 +11,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { KYC_DOCUMENT_MAX_BYTES } from '../upload/upload-file-validation';
 import { type PartnerApplicationInput, PartnerOnboardingService, type PartnerProfileInput } from './partner-onboarding.service';
+import { type DealInput, PartnerDealsService } from './partner-deals.service';
 import type { ProgrammeSettings } from './partner-programme.util';
 import { salesActor } from './sales-ops.util';
 
@@ -38,7 +39,24 @@ export class PartnerApplyController {
 @RequirePermission('sales.manage')
 @Controller('api/admin/sales/partner-programme')
 export class PartnerProgrammeController {
-  constructor(private readonly svc: PartnerOnboardingService) {}
+  constructor(private readonly svc: PartnerOnboardingService, private readonly deals: PartnerDealsService) {}
+
+  // ── Deal registration (B7) ──
+  @Get('deals')
+  dealList(@Query('status') status?: string, @Query('partnerId') partnerId?: string) { return this.deals.list({ status, partnerId }); }
+
+  @Post('deals/:id/decision')
+  decide(@Req() req: any, @Param('id') id: string, @Body() dto: { decision?: 'accept' | 'reject'; reason?: string }) { return this.deals.decide(salesActor(req.user), id, dto ?? {}); }
+
+  @Post('deals/:id/extend')
+  extend(@Req() req: any, @Param('id') id: string, @Body() dto: { days?: number; progress?: string; note?: string }) { return this.deals.extend(salesActor(req.user), id, dto ?? {}); }
+
+  @Post('deals/:id/lost')
+  lost(@Param('id') id: string) { return this.deals.close(id, 'lost'); }
+
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @Post('deals/run')
+  runDeals() { return this.deals.run().then((data) => ({ success: true, data })); }
 
   @Get('settings')
   settings() { return this.svc.getSettings(); }
@@ -122,4 +140,25 @@ export class PartnerPortalOnboardingController {
 
   @Get('documents/:docId/url')
   docUrl(@Req() req: any, @Param('docId') docId: string) { return this.svc.myDocUrl(salesActor(req.user), docId); }
+}
+
+/** The partner's deal registrations (B7). */
+@ApiTags('Admin Partner Portal')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+@Roles('admin')
+@RequirePermission('partner.portal', 'sales.access', 'sales.manage')
+@Controller('api/admin/partner-portal/deals')
+export class PartnerPortalDealsController {
+  constructor(private readonly deals: PartnerDealsService) {}
+
+  @Get()
+  mine(@Req() req: any) { return this.deals.mine(salesActor(req.user)); }
+
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Post()
+  register(@Req() req: any, @Body() dto: DealInput) { return this.deals.register(salesActor(req.user), dto ?? {}); }
+
+  @Post(':id/extension')
+  extension(@Req() req: any, @Param('id') id: string, @Body() dto: { progress?: string; note?: string }) { return this.deals.requestExtension(salesActor(req.user), id, dto ?? {}); }
 }

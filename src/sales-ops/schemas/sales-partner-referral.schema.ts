@@ -7,6 +7,7 @@ export const REFERRAL_SOURCES = [
   'demo_form',
   'lead_owner',
   'manual',
+  'registration',
 ] as const;
 
 export type SalesPartnerReferralDocument = SalesPartnerReferral & Document;
@@ -16,7 +17,7 @@ export type SalesPartnerReferralDocument = SalesPartnerReferral & Document;
 export class SalesPartnerReferral {
   @Prop({ type: String, required: true, unique: true }) sellerId: string;
   @Prop({ type: String, required: true, index: true }) partnerId: string;
-  /** code = signed up with the partner's link; demo_form = booked a demo with it; lead_owner = the rep who owned
+  /** registration = matched an accepted, protected deal registration (B7); code = signed up with the partner's link; demo_form = booked a demo with it; lead_owner = the rep who owned
    *  their lead; manual = a manager set it. */
   @Prop({ type: String, enum: REFERRAL_SOURCES, required: true })
   source: string;

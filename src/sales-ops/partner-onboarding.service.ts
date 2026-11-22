@@ -14,6 +14,7 @@ import { SalesCaptureService } from './sales-capture.service';
 import { SalesPartner, SalesPartnerDocument } from './schemas/sales-partner.schema';
 import { SalesPartnerReferral, SalesPartnerReferralDocument } from './schemas/sales-partner-referral.schema';
 import { PartnerProgrammeSettings, PartnerProgrammeSettingsDocument } from './schemas/partner-programme-settings.schema';
+import { PartnerDeal, PartnerDealDocument } from './schemas/partner-deal.schema';
 import {
   CHECKLIST, type ChecklistKey, DEFAULT_PROGRAMME_SETTINGS, ENTITY_TYPES, type EntityType, PARTNER_DOC_LABELS, PARTNER_DOC_TYPES,
   PARTNER_MODELS, PARTNER_TIERS, type PartnerDocType, type PartnerStage, type ProgrammeSettings, RESELLER_MODES,
@@ -81,6 +82,7 @@ export class PartnerOnboardingService {
     @InjectModel(SalesPartner.name) private readonly partners: Model<SalesPartnerDocument>,
     @InjectModel(SalesPartnerReferral.name) private readonly referrals: Model<SalesPartnerReferralDocument>,
     @InjectModel(PartnerProgrammeSettings.name) private readonly settingsModel: Model<PartnerProgrammeSettingsDocument>,
+    @InjectModel(PartnerDeal.name) private readonly deals: Model<PartnerDealDocument>,
   ) {}
 
   // ── Settings ─────────────────────────────────────────────────────────────
@@ -429,6 +431,9 @@ export class PartnerOnboardingService {
   private async facts(p: any) {
     const id = String(p._id);
     const refs: any[] = await this.referrals.find({ partnerId: id }).select('sellerId createdAt').sort({ createdAt: 1 }).lean();
+    // Prospects: deal registrations (B7) plus sellers who signed up through the partner.
+    const firstDeal: any = await this.deals.findOne({ partnerId: id }).sort({ submittedAt: 1 }).select('submittedAt').lean();
+    const dealCount = await this.deals.countDocuments({ partnerId: id });
     const r = this.db.repositories;
     let liveSellers = 0;
     if (refs.length) {
@@ -447,7 +452,8 @@ export class PartnerOnboardingService {
       const a: any = await r.adminModel.findById(p.adminId).select('inviteAcceptedAt isVerified createdAt').lean();
       loginActivatedAt = a?.inviteAcceptedAt ?? (a?.isVerified ? a.createdAt : null) ?? null;
     }
-    return { refs, liveSellers, loginActivatedAt };
+    const firstProspectAt = [firstDeal?.submittedAt, refs[0]?.createdAt].filter(Boolean).map((d) => new Date(d)).sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
+    return { refs, liveSellers, loginActivatedAt, prospects: refs.length + dealCount, firstProspectAt };
   }
 
   private async onboardingView(p: any, s: ProgrammeSettings, forManager: boolean) {
@@ -461,7 +467,7 @@ export class PartnerOnboardingService {
       entityType, stage: (p.stage ?? 'live') as PartnerStage, appliedAt: p.appliedAt ?? null, approvedAt: p.approvedAt ?? null,
       docsAllVerified: docs.allVerified, agreementSignedAt: signedAt, loginActivatedAt: f.loginActivatedAt,
       demoStores: (p.demoStoreIds ?? []).length, certifiedStaff: (p.staff ?? []).filter((x: any) => x.certifiedAt).length,
-      prospects: f.refs.length, firstProspectAt: f.refs[0]?.createdAt ?? null, liveSellers: f.liveSellers, firstLiveAt: null, manual,
+      prospects: f.prospects, firstProspectAt: f.firstProspectAt, liveSellers: f.liveSellers, firstLiveAt: null, manual,
     });
     const onboardingDone = checklist.filter((c) => c.week > 0).every((c) => c.done);
     const stage: PartnerStage = !p.stage ? 'live' : nextStage(p.stage as PartnerStage, {
@@ -500,7 +506,7 @@ export class PartnerOnboardingService {
       staff: (p.staff ?? []).map((x: any) => ({ name: x.name, phone: x.phone ?? null, email: x.email ?? null, certifiedAt: x.certifiedAt ?? null })),
       demoStores: demoStores.map((x) => ({ _id: String(x._id), name: x.name, slug: x.slug })),
       checklist,
-      facts: { prospects: f.refs.length, liveSellers: f.liveSellers },
+      facts: { prospects: f.prospects, liveSellers: f.liveSellers },
       attention: forManager ? attention : [],
     };
   }
