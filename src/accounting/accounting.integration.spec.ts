@@ -8,7 +8,8 @@ import { AccountingService } from './accounting.service';
 import { AccountingSyncService } from './accounting-sync.service';
 import { AccountingBooksService } from './accounting-books.service';
 import { AccountingSettlementsService } from './accounting-settlements.service';
-import { GatewaySettlement, GatewaySettlementSchema } from './accounting.schema';
+import { AccountingConnection, AccountingConnectionSchema, AccountingExportLog, AccountingExportLogSchema, GatewaySettlement, GatewaySettlementSchema } from './accounting.schema';
+import { AccountingIntegrationsService } from './accounting-integrations.service';
 import { DEFAULT_ACCOUNTS } from './chart.const';
 
 jest.setTimeout(120_000);
@@ -19,6 +20,8 @@ let sync: AccountingSyncService;
 let journal: any;
 let books: AccountingBooksService;
 let settlements: AccountingSettlementsService;
+let integrations: AccountingIntegrationsService;
+let accountsModel: any;
 const STORE = 'store-acc-1';
 const actor = { id: 'owner', role: 'seller' };
 const GO_LIVE = '2026-11-01';
@@ -47,6 +50,12 @@ beforeAll(async () => {
   sync = new AccountingSyncService({ repositories: repos } as any, redis, svc, settings as any, journal, m(KhataEntry, KhataEntrySchema) as any, m(KhataAccount, KhataAccountSchema) as any);
   await svc.setup(STORE, { baseCurrency: 'PKR' }, { goLiveDate: GO_LIVE }, actor);
   const cashStub: any = { expenseGet: async (_r: any, _s: string, id: string) => ({ success: true, data: { expense: { id } } }) };
+  process.env.INTEGRATIONS_CREDENTIALS_ENCRYPTION_KEY = process.env.INTEGRATIONS_CREDENTIALS_ENCRYPTION_KEY || 'integration-test-key';
+  accountsModel = accounts;
+  const conns = m(AccountingConnection, AccountingConnectionSchema), xlog = m(AccountingExportLog, AccountingExportLogSchema);
+  await conns.init(); await xlog.init();
+  integrations = new AccountingIntegrationsService({ repositories: repos } as any, redis, svc, conns as any, xlog as any, journal, accounts as any);
+  integrations.checkHost = async () => undefined;
   settlements = new AccountingSettlementsService({ repositories: repos } as any, svc, m(GatewaySettlement, GatewaySettlementSchema) as any);
   h.repos.paymentTransactionModel = repos.paymentTransactionModel;
   books = new AccountingBooksService({ repositories: repos } as any, cashStub, {} as any, {} as any, settings as any, accounts as any);
@@ -180,6 +189,45 @@ describe('Accounting: setup, sync and books (real MongoDB)', () => {
     expect(bal('gateway_clearing')).toBe(118000 - 128000); // the unmatched T99 line is the visible difference
     expect(bal('processing_fees')).toBe(3150);
     expect(tb.totals.balanced).toBe(true);
+  });
+
+  it('Odoo sync sends every entry once, records failures and retries them; Tally export carries every account used', async () => {
+    let failCreate = true; let created = 0;
+    const seenRefs = new Set<string>();
+    integrations.fetchFn = (async (_u: string, init: any) => {
+      const p = JSON.parse(init.body).params;
+      const ok = (result: any) => ({ ok: true, status: 200, json: async () => ({ result }), text: async () => JSON.stringify({ result }) });
+      if (p.service === 'common') return ok(5);
+      const [, , , model, method, args] = p.args;
+      if (model === 'account.journal') return ok([{ id: 1, name: 'Misc' }]);
+      if (model === 'account.account') return ok(args[0][0][2].map((code: string, i: number) => ({ id: i + 10, code })));
+      if (model === 'account.move' && method === 'search_read') return ok(seenRefs.has(args[0][0][2]) ? [{ id: 1 }] : []);
+      if (model === 'account.move' && method === 'create') {
+        if (failCreate && created === 0) { created++; return { ok: false, status: 500, json: async () => ({}), text: async () => 'boom' }; }
+        created++; seenRefs.add(args[0].ref); return ok(created);
+      }
+      return ok(true);
+    }) as any;
+    // Give every account its Odoo code (the seller would do this in the chart of accounts).
+    const all = await accountsModel.find({ storeId: STORE }).lean();
+    for (const a of all) await accountsModel.updateOne({ _id: a._id }, { $set: { externalCode: a.code } });
+    const conn: any = await integrations.saveConnection(STORE, 'odoo', { baseUrl: 'https://acme.odoo.com', database: 'acme', login: 'a@acme.com', secret: 'KEY', from: 'go_live' }, actor);
+    expect(conn.lastCheck.ok).toBe(true);
+    expect(conn.secretEnc).toBeUndefined();
+    const total = await journal.countDocuments({ storeId: STORE });
+    const r1 = await integrations.sync(STORE, 'odoo');
+    expect(r1).toEqual({ sent: total - 1, failed: 1 });
+    const r2 = await integrations.sync(STORE, 'odoo'); // the failed one is retried
+    expect(r2).toEqual({ sent: 1, failed: 0 });
+    expect((await integrations.sync(STORE, 'odoo')).sent).toBe(0);
+    const log: any = await integrations.log(STORE, 'odoo', {});
+    expect(log.total).toBe(total);
+    expect(log.items.every((i: any) => i.status === 'sent')).toBe(true);
+
+    const t = await integrations.tallyExport(STORE, { from: '2026-11-01', to: '2026-11-30' });
+    expect(t.fileName).toBe('solvexo-tally-2026-11-01-to-2026-11-30.xml');
+    expect(t.xml).toContain('<VOUCHER REMOTEID="solvexo-day:2026-11-');
+    expect(t.xml).toContain('<PARENT>Cash-in-Hand</PARENT>');
   });
 
   it('the go-live date is locked once entries exist', async () => {

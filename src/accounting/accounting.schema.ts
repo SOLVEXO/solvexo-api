@@ -125,3 +125,58 @@ export class GatewaySettlement {
 export type GatewaySettlementDocument = HydratedDocument<GatewaySettlement>;
 export const GatewaySettlementSchema = SchemaFactory.createForClass(GatewaySettlement);
 GatewaySettlementSchema.index({ storeId: 1, createdAt: -1 });
+
+export const INTEGRATION_APPS = ['odoo', 'erpnext'] as const;
+
+/**
+ * A store's connection to its accounting app (Phase 4). The API key / secret is stored encrypted (INTEGRATIONS key) and never returned.
+ * `mode` detail = one entry per Solvexo journal entry (default for Odoo / ERPNext); summary = one entry per day.
+ */
+@Schema({ timestamps: true, collection: 'accounting_connections' })
+export class AccountingConnection {
+  @Prop({ required: true }) storeId: string;
+  @Prop({ required: true, enum: INTEGRATION_APPS }) app: string;
+  @Prop({ required: true, maxlength: 300 }) baseUrl: string;
+  /** Odoo: the database name. */
+  @Prop({ type: String, default: null, maxlength: 120 }) database: string | null;
+  /** Odoo: the user's login (e-mail). */
+  @Prop({ type: String, default: null, maxlength: 200 }) login: string | null;
+  /** ERPNext: the company the entries belong to. */
+  @Prop({ type: String, default: null, maxlength: 200 }) company: string | null;
+  /** Odoo: the code of the journal the entries go to (Miscellaneous Operations by default). */
+  @Prop({ type: String, default: 'MISC', maxlength: 20 }) journalCode: string;
+  @Prop({ required: true }) secretEnc: string;
+  @Prop({ default: '' }) secretHint: string;
+  @Prop({ default: 'detail', enum: ['detail', 'summary'] }) mode: string;
+  @Prop({ default: true }) enabled: boolean;
+  /** detail: the last journal entry number sent; summary: the last day sent (YYYY-MM-DD). */
+  @Prop({ default: 0 }) cursorSeq: number;
+  @Prop({ type: String, default: null }) cursorDay: string | null;
+  @Prop({ type: Date, default: null }) lastSyncAt: Date | null;
+  @Prop({ type: Object, default: null }) lastCheck: { at: Date; ok: boolean; message: string } | null;
+  @Prop({ default: '' }) createdBy: string;
+}
+export type AccountingConnectionDocument = HydratedDocument<AccountingConnection>;
+export const AccountingConnectionSchema = SchemaFactory.createForClass(AccountingConnection);
+AccountingConnectionSchema.index({ storeId: 1, app: 1 }, { unique: true });
+AccountingConnectionSchema.index({ enabled: 1 });
+
+/** What was sent to an accounting app, one row per entry (or day): sent, failed (with the reason, retried up to 5 times) or skipped. */
+@Schema({ timestamps: true, collection: 'accounting_export_log' })
+export class AccountingExportLog {
+  @Prop({ required: true }) storeId: string;
+  @Prop({ required: true }) app: string;
+  /** `entry:<seq>` or `day:<YYYY-MM-DD>`. */
+  @Prop({ required: true }) itemKey: string;
+  @Prop({ required: true, enum: ['sent', 'failed', 'skipped'] }) status: string;
+  @Prop({ default: 0 }) attempts: number;
+  @Prop({ type: String, default: null }) externalId: string | null;
+  @Prop({ type: String, default: null, maxlength: 500 }) error: string | null;
+  @Prop({ type: String, default: '', maxlength: 200 }) label: string;
+  @Prop({ default: 0 }) amountMinor: number;
+  @Prop({ type: Date, default: null }) lastTriedAt: Date | null;
+}
+export type AccountingExportLogDocument = HydratedDocument<AccountingExportLog>;
+export const AccountingExportLogSchema = SchemaFactory.createForClass(AccountingExportLog);
+AccountingExportLogSchema.index({ storeId: 1, app: 1, itemKey: 1 }, { unique: true });
+AccountingExportLogSchema.index({ storeId: 1, app: 1, status: 1, updatedAt: -1 });
