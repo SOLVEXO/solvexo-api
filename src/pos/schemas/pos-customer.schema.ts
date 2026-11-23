@@ -24,6 +24,10 @@ export class PosCustomer {
   @Prop({ type: String, default: null, maxlength: 60 }) group: string | null;
   @Prop({ type: String, default: null, maxlength: 500 }) notes: string | null;
   @Prop({ type: Boolean, default: false }) marketingConsent: boolean;
+  /** SMS / WhatsApp marketing consent recorded by a customer import (nothing sends these yet) */
+  @Prop({ type: Boolean, default: false }) smsMarketingConsent: boolean;
+  @Prop({ type: Boolean, default: false }) whatsappMarketingConsent: boolean;
+  @Prop({ type: Date, default: null }) marketingConsentAt: Date | null;
   /** a linked storefront buyer account: credit + loyalty are keyed by it, so they are shared with the web */
   @Prop({ type: String, default: null }) userId: string | null;
   @Prop({ type: String, default: null }) createdBy: string | null;

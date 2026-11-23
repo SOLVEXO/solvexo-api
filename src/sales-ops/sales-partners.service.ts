@@ -46,6 +46,9 @@ import {
 } from './commission.util';
 import { currentMonth, isMonth, monthRange } from './sales-reports.util';
 import type { SalesActor } from './sales-ops.util';
+import { PartnerOnboardingService } from './partner-onboarding.service';
+import { EmailService } from '../otp/services/email.service';
+import { SalesCaptureService } from './sales-capture.service';
 
 const SITE = process.env.PUBLIC_SITE_URL || 'https://solvexo.store';
 const isId = (s: unknown): s is string =>
@@ -71,6 +74,7 @@ export interface PartnerInput {
   payoutMethod?: string;
   payoutDetails?: string | null;
   status?: 'active' | 'paused';
+  whtPercent?: number | null;
   notes?: string | null;
 }
 export interface PlanInput {
@@ -109,6 +113,9 @@ export class SalesPartnersService {
     private readonly ledger: Model<SalesCommissionDocument>,
     @InjectModel(SalesPayout.name)
     private readonly payouts: Model<SalesPayoutDocument>,
+    private readonly programme: PartnerOnboardingService,
+    private readonly email: EmailService,
+    private readonly capture: SalesCaptureService,
   ) {}
 
   // ── Plans ────────────────────────────────────────────────────────────────
@@ -264,6 +271,11 @@ export class SalesPartnersService {
     if (input.payoutDetails !== undefined)
       set.payoutDetails = clean(input.payoutDetails, 500);
     if (input.notes !== undefined) set.notes = clean(input.notes, 2000);
+    if (input.whtPercent !== undefined) {
+      const w = input.whtPercent === null || (input.whtPercent as unknown) === '' ? null : Number(input.whtPercent);
+      if (w !== null && (!Number.isFinite(w) || w < 0 || w > 50)) throw new BadRequestException('Withholding tax must be between 0 and 50%.');
+      set.whtPercent = w;
+    }
     if (input.status !== undefined)
       set.status = input.status === 'paused' ? 'paused' : 'active';
     if (input.planId !== undefined) {
@@ -441,10 +453,15 @@ export class SalesPartnersService {
     const plan: any = p.planId
       ? await this.plans.findById(p.planId).lean()
       : null;
-    if (plan?.minPayoutPKR && amount < plan.minPayoutPKR)
+    const settings = await this.programme.settings();
+    const minPayout = plan?.minPayoutPKR || settings.minPayoutPKR || 0;
+    if (minPayout && amount < minPayout)
       throw new BadRequestException(
-        `The payable balance (PKR ${amount.toLocaleString('en-PK')}) is below this plan’s minimum payout of PKR ${plan.minPayoutPKR.toLocaleString('en-PK')}.`,
+        `The payable balance (PKR ${amount.toLocaleString('en-PK')}) is below the minimum payout of PKR ${minPayout.toLocaleString('en-PK')}.`,
       );
+    // B4.7: withholding tax where the law requires it (the partner's own rate, else the programme default).
+    const whtPercent = p.whtPercent ?? settings.withholdingTaxPercent ?? 0;
+    const whtPKR = Math.round((amount * whtPercent) / 100);
     const paidAt = input.paidAt ? new Date(input.paidAt) : new Date();
     if (Number.isNaN(paidAt.getTime()))
       throw new BadRequestException('Invalid date.');
@@ -456,6 +473,9 @@ export class SalesPartnersService {
     const payout: any = await this.payouts.create({
       partnerId,
       amountPKR: amount,
+      whtPercent,
+      whtPKR,
+      netPKR: amount - whtPKR,
       method,
       reference: clean(input.reference, 120),
       paidAt,
@@ -676,10 +696,16 @@ export class SalesPartnersService {
         paidAt: { $ne: null },
       })
       .select(
-        'storeId sellerId invoiceNumber amountUSD subtotalUSD taxAmountUSD refundedAmountUSD status paidAt',
+        'storeId sellerId invoiceNumber amountUSD subtotalUSD taxAmountUSD refundedAmountUSD status paidAt paymentMethodType',
       )
       .lean();
     const paying = await this.payingSellers(refs.map((x) => x.sellerId));
+    const settings = await this.programme.settings();
+    const cardFee =
+      settings.cardFeePercent !== null || settings.cardFeeFixedUSD !== null
+        ? { percent: settings.cardFeePercent ?? 0, fixedUSD: settings.cardFeeFixedUSD ?? 0, from: new Date(settings.cardFeeFrom ?? 0) }
+        : null;
+    const now = new Date();
     let created = 0;
     for (const p of ps) {
       const plan: any = plans.get(p.planId);
@@ -690,6 +716,7 @@ export class SalesPartnersService {
         percentMonths: plan.percentMonths ?? null,
         tiers: plan.tiers ?? [],
         holdDays: plan.holdDays ?? 14,
+        cardFee,
       };
       const pid = String(p._id);
       const mine = refs.filter((x) => x.partnerId === pid);
@@ -697,7 +724,7 @@ export class SalesPartnersService {
       const existing: any[] = await this.ledger
         .find({
           partnerId: pid,
-          type: { $in: ['bounty', 'percent', 'adjustment'] },
+          type: { $in: ['bounty', 'percent', 'adjustment', 'activation'] },
           sellerId: { $in: mine.map((x) => x.sellerId) },
         })
         .select('key type invoiceId amountPKR pkrPerUSD percent')
@@ -728,8 +755,9 @@ export class SalesPartnersService {
             const e = existing.find((x) => x.key === `pct:${invoiceId}`);
             return e ? { pkrPerUSD: e.pkrPerUSD, percent: e.percent } : null;
           },
+          commissionEndsAt: ref.commissionEndsAt ? new Date(ref.commissionEndsAt) : null,
+          activation: settings.activationBonusPKR ? { amountPKR: settings.activationBonusPKR, sellerPayingNow: paying.has(ref.sellerId), now } : null,
         });
-        const now = new Date();
         for (const row of rows) {
           // A clawback is due straight away; earnings wait out the refund window.
           const due =
@@ -751,6 +779,103 @@ export class SalesPartnersService {
       }
     }
     return { created };
+  }
+
+  /**
+   * B4.4: the partner stopped supporting this seller. Written notice is recorded; commission on the seller's payments
+   * ends `supportNoticeDays` later. `cancel` withdraws the notice.
+   */
+  async supportNotice(actor: SalesActor, partnerId: string, sellerId: string, input: { reason?: string; cancel?: boolean }) {
+    const p: any = await this.findPartner(partnerId);
+    const ref: any = await this.referrals.findOne({ partnerId, sellerId }).lean();
+    if (!ref) throw new NotFoundException('This merchant is not credited to this partner.');
+    if (input.cancel) {
+      await this.referrals.updateOne({ _id: ref._id }, { $set: { supportNoticeAt: null, supportNoticeReason: null, commissionEndsAt: null } });
+      return this.getPartner(partnerId);
+    }
+    const reason = clean(input.reason, 500);
+    if (!reason) throw new BadRequestException('Give the reason: it is sent to the partner in writing.');
+    const s = await this.programme.settings();
+    const at = new Date();
+    const ends = new Date(at.getTime() + s.supportNoticeDays * 86_400_000);
+    await this.referrals.updateOne({ _id: ref._id }, { $set: { supportNoticeAt: at, supportNoticeReason: reason, commissionEndsAt: ends } });
+    const names = await this.merchantNames([sellerId]);
+    if (p.email) {
+      void this.email.sendMail(p.email, 'Notice: commission on a seller is ending', `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1c1d1b"><p>Hi ${escapeHtml(p.name)},</p>
+        <p>This is written notice under the partner programme (B4.4) that commission on <strong>${escapeHtml(names.get(sellerId) ?? 'a seller')}</strong> ends on <strong>${ends.toISOString().slice(0, 10)}</strong>, because: ${escapeHtml(reason)}</p>
+        <p>Commission already earned is not affected. Reply to this email if you think this is a mistake.</p></div>`).catch(() => false);
+    }
+    this.logger.log(`Support notice for seller ${sellerId} of partner ${partnerId} by ${actor.adminId}`);
+    return this.getPartner(partnerId);
+  }
+
+  /**
+   * B4.5: on the statement day each partner with activity gets last month's statement by email and managers get the
+   * payouts due by the payout day; the day after the payout day, unpaid balances are flagged. Each runs once a month.
+   */
+  @Cron('50 5 * * *')
+  async monthlyStatements() {
+    await this.redis.withLock('partner-statements', 600_000, async () => { await this.runStatements(new Date()); });
+  }
+
+  async runStatements(now: Date) {
+    const s = await this.programme.settings();
+    const pk = new Date(now.getTime() + 5 * 3_600_000); // Pakistan time
+    const day = pk.getUTCDate();
+    const thisMonth = pk.toISOString().slice(0, 7);
+    const prev = new Date(Date.UTC(pk.getUTCFullYear(), pk.getUTCMonth() - 1, 1)).toISOString().slice(0, 7);
+    const ps: any[] = await this.partners.find({ status: 'active' }).lean();
+    let sent = 0;
+    let flagged = 0;
+    if (day >= s.statementDay) {
+      await this.mature();
+      const due: string[] = [];
+      for (const p of ps) {
+        if (p.statementSentFor === prev) continue;
+        const st = await this.buildStatement(String(p._id), prev);
+        const payable = await this.payableBalance(String(p._id));
+        const active = st.earnedPKR !== 0 || st.paidPKR !== 0 || st.openingPKR !== 0;
+        if (active && p.email) {
+          void this.email.sendMail(p.email, `Your Solvexo partner statement for ${prev}`, this.statementEmail(p, prev, st, payable, s)).catch(() => false);
+          sent++;
+        }
+        if (payable > 0) due.push(`${p.name}: PKR ${payable.toLocaleString('en-PK')}`);
+        await this.partners.updateOne({ _id: p._id }, { $set: { statementSentFor: prev } });
+      }
+      if (due.length) void this.capture.notifyManagers(`Partner payouts due by the ${s.payoutDay}th`, due.slice(0, 8).join(' · ') + (due.length > 8 ? ` · and ${due.length - 8} more` : ''), null);
+    }
+    if (day > s.payoutDay) {
+      const late: string[] = [];
+      for (const p of ps) {
+        if (p.payoutOverdueFlaggedFor === thisMonth) continue;
+        const payable = await this.payableBalance(String(p._id));
+        const paidThisMonth = await this.payouts.exists({ partnerId: String(p._id), paidAt: { $gte: new Date(`${thisMonth}-01T00:00:00+05:00`) } });
+        if (payable > 0 && !paidThisMonth) { late.push(`${p.name}: PKR ${payable.toLocaleString('en-PK')}`); flagged++; }
+        await this.partners.updateOne({ _id: p._id }, { $set: { payoutOverdueFlaggedFor: thisMonth } });
+      }
+      if (late.length) void this.capture.notifyManagers('Partner payouts overdue', `Past the ${s.payoutDay}th and not paid: ${late.slice(0, 8).join(' · ')}${late.length > 8 ? ` · and ${late.length - 8} more` : ''}`, null);
+    }
+    return { sent, flagged };
+  }
+
+  private async payableBalance(partnerId: string) {
+    const rows: any[] = await this.ledger.find({ partnerId, status: 'payable' }).select('amountPKR').lean();
+    return rows.reduce((t, r) => t + r.amountPKR, 0);
+  }
+
+  private statementEmail(p: any, month: string, st: { openingPKR: number; earnedPKR: number; paidPKR: number; closingPKR: number }, payable: number, s: { payoutDay: number; withholdingTaxPercent: number | null }) {
+    const pkr = (n: number) => `PKR ${n.toLocaleString('en-PK')}`;
+    const wht = p.whtPercent ?? s.withholdingTaxPercent;
+    return `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1c1d1b"><h2 style="color:#D97757">Statement for ${month}</h2>
+      <p>Hi ${escapeHtml(p.name)}, here is your commission statement.</p>
+      <table style="border-collapse:collapse;font-size:14px">
+        <tr><td style="padding:4px 12px 4px 0">Owed at the start of the month</td><td align="right">${pkr(st.openingPKR)}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0">Earned in the month</td><td align="right">${pkr(st.earnedPKR)}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0">Paid in the month</td><td align="right">${pkr(st.paidPKR)}</td></tr>
+        <tr><td style="padding:4px 12px 4px 0"><strong>Owed at the end of the month</strong></td><td align="right"><strong>${pkr(st.closingPKR)}</strong></td></tr>
+      </table>
+      <p>${payable > 0 ? `${pkr(payable)} is payable now and will be paid by the ${s.payoutDay}th${wht ? `, less ${wht}% withholding tax` : ''}.` : 'Nothing is payable yet: amounts are held for the refund window first.'}</p>
+      <p>The full statement is on your partner page under My earnings.</p></div>`;
   }
 
   /** Held amounts whose refund window has passed become payable. */
@@ -873,6 +998,8 @@ export class SalesPartnersService {
         effectiveFrom: x.effectiveFrom,
         payingNow: paying.has(x.sellerId),
         earnedPKR: earnedBy.get(x.sellerId) ?? 0,
+        supportNoticeAt: x.supportNoticeAt ?? null,
+        commissionEndsAt: x.commissionEndsAt ?? null,
       })),
       lines: lines.map((x) => ({
         _id: String(x._id),
@@ -890,6 +1017,8 @@ export class SalesPartnersService {
         paidAt: x.paidAt,
         method: x.method,
         reference: x.reference,
+        whtPKR: x.whtPKR ?? 0,
+        netPKR: x.netPKR ?? x.amountPKR,
         note: forManager ? x.note : undefined,
       })),
     };
@@ -927,7 +1056,8 @@ export class SalesPartnersService {
   }
 
   /** Merchants paying Solvexo right now (any store with live MRR). */
-  private async payingSellers(sellerIds: string[]): Promise<Set<string>> {
+  /** Also used by the partner scorecard. */
+  async payingSellers(sellerIds: string[]): Promise<Set<string>> {
     const ids = [...new Set(sellerIds)];
     if (!ids.length) return new Set();
     const r = this.db.repositories;
@@ -979,6 +1109,12 @@ export class SalesPartnersService {
       payoutMethod: p.payoutMethod,
       payoutDetails: p.payoutDetails ?? null,
       status: p.status,
+      whtPercent: p.whtPercent ?? null,
+      suspendedAt: p.suspendedAt ?? null,
+      suspendReason: p.suspendReason ?? null,
+      /** Channel Partner Programme stage; null = set up before the programme (treated as live). */
+      stage: p.stage ?? null,
+      tier: p.tier ?? null,
       createdAt: p.createdAt,
     };
     return forManager ? { ...base, notes: p.notes ?? null } : base;
@@ -1012,4 +1148,8 @@ export class SalesPartnersService {
     if (!p) throw new NotFoundException('Plan not found.');
     return p;
   }
+}
+
+function escapeHtml(s: string) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }

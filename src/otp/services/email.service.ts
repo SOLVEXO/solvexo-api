@@ -3,21 +3,62 @@ import { Injectable } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import { EventEmitter } from 'events';
 import { htmlToPlainText } from '../../common/html-to-text.util';
-import { isDevMailSinkEnabled, writeDevMail } from '../../common/dev-mail-sink.util';
+import {
+  isDevMailSinkEnabled,
+  writeDevMail,
+} from '../../common/dev-mail-sink.util';
 
 /** Every real send attempt, from every EmailService instance in the app — EmailHealthService records it for the admin Email health card and the "emails are failing" alert. */
 export const emailEvents = new EventEmitter();
-export interface EmailResultEvent { ok: boolean; error?: string }
+/** Which sender a mail went through: the platform's transactional SMTP, or the dedicated marketing service. */
+export type EmailChannel = 'transactional' | 'marketing';
+export interface EmailResultEvent {
+  ok: boolean;
+  error?: string;
+  channel?: EmailChannel;
+}
+
+/** Bulk mail = mail carrying List-Unsubscribe (campaigns, newsletters, automations, abandoned carts all set it). */
+export function isBulkMail(headers?: Record<string, string> | null): boolean {
+  return (
+    !!headers &&
+    Object.keys(headers).some((k) => k.toLowerCase() === 'list-unsubscribe')
+  );
+}
+
+/**
+ * The dedicated marketing sender (Brevo, Amazon SES, Mailgun, SendGrid… any SMTP relay), set with MARKETING_SMTP_HOST,
+ * MARKETING_SMTP_PORT, MARKETING_SMTP_USER, MARKETING_SMTP_PASSWORD and MARKETING_SMTP_FROM. Null until host, user and
+ * password are all set; bulk mail then keeps going through the platform sender as before.
+ */
+export function marketingSmtpConfig(env: NodeJS.ProcessEnv = process.env) {
+  const host = env.MARKETING_SMTP_HOST?.trim(),
+    user = env.MARKETING_SMTP_USER?.trim(),
+    pass = env.MARKETING_SMTP_PASSWORD;
+  if (!host || !user || !pass) return null;
+  const port = parseInt(String(env.MARKETING_SMTP_PORT ?? ''), 10) || 587;
+  return {
+    host,
+    port,
+    user,
+    pass,
+    from: env.MARKETING_SMTP_FROM?.trim() || env.SMTP_FROM || user,
+  };
+}
 
 /** Registered by StoreMailService: a store's own SMTP for its customer mails (see notifications/store-mail.service.ts). */
 export interface StoreMailHook {
-  resolve(storeId: string): Promise<{ transporter: nodemailer.Transporter; from: string } | null>;
+  resolve(
+    storeId: string,
+  ): Promise<{ transporter: nodemailer.Transporter; from: string } | null>;
   report(storeId: string, ok: boolean, error?: string): Promise<void>;
 }
 
 @Injectable()
 export class EmailService {
   private transporter: nodemailer.Transporter;
+  /** The dedicated marketing sender, or null when it is not configured (see marketingSmtpConfig). */
+  private marketingTransporter: nodemailer.Transporter | null = null;
   /** Set once at boot by StoreMailService; static so every EmailService instance (one per module) uses it. */
   static storeMail: StoreMailHook | null = null;
 
@@ -38,6 +79,19 @@ export class EmailService {
       greetingTimeout: 8000,
       socketTimeout: 12000,
     });
+    const m = marketingSmtpConfig();
+    if (m) {
+      this.marketingTransporter = nodemailer.createTransport({
+        host: m.host,
+        port: m.port,
+        secure: m.port === 465,
+        requireTLS: m.port !== 465,
+        auth: { user: m.user, pass: m.pass },
+        connectionTimeout: 8000,
+        greetingTimeout: 8000,
+        socketTimeout: 12000,
+      });
+    }
   }
 
   async sendOtpEmail(
@@ -66,7 +120,11 @@ export class EmailService {
     html: string,
     replyTo?: string | null,
     headers?: Record<string, string>,
-    attachments?: { filename: string; content: Buffer | string; contentType?: string }[],
+    attachments?: {
+      filename: string;
+      content: Buffer | string;
+      contentType?: string;
+    }[],
     fromName?: string | null,
     /** A store's customer mail: sent through that store's own SMTP when it has one (platform sender is the fallback).
      *  Bulk mail (campaigns, newsletters, automations, abandoned carts) deliberately does NOT pass this: it always goes through the platform sender, so a store's mailbox is never used for bulk sends. */
@@ -87,15 +145,37 @@ export class EmailService {
       return true;
     }
     if (storeId && EmailService.storeMail) {
-      const viaStore = await this.sendThroughStore(storeId, to, subject, html, replyTo, headers, attachments, fromName);
+      const viaStore = await this.sendThroughStore(
+        storeId,
+        to,
+        subject,
+        html,
+        replyTo,
+        headers,
+        attachments,
+        fromName,
+      );
       if (viaStore) return true;
     }
+    // Bulk mail goes through the dedicated marketing sender when one is configured, so a big campaign can never use up
+    // the platform mailbox's sending limit or reputation that sign-up codes and order emails depend on. It does NOT fall
+    // back to the platform sender on failure: the queue retries it, and transactional mail stays untouched.
+    const marketing =
+      isBulkMail(headers) && this.marketingTransporter
+        ? marketingSmtpConfig()
+        : null;
+    const channel: EmailChannel = marketing ? 'marketing' : 'transactional';
+    const transporter = marketing
+      ? this.marketingTransporter!
+      : this.transporter;
     try {
       // `fromName` = the store's name for customer-facing mails (the mailbox
-      // stays the platform's SMTP sender); omitted = the platform name.
-      const displayName = String(fromName || process.env.APP_NAME || 'Your App').replace(/["\r\n<>]/g, '').trim();
-      const info = await this.transporter.sendMail({
-        from: `"${displayName}" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
+      // stays the platform's sender); omitted = the platform name.
+      const displayName = String(fromName || process.env.APP_NAME || 'Your App')
+        .replace(/["\r\n<>]/g, '')
+        .trim();
+      const info = await transporter.sendMail({
+        from: `"${displayName}" <${marketing ? marketing.from : process.env.SMTP_FROM || process.env.SMTP_USER}>`,
         to,
         subject,
         html,
@@ -106,33 +186,58 @@ export class EmailService {
         ...(attachments?.length ? { attachments } : {}),
       });
 
-      console.log('✅ Email sent:', info.messageId);
-      emailEvents.emit('result', { ok: true } as EmailResultEvent);
+      console.log(`✅ Email sent (${channel}):`, info.messageId);
+      emailEvents.emit('result', { ok: true, channel } as EmailResultEvent);
       return true;
     } catch (error) {
-      console.error('❌ Error sending email:', error);
-      emailEvents.emit('result', { ok: false, error: String((error as any)?.message ?? error).slice(0, 300) } as EmailResultEvent);
+      console.error(`❌ Error sending email (${channel}):`, error);
+      emailEvents.emit('result', {
+        ok: false,
+        channel,
+        error: String(error?.message ?? error).slice(0, 300),
+      } as EmailResultEvent);
       return false;
     }
   }
 
   /** True when the store's own server accepted the mail. Any failure returns false so the platform sender can take over. */
-  private async sendThroughStore(storeId: string, to: string, subject: string, html: string, replyTo?: string | null, headers?: Record<string, string>, attachments?: { filename: string; content: Buffer | string; contentType?: string }[], fromName?: string | null): Promise<boolean> {
+  private async sendThroughStore(
+    storeId: string,
+    to: string,
+    subject: string,
+    html: string,
+    replyTo?: string | null,
+    headers?: Record<string, string>,
+    attachments?: {
+      filename: string;
+      content: Buffer | string;
+      contentType?: string;
+    }[],
+    fromName?: string | null,
+  ): Promise<boolean> {
     const hook = EmailService.storeMail;
     if (!hook) return false;
     try {
       const t = await hook.resolve(storeId);
       if (!t) return false;
-      const displayName = String(fromName || '').replace(/["\r\n<>]/g, '').trim();
+      const displayName = String(fromName || '')
+        .replace(/["\r\n<>]/g, '')
+        .trim();
       try {
         await t.transporter.sendMail({
-          from: displayName ? `"${displayName}" <${t.from}>` : t.from, to, subject, html, text: htmlToPlainText(html),
-          ...(replyTo ? { replyTo } : {}), ...(headers ? { headers } : {}), ...(attachments?.length ? { attachments } : {}),
+          from: displayName ? `"${displayName}" <${t.from}>` : t.from,
+          to,
+          subject,
+          html,
+          text: htmlToPlainText(html),
+          ...(replyTo ? { replyTo } : {}),
+          ...(headers ? { headers } : {}),
+          ...(attachments?.length ? { attachments } : {}),
         });
         void hook.report(storeId, true);
         return true;
       } catch (error) {
-        void hook.report(storeId, false, String((error as any)?.message ?? error));
+        void hook.report(storeId, false, String(error?.message ?? error));
         return false;
       }
     } catch {
@@ -292,9 +397,19 @@ export class EmailService {
   }
 
   // Test email connection
-  async testConnection(): Promise<boolean> {
+  /** True when the marketing sender is configured (MARKETING_SMTP_*). */
+  hasMarketingSender(): boolean {
+    return !!this.marketingTransporter;
+  }
+
+  async testConnection(
+    channel: EmailChannel = 'transactional',
+  ): Promise<boolean> {
+    const transporter =
+      channel === 'marketing' ? this.marketingTransporter : this.transporter;
+    if (!transporter) return false;
     try {
-      await this.transporter.verify();
+      await transporter.verify();
       console.log('✅ Email server connection verified');
       return true;
     } catch (error) {

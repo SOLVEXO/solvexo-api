@@ -6,12 +6,25 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # A hung test run fails after 45 minutes instead of holding the runner for GitHub's 6-hour default.
+    timeout-minutes: 45
+    env:
+      # The full suite needs more than Node's default ~2 GB heap: without this, jest dies with "heap out of memory"
+      # (exit 134) while loading the suites. Same settings as tests.yml, which runs these suites on feature/jamibranch.
+      NODE_OPTIONS: --max-old-space-size=4096
+      JWT_SECRET: ci-only-jwt-secret
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
+      # Redis: the POS device / PIN-session guards and the account-deletion flows use it. Without it those integration
+      # suites time out in their setup and the client's reconnect loop keeps jest from exiting (same step as tests.yml).
+      - name: Redis
+        run: |
+          docker run -d --name redis -p 6379:6379 redis:7
+          for i in $(seq 1 20); do docker exec redis redis-cli ping | grep -q PONG && break; sleep 1; done
       - run: npm ci
       - run: npm run build
       # production starts `node dist/main` (deploy.yml / staging.yml run `pm2 start dist/main.js`): fail here if the build did not

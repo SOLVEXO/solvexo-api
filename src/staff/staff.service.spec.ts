@@ -235,24 +235,25 @@ describe('RoleService preset upgrade', () => {
     (svc as any).verifyStoreOwnership = jest.fn();
     return { svc, roleModel, staffMemberModel };
   };
-  const presets = (version: number) => ['Store Manager', 'Warehouse Staff', 'Support Staff'].map((name, i) => ({ _id: `r${i}`, name, isPreset: true, presetVersion: version, permissions: ['orders.view'] }));
+  const presets = (version: number) => ['Store Manager', 'Warehouse Staff', 'Accountant', 'Support Staff'].map((name, i) => ({ _id: `r${i}`, name, isPreset: true, presetVersion: version, permissions: ['orders.view'] }));
 
   it('adds permissions introduced later to an old Store Manager preset ONCE, keeping what the owner had, and refreshes its staff tokens', async () => {
     const { svc, roleModel, staffMemberModel } = setup(presets(0));
     await svc.list('o', 'seller', 'st');
     const mgr = (roleModel.updateOne as jest.Mock).mock.calls.find((c: any[]) => c[0]._id === 'r0')!;
-    // Version 1, 2 and 3 additions all arrive in one update.
+    // Every version's additions (1 to 9) arrive in one update.
     expect(mgr[1].$set.permissions).toEqual(expect.arrayContaining(['orders.view', 'products.create', 'collections.manage', 'categories.manage', 'draft_orders.manage', 'reviews.manage', 'activity_log.view', 'digital.view', 'digital.manage', 'members.manage', 'courses.manage', 'licenses.manage']));
     expect(mgr[1].$set.permissions).toEqual(expect.arrayContaining(["b2b.view", "b2b.manage"]));
     expect(mgr[1].$set.permissions).toEqual(expect.arrayContaining(['khata.view', 'khata.manage']));
-    expect(mgr[1].$set.presetVersion).toBe(4);
+    expect(mgr[1].$set.permissions).toEqual(expect.arrayContaining(['fulfillment.view', 'product_subscriptions.view', 'checkout_rules.view', 'experiments.view', 'apps.view']));
+    expect(mgr[1].$set.presetVersion).toBe(9);
     const warehouse = (roleModel.updateOne as jest.Mock).mock.calls.find((c: any[]) => c[0]._id === 'r1')!;
     expect(warehouse[1].$set.permissions).toEqual(['orders.view']); // nothing new for Warehouse
     expect(staffMemberModel.updateMany).toHaveBeenCalled();
   });
 
   it('does nothing for presets that are already up to date', async () => {
-    const { svc, roleModel } = setup(presets(4));
+    const { svc, roleModel } = setup(presets(9));
     await svc.list('o', 'seller', 'st');
     expect(roleModel.updateOne).not.toHaveBeenCalled();
   });

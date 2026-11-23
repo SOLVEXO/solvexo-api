@@ -23,6 +23,11 @@ export interface PlanRules {
   /** Higher percentage from a number of paying merchants upward, e.g. [{ minPaying: 10, percent: 25 }]. */
   tiers: { minPaying: number; percent: number }[];
   holdDays: number;
+  /**
+   * Programme B4.1: card processing fees are not part of the commission base. Applied only to card payments made on or
+   * after `from` (when the rate was set), so commission already earned is never reduced (B4.10).
+   */
+  cardFee?: { percent: number; fixedUSD: number; from: Date } | null;
 }
 
 export interface InvoiceRow {
@@ -36,6 +41,7 @@ export interface InvoiceRow {
   refundedAmountUSD: number;
   status: string;
   paidAt: Date;
+  paymentMethodType?: string | null;
 }
 
 /** What Solvexo kept from an invoice: before tax, after refunds. Never below zero. */
@@ -56,6 +62,19 @@ export function netUSD(
   const keptShare =
     gross > 0 ? Math.max(0, 1 - (inv.refundedAmountUSD ?? 0) / gross) : 0;
   return Math.round(preTax * keptShare * 100) / 100;
+}
+
+/** The commission base of one invoice: what Solvexo kept (before tax, after refunds) less the card fee where it applies. */
+export function commissionBaseUSD(
+  inv: Pick<InvoiceRow, 'amountUSD' | 'subtotalUSD' | 'taxAmountUSD' | 'refundedAmountUSD' | 'status' | 'paidAt' | 'paymentMethodType'>,
+  fee: PlanRules['cardFee'],
+): number {
+  const net = netUSD(inv);
+  if (!fee || net <= 0 || (inv.paymentMethodType && inv.paymentMethodType !== 'card')) return net;
+  if (new Date(inv.paidAt).getTime() < new Date(fee.from).getTime()) return net;
+  const gross = inv.amountUSD > 0 ? inv.amountUSD : 0;
+  const cost = gross * (fee.percent / 100) + fee.fixedUSD;
+  return Math.max(0, Math.round((net - cost) * 100) / 100);
 }
 
 /** The percentage a partner earns given how many of their merchants pay right now. */
@@ -83,15 +102,16 @@ export function percentApplies(
 export const payableAt = (earnedAt: Date, holdDays: number) =>
   new Date(earnedAt.getTime() + Math.max(0, holdDays) * DAY);
 
+export type LedgerType = 'bounty' | 'percent' | 'adjustment' | 'activation';
 export interface LedgerRow {
   key: string;
-  type: 'bounty' | 'percent' | 'adjustment';
+  type: LedgerType;
   invoiceId: string | null;
   amountPKR: number;
 }
 export interface PlannedRow {
   key: string;
-  type: 'bounty' | 'percent' | 'adjustment';
+  type: LedgerType;
   invoiceId: string;
   sellerId: string;
   storeId: string;
@@ -119,6 +139,13 @@ export function plannedRows(args: {
   existingRate: (
     invoiceId: string,
   ) => { pkrPerUSD: number; percent: number | null } | null;
+  /** B4.4: after 60 days' written notice that the partner stopped supporting this seller, payments earn nothing more. */
+  commissionEndsAt?: Date | null;
+  /**
+   * A3 #8 activation bonus: once per seller that has paid for 2 full months and still pays, when the programme sets an
+   * amount. `sellerPayingNow` is this seller's state today.
+   */
+  activation?: { amountPKR: number; sellerPayingNow: boolean; now: Date } | null;
 }): PlannedRow[] {
   const { plan, existing, effectiveFrom } = args;
   const paid = args.invoices
@@ -174,12 +201,28 @@ export function plannedRows(args: {
     }
   }
 
+  // Activation bonus: 2 full months after the first payment, if the seller still pays.
+  if (args.activation && args.activation.amountPKR > 0 && new Date(first.paidAt) >= effectiveFrom && netUSD(first) > 0) {
+    const key = `activation:${first.sellerId}`;
+    const due = new Date(first.paidAt);
+    due.setUTCMonth(due.getUTCMonth() + 2);
+    const ended = args.commissionEndsAt && due.getTime() >= new Date(args.commissionEndsAt).getTime();
+    if (!keys.has(key) && !ended && args.activation.sellerPayingNow && args.activation.now.getTime() >= due.getTime()) {
+      out.push({
+        key, type: 'activation', invoiceId: first.id, sellerId: first.sellerId, storeId: first.storeId, basisUSD: 0,
+        pkrPerUSD: args.rateFor(first), percent: null, amountPKR: roundPKR(args.activation.amountPKR), earnedAt: due,
+        description: 'Activation bonus: seller paid for 2 full months',
+      });
+    }
+  }
+
   // Percentage of each payment.
   for (const inv of paid) {
     const paidAt = new Date(inv.paidAt);
     if (
       paidAt < effectiveFrom ||
-      !percentApplies(plan, new Date(first.paidAt), paidAt)
+      !percentApplies(plan, new Date(first.paidAt), paidAt) ||
+      (args.commissionEndsAt && paidAt.getTime() >= new Date(args.commissionEndsAt).getTime())
     )
       continue;
     const key = `pct:${inv.id}`;
@@ -187,7 +230,8 @@ export function plannedRows(args: {
     const pct = prev?.percent ?? percentFor(plan, args.payingNow);
     const rate = prev?.pkrPerUSD ?? args.rateFor(inv);
     if (!(pct > 0)) continue;
-    const shouldBe = roundPKR(netUSD(inv) * rate * (pct / 100));
+    const base = commissionBaseUSD(inv, plan.cardFee);
+    const shouldBe = roundPKR(base * rate * (pct / 100));
     if (!keys.has(key)) {
       if (shouldBe > 0)
         out.push({
@@ -196,7 +240,7 @@ export function plannedRows(args: {
           invoiceId: inv.id,
           sellerId: inv.sellerId,
           storeId: inv.storeId,
-          basisUSD: netUSD(inv),
+          basisUSD: base,
           pkrPerUSD: rate,
           percent: pct,
           amountPKR: shouldBe,
@@ -217,7 +261,7 @@ export function plannedRows(args: {
         invoiceId: inv.id,
         sellerId: inv.sellerId,
         storeId: inv.storeId,
-        basisUSD: netUSD(inv),
+        basisUSD: base,
         pkrPerUSD: rate,
         percent: pct,
         amountPKR: delta,

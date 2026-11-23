@@ -61,6 +61,12 @@ const PRESET_ROLES: { name: string; description: string; permissions: string[] }
     permissions: ['inventory.view', 'inventory.adjust', 'inventory.receive', 'inventory.transfer', 'inventory.count', 'purchase_orders.manage'],
   },
   {
+    // Read-only books for the store's accountant (Accounting Plan decision: a free read-only accountant login per store).
+    name: 'Accountant',
+    description: 'Read-only access to the books, payouts, customer khata and sales reports.',
+    permissions: ['accounting.view', 'finance.payouts.view', 'khata.view', 'orders.view', 'analytics.view', 'inventory.view'],
+  },
+  {
     name: 'Support Staff',
     description: 'View and fulfill orders, view customers, and reply to customer messages.',
     permissions: ['home.view', 'orders.view', 'orders.fulfill', 'orders.return', 'customers.view', 'messaging.view', 'messaging.manage', 'reviews.manage', 'digital.view', 'b2b.view'],

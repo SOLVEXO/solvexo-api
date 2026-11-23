@@ -517,6 +517,16 @@ export class SchedulerService {
     });
   }
 
+  // Every 10 minutes: plan purchases a seller already PAID for but whose Stripe webhook never applied them (late, lost
+  // or failed) are checked with Stripe and applied, so nobody is left locked out after being charged.
+  @Cron('*/10 * * * *')
+  async reconcilePlatformPlanPurchases() {
+    await this.runLocked('platform-plan-purchase-reconcile', 9 * 60_000, async () => {
+      const r = await this.sellerPlatformSubscriptionsService.reconcilePendingPurchases();
+      if (r.applied > 0) this.logger.warn(`Platform-plan purchases: ${r.applied} paid but unapplied purchase(s) applied from Stripe (${r.checked} checked)`);
+    });
+  }
+
   // Runs daily — trials that ran out without converting to a paid card move to the free plan.
   @Cron('45 2 * * *')
   async expirePlatformPlanTrials() {
