@@ -5,7 +5,7 @@ import { ACTIVITY_LOG_CATEGORIES, ACTIVITY_LOG_KEEP_FOREVER, ActivityLogCategory
 import { ActivityLogGateway } from './activity-log.gateway';
 import { resolveLocationFromIp } from '../common/geo-locate.util';
 import { describeUserAgent } from '../common/user-agent.util';
-import { resolveActor } from './activity-actor.context';
+import { requestActor, resolveActor } from './activity-actor.context';
 import { actionTitle, categoryTitle, cleanDescription, describeChanges, formatInTimezone, orderIdsIn, safeTimezone, toCsv } from './activity-log-format.util';
 
 export interface LogActivityInput {
@@ -22,6 +22,8 @@ export interface LogActivityInput {
   ip?: string | null;
   userAgent?: string | null;
   isSecurityAlert?: boolean;
+  /** Write even inside a bulk import (used for the import's own summary entry). */
+  force?: boolean;
   /** Free-form extras. `metadata.changes` = [{ field, from, to }] is rendered as a before → after diff in the UI and the export. */
   metadata?: object | null;
 }
@@ -45,6 +47,8 @@ export class ActivityLogService {
 
   /** Fire-and-forget write — never let logging break the caller's main flow. */
   async log(input: LogActivityInput): Promise<void> {
+    // A bulk import writes ONE summary entry; the per-row entries its row handlers would add are dropped.
+    if (requestActor.getStore()?.bulkImport && !input.force) return;
     const data = resolveActor(input); // staff acting for an owner is recorded as the staff member, not the owner
     try {
       // An unknown category used to make the schema enum reject the row, so the event vanished. Keep it under 'settings' and remember the original.

@@ -4,7 +4,7 @@ import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nes
 import { Observable } from 'rxjs';
 
 /** Who is making the current HTTP request — set once per request (after the auth guards ran), readable anywhere below it. */
-export interface RequestActor { userId: string; role: string; sellerId: string | null }
+export interface RequestActor { userId: string; role: string; sellerId: string | null; /** Inside a bulk import: per-row log entries are dropped, the one summary entry is written instead. */ bulkImport?: boolean }
 
 export const requestActor = new AsyncLocalStorage<RequestActor>();
 

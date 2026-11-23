@@ -4,6 +4,7 @@ import { Reflector } from '@nestjs/core';
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { ActivityLogService } from './activity-log.service';
+import { requestActor } from './activity-actor.context';
 import { ActivityLogCategory } from './schemas/activity-log.schema';
 
 export const AUDIT_STORE_META = 'audit:store-writes';
@@ -42,7 +43,11 @@ export class StoreWriteAuditInterceptor implements NestInterceptor {
     const storeId = String(req.params?.storeId ?? req.body?.storeId ?? req.query?.storeId ?? '');
     if (!/^[a-f0-9]{24}$/i.test(storeId)) return next.handle();
 
-    return next.handle().pipe(tap({
+    const isImport = verbFor(method, String(req.route?.path ?? req.path ?? '')) === 'imported';
+    const source: Observable<any> = isImport
+      ? new Observable((subscriber) => requestActor.run({ userId: String(user.userId ?? user.sub ?? ''), role: String(user.role), sellerId: user.sellerId ? String(user.sellerId) : null, ...(requestActor.getStore() ?? {}), bulkImport: true }, () => next.handle().subscribe(subscriber)))
+      : next.handle();
+    return source.pipe(tap({
       next: (result: any) => {
         const route = String(req.route?.path ?? req.path ?? '');
         const verb = verbFor(method, route);
@@ -55,6 +60,7 @@ export class StoreWriteAuditInterceptor implements NestInterceptor {
         const r = [result, result?.data, result?.data?.result, result?.result].find((x) => x && typeof x === 'object' && typeof x.created === 'number');
         const summary = r ? ` — ${r.created} created, ${r.updated ?? 0} updated, ${r.skipped ?? 0} skipped, ${r.failedCount ?? 0} failed` : '';
         void this.activity.log({
+          force: true,
           storeId, category: meta.category, action: `${meta.resource}_${verb}`,
           description: `${label.charAt(0).toUpperCase() + label.slice(1)} ${verb.replace(/_/g, ' ')}${fields.length && verb === 'updated' ? ` (${fields.join(', ')}${hasSecret ? ', credentials' : ''})` : ''}${summary}`,
           actorId: String(user.userId ?? user.sub ?? ''), actorRole: user.role, targetId, targetType: meta.resource,
