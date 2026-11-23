@@ -10,6 +10,7 @@ import { ActivityLogService } from '../activity-log/activity-log.service';
 import { EmailService } from '../otp/services/email.service';
 import { STAFF_PERMISSIONS } from '../staff/schemas/staff-member.schema';
 import { escapeHtml } from '../newsletter/marketing-email.util';
+import { solvexoEmail } from '../notifications/templates/notification-email.template';
 import { ADMIN_PERMISSIONS, ADMIN_PRESET_ROLES } from './admin-permissions';
 import { ADMIN_APPROVAL_ACTIONS, APPROVAL_GRANT_TTL_MIN } from './admin-approval.util';
 
@@ -187,10 +188,13 @@ export class AdminTeamService implements OnModuleInit {
 
   private async sendInvite(name: string, email: string, token: string, roleName: string): Promise<boolean> {
     const url = this.inviteUrl(token);
-    const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;"><h2>You've been invited to the ${escapeHtml(process.env.APP_NAME || 'Solvexo')} admin team</h2>
-      <p>Hi ${escapeHtml(name)}, you were added as <strong>${escapeHtml(roleName)}</strong>. Set your own password to activate your account.</p>
-      <p><a href="${url}" style="display:inline-block;background:#D97757;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Accept invite &amp; set password</a></p>
-      <p style="color:#888;font-size:12px;">If the button doesn't work, copy this link: ${url}</p><p style="color:#888;font-size:12px;">This link expires in ${INVITE_EXPIRY_DAYS} days.</p></div>`;
+    const app = process.env.APP_NAME || 'Solvexo';
+    const html = solvexoEmail(
+      `You've been invited to the ${app} admin team`,
+      `<p>Hi ${escapeHtml(name)}, you were added as <strong>${escapeHtml(roleName)}</strong>. Set your own password to activate your account.</p>
+      <p class="muted">If the button doesn't work, copy this link: ${url}</p><p class="muted">This link expires in ${INVITE_EXPIRY_DAYS} days.</p>`,
+      { cta: { label: 'Accept invite & set password', url }, note: `You are receiving this because someone invited you to the ${app} admin team.` },
+    );
     return this.email.sendMail(email, `You've been invited to the admin team`, html).catch(() => false);
   }
 
@@ -307,9 +311,12 @@ export class AdminTeamService implements OnModuleInit {
     admin.resetTokenHash = sha256(token); admin.resetTokenExpiresAt = new Date(Date.now() + RESET_EXPIRY_MINUTES * 60000);
     await admin.save();
     const url = `${superadminAppUrl()}/admin-reset-password/${token}`;
-    const html = `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;"><h2>Reset your admin password</h2><p>Hi ${escapeHtml(admin.name || '')}, use the button below to choose a new password.</p>
-      <p><a href="${url}" style="display:inline-block;background:#D97757;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Choose a new password</a></p>
-      <p style="color:#888;font-size:12px;">This link expires in ${RESET_EXPIRY_MINUTES} minutes. If you didn't ask for it, ignore this email.</p></div>`;
+    const html = solvexoEmail(
+      'Reset your admin password',
+      `<p>Hi ${escapeHtml(admin.name || '')}, use the button below to choose a new password.</p>
+      <p class="muted">This link expires in ${RESET_EXPIRY_MINUTES} minutes. If you didn't ask for it, ignore this email.</p>`,
+      { cta: { label: 'Choose a new password', url }, note: null },
+    );
     this.email.sendMail(admin.email, 'Reset your admin password', html).catch(() => false);
     return generic;
   }

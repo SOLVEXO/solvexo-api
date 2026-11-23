@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { escapeEmailText, solvexoEmail } from './templates/notification-email.template';
 import { DatabaseService } from '@/database/databaseservice';
 import { emailEvents, EmailChannel, EmailResultEvent, EmailService, marketingSmtpConfig } from '@/otp/services/email.service';
 import { NotificationsService } from './notifications.service';
@@ -133,7 +134,11 @@ export class EmailHealthService implements OnModuleInit {
     const ok = await this.emailService.sendMail(
       admin.email,
       `${app} ${mk ? 'marketing ' : ''}test email`,
-      `<p>This is a test email from the ${app} admin panel. If you can read it, ${mk ? 'marketing email (campaigns, newsletters, automations)' : 'platform email'} works.</p>`,
+      solvexoEmail(
+        `${app} ${mk ? 'marketing ' : ''}test email`,
+        `<div class="success">This is a test email from the ${escapeEmailText(app)} admin panel. If you can read it, ${mk ? 'marketing email (campaigns, newsletters, automations)' : 'platform email'} works.</div>`,
+        { note: null },
+      ),
       null,
       mk ? { 'List-Unsubscribe': `<mailto:${from}?subject=unsubscribe>` } : undefined,
     );

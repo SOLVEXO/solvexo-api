@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { solvexoEmail } from '../notifications/templates/notification-email.template';
 import { EmailService } from '../otp/services/email.service';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -84,8 +85,8 @@ export class PartnerScorecardService {
     });
     if (p.email) {
       const esc = (x: string) => x.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-      void this.email.sendMail(p.email, subject, `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1c1d1b"><p>Hi ${esc(p.name)},</p><p>${esc(body)}</p>
-        <p>If you disagree, reply within 14 days: disputes go first to a discussion between the named contacts (B15).</p></div>`).catch(() => false);
+      void this.email.sendMail(p.email, subject, solvexoEmail(subject, `<p>Hi ${esc(p.name)},</p><p>${esc(body)}</p>
+        <p>If you disagree, reply within 14 days: disputes go first to a discussion between the named contacts (B15).</p>`, { note: 'You are receiving this as a member of the Solvexo Channel Partner Programme.' })).catch(() => false);
     }
     return this.detail(id);
   }

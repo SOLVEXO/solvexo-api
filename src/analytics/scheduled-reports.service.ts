@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { sellerAppUrl } from '@/common/app-urls.util';
+import { solvexoEmail } from '../notifications/templates/notification-email.template';
 import { Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
 import { EmailService } from '../otp/services/email.service';
@@ -99,12 +100,14 @@ export class ScheduledReportsService {
 
     const frontend = sellerAppUrl();
     const link = frontend ? `${frontend}/store/${report.storeId}/analytics` : '';
-    const html = `<div style="font-family:sans-serif;max-width:520px">
-      <p>Hi ${escapeHtml(seller.name ?? 'there')},</p>
+    const html = solvexoEmail(
+      `Your ${report.name} report`,
+      `<p>Hi ${escapeHtml(seller.name ?? 'there')},</p>
       <p>Your <strong>${escapeHtml(report.name)}</strong> report for <strong>${escapeHtml(store.name ?? 'your store')}</strong> is attached
       (${report.schedule}, last ${escapeHtml(range)}, generated ${now.toISOString().slice(0, 10)}).</p>
-      ${link ? `<p><a href="${link}">Open Analytics</a> — you can change or turn off this email under Saved Reports.</p>` : ''}
-    </div>`;
+      ${link ? `<p class="muted">You can change or turn off this email under Analytics → Saved Reports.</p>` : ''}`,
+      { cta: link ? { label: 'Open Analytics', url: link } : undefined, note: 'You are receiving this because you scheduled this report in Solvexo.' },
+    );
     return this.emailService.sendMail(seller.email, `${report.name} — ${store.name ?? 'Store'} analytics report`, html, null, undefined, [attachment]);
   }
 }

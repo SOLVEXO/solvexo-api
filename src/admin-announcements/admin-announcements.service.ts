@@ -4,6 +4,8 @@ import { DatabaseService } from '../database/databaseservice';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '../notifications/notification.types';
+import { solvexoEmail } from '../notifications/templates/notification-email.template';
+import { textToParagraphs } from '../notifications/customer-email-template.util';
 import { CreateAnnouncementDto } from './dto/create-announcement.dto';
 import { UpdateAnnouncementDto } from './dto/update-announcement.dto';
 import { UpdateAnnouncementStatusDto } from './dto/update-announcement-status.dto';
@@ -33,7 +35,7 @@ export class AdminAnnouncementsService {
       type: NOTIFICATION_TYPES.PLATFORM_ANNOUNCEMENT,
       title: announcement.title,
       body: announcement.message,
-      email: { subject: announcement.title, html: `<p>${announcement.message}</p>` },
+      email: { subject: announcement.title, html: solvexoEmail(announcement.title, textToParagraphs(String(announcement.message ?? ''))) },
     });
   }
 

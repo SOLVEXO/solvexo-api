@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { notificationEmailShell } from './templates/notification-email.template';
 import * as nodemailer from 'nodemailer';
 import { DatabaseService } from '../database/databaseservice';
 import { decryptCredential, encryptCredential } from '../common/credential-encryption.util';
@@ -133,10 +134,17 @@ export class StoreMailService implements OnModuleInit {
     const transporter = this.createTransport(target, input.port, input.user.trim(), password);
     try {
       await transporter.verify();
+      const name = await this.storeName(storeId);
+      // The store's own mailbox sends it, so it carries the store's brand (the same layout as its customer emails).
+      const html = notificationEmailShell(
+        'Your store email is connected',
+        '<div class="success">This is a test. Your store\'s customer emails will now be sent from this address.</div>',
+        undefined,
+        { name, hideReceivingNotice: true },
+      );
       await transporter.sendMail({
-        from: `"${(await this.storeName(storeId)).replace(/["\r\n<>]/g, '')}" <${input.fromEmail}>`, to: testTo,
-        subject: 'Your store email is connected', html: '<p>This is a test. Your store\'s customer emails will now be sent from this address.</p>',
-        text: htmlToPlainText('<p>This is a test. Your store\'s customer emails will now be sent from this address.</p>'),
+        from: `"${name.replace(/["\r\n<>]/g, '')}" <${input.fromEmail}>`, to: testTo,
+        subject: 'Your store email is connected', html, text: htmlToPlainText(html),
       });
     } catch (err: any) {
       throw new BadRequestException(`The email server did not accept these details: ${String(err?.response || err?.message || 'connection failed').slice(0, 200)}`);

@@ -292,7 +292,8 @@ export class EmailCampaignsService {
       unsubscribeUrl: '#',
       storeAddress: (store as any)?.mailingAddress ?? null,
     });
-    const sent = await this.emailService.sendMail(email, `[Test] ${rendered.subject}`, rendered.html, (store as any)?.contactEmail ?? null);
+    // The test arrives exactly as the real send will: under the store's name, not the platform's.
+    const sent = await this.emailService.sendMail(email, `[Test] ${rendered.subject}`, rendered.html, (store as any)?.contactEmail ?? null, undefined, undefined, (store as any)?.name ?? null);
     if (!sent) throw new BadRequestException('The test email could not be sent. Check the email settings and try again.');
     return { success: true, message: `Test email sent to ${email}` };
   }

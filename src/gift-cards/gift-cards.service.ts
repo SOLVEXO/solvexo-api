@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Optional, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { escapeEmailText, notificationEmailShell } from '../notifications/templates/notification-email.template';
 import { toStripeAmount } from '@/common/stripe-amount.util';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '@/database/databaseservice';
@@ -607,18 +608,23 @@ export class GiftCardsService {
       });
       if (result !== 'failed') return;
     }
-    const greeting = recipientName ? `Hi ${recipientName},` : 'Hi,';
-    const noteBlock = message ? `<p style="font-style:italic;color:#555">"${message}"</p>` : '';
+    // Fallback mail (used only if the store's notification templates fail): everything escaped, in the store's brand.
+    const greeting = recipientName ? `Hi ${escapeEmailText(recipientName)},` : 'Hi,';
+    const noteBlock = message ? `<p style="font-style:italic;color:#555">"${escapeEmailText(message)}"</p>` : '';
+    const store = escapeEmailText(storeName);
     await this.emailService.sendMail(
       to,
       `You've received a ${currency} ${value} gift card from ${storeName}`,
-      `<div style="font-family:sans-serif">
-        <p>${greeting}</p>
-        <p>You've received a gift card for <strong>${storeName}</strong>.</p>
+      notificationEmailShell(
+        'You received a gift card',
+        `<p>${greeting}</p>
+        <p>You've received a gift card for <strong>${store}</strong>.</p>
         ${noteBlock}
-        <p style="font-size:24px;font-weight:bold;letter-spacing:1px;background:#f5f5f5;padding:16px;border-radius:8px;text-align:center">${code}</p>
-        <p>Enter this code at checkout on ${storeName}'s store to redeem it.</p>
-      </div>`,
+        <div class="code">${escapeEmailText(code)}</div>
+        <p>Enter this code at checkout on ${store}'s store to redeem it.</p>`,
+        undefined,
+        { name: storeName },
+      ),
       null,
       undefined,
       undefined,
