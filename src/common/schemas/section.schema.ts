@@ -51,6 +51,7 @@ export const SECTION_TYPES = [
   'multicolumn',
   'promo_cards',
   'collection_columns',
+  'image_mosaic',
   'logo_list',
   'marquee',
   'custom_html',

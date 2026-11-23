@@ -88,6 +88,27 @@ function assertCollectionColumns(settings: Record<string, any>): void {
   maxLen(settings.viewAllText, 40, 'settings.viewAllText');
 }
 
+function assertImageMosaic(settings: Record<string, any>): void {
+  assertWholeNumberInRange(settings.columns, 1, 12, 'settings.columns');
+  assertWholeNumberInRange(settings.mobileColumns, 1, 6, 'settings.mobileColumns');
+  assertWholeNumberInRange(settings.gap, 0, 100, 'settings.gap');
+  assertWholeNumberInRange(settings.rowHeight, 40, 1200, 'settings.rowHeight');
+  assertWholeNumberInRange(settings.radius, 0, 200, 'settings.radius');
+  oneOf(settings.fit, ['cover', 'contain'] as const, 'settings.fit');
+  oneOf(settings.hover, ['none', 'zoom', 'dim'] as const, 'settings.hover');
+  if (settings.fullWidth !== undefined && typeof settings.fullWidth !== 'boolean') throw new BadRequestException('settings.fullWidth must be true or false');
+}
+
+function assertMosaicImage(settings: Record<string, any>): void {
+  if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'imageUrl');
+  assertLinkTarget(settings.link, 'link');
+  assertWholeNumberInRange(settings.colSpan, 1, 12, 'colSpan');
+  assertWholeNumberInRange(settings.rowSpan, 1, 12, 'rowSpan');
+  maxLen(settings.alt, 150, 'alt');
+  maxLen(settings.caption, 100, 'caption');
+  oneOf(settings.focalPoint, FOCAL_POINTS, 'focalPoint');
+}
+
 function assertCollectionColumn(settings: Record<string, any>): void {
   oneOf(settings.source, PRODUCT_SOURCES, 'source');
   for (const k of ['collectionId', 'categoryId'] as const) {
@@ -689,6 +710,9 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     case 'collection_columns':
       assertCollectionColumns(settings);
       break;
+    case 'image_mosaic':
+      assertImageMosaic(settings);
+      break;
     case 'logo_list': {
       const h = settings.logoHeight;
       if (h !== undefined && (typeof h !== 'number' || !Number.isFinite(h) || h < 24 || h > 120)) {
@@ -1107,6 +1131,11 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       oneOf(settings.focalPoint, FOCAL_POINTS, 'focalPoint');
       break;
 
+    // image_mosaic section blocks
+    case 'mosaic_image':
+      assertMosaicImage(settings);
+      break;
+
     // collection_columns section blocks (one column = one product source)
     case 'collection_column':
       assertCollectionColumn(settings);
@@ -1423,6 +1452,7 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   multicolumn: ['multicolumn_column'],
   promo_cards: ['promo_card'],
   collection_columns: ['collection_column'],
+  image_mosaic: ['mosaic_image'],
   logo_list: ['logo_item'],
   marquee: ['marquee_item'],
   custom_html: [],

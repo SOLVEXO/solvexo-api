@@ -300,6 +300,9 @@ export interface PromoCardsSectionSettings extends BaseSectionSettings {
 /** "Collection columns": side-by-side columns, each listing one source's products as compact rows (photo, name, price). Every size/colour is the seller's. */
 export type CollectionColumnsSectionSettings = BaseSectionSettings & { [key: string]: unknown };
 export type CollectionColumnBlockSettings = { [key: string]: unknown };
+/** "Image mosaic": a free grid of images; each image has its own link and can span several columns/rows. */
+export type ImageMosaicSectionSettings = BaseSectionSettings & { [key: string]: unknown };
+export type MosaicImageBlockSettings = { [key: string]: unknown };
 export interface PromoCardBlockSettings {
   imageUrl?: string;
   imageLinkOn?: boolean;
@@ -425,6 +428,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   multicolumn: MulticolumnSectionSettings;
   promo_cards: PromoCardsSectionSettings;
   collection_columns: CollectionColumnsSectionSettings;
+  image_mosaic: ImageMosaicSectionSettings;
   logo_list: LogoListSectionSettings;
   marquee: MarqueeSectionSettings;
   custom_html: CustomHtmlSectionSettings;
@@ -696,6 +700,7 @@ export const BLOCK_TYPES = [
   'multicolumn_column',
   'promo_card',
   'collection_column',
+  'mosaic_image',
   'logo_item',
   'marquee_item',
   'collection_item',
@@ -755,6 +760,7 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   multicolumn_column: MulticolumnColumnBlockSettings;
   promo_card: PromoCardBlockSettings;
   collection_column: CollectionColumnBlockSettings;
+  mosaic_image: MosaicImageBlockSettings;
   logo_item: LogoItemBlockSettings;
   marquee_item: MarqueeItemBlockSettings;
   collection_item: CollectionItemBlockSettings;
