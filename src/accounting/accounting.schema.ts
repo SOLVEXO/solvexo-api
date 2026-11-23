@@ -44,6 +44,8 @@ export class AccountingSettings {
   @Prop({ type: Object, default: {} }) skippedTotals: Record<string, number>;
   @Prop({ type: Object, default: null }) lastCheck: { at: Date; ok: boolean; debitMinor: number; creditMinor: number; entries: number } | null;
   @Prop({ type: String, default: null }) enabledBy: string | null;
+  /** Expense category → the account it posts to, where the store changed the default (chart.const EXPENSE_CATEGORY_ACCOUNT). */
+  @Prop({ type: Object, default: {} }) expenseAccounts: Record<string, string>;
 }
 export type AccountingSettingsDocument = HydratedDocument<AccountingSettings>;
 export const AccountingSettingsSchema = SchemaFactory.createForClass(AccountingSettings);

@@ -137,10 +137,10 @@ export function paymentAccount(method: string | null | undefined): string {
 }
 
 /** A POS expense. `suffix` lets a re-approved expense post again after a rejection reversed it. */
-export function expenseEntry(exp: any, ctx: PostingCtx, suffix = ''): RuleResult {
+export function expenseEntry(exp: any, ctx: PostingCtx, suffix = '', accounts: Record<string, string> = {}): RuleResult {
   if (!sameCurrency(exp.currency, ctx)) return { skip: 'currency' };
   const amount = num(exp.amountMinor);
-  const account = EXPENSE_CATEGORY_ACCOUNT[exp.category] ?? 'exp_other';
+  const account = accounts[exp.category] ?? EXPENSE_CATEGORY_ACCOUNT[exp.category] ?? 'exp_other';
   return finalize({
     sourceType: 'expense', sourceId: String(exp._id), sourceKey: `expense:${exp._id}${suffix}`, date: dateOf(exp.occurredAt, exp.createdAt),
     reference: exp.number ?? '', memo: `Expense: ${exp.category}${exp.payee ? ` (${exp.payee})` : ''}`,
