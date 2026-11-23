@@ -6,6 +6,7 @@ import { KhataAccount, KhataAccountSchema, KhataEntry, KhataEntrySchema } from '
 import { AccountingSettings, AccountingSettingsSchema, JournalEntry, JournalEntrySchema, LedgerAccount, LedgerAccountSchema } from './accounting.schema';
 import { AccountingService } from './accounting.service';
 import { AccountingSyncService } from './accounting-sync.service';
+import { AccountingBooksService } from './accounting-books.service';
 import { DEFAULT_ACCOUNTS } from './chart.const';
 
 jest.setTimeout(120_000);
@@ -14,6 +15,7 @@ let h: MongoHarness;
 let svc: AccountingService;
 let sync: AccountingSyncService;
 let journal: any;
+let books: AccountingBooksService;
 const STORE = 'store-acc-1';
 const actor = { id: 'owner', role: 'seller' };
 const GO_LIVE = '2026-11-01';
@@ -40,6 +42,8 @@ beforeAll(async () => {
   svc = new AccountingService(accounts as any, settings as any, journal);
   sync = new AccountingSyncService({ repositories: repos } as any, redis, svc, settings as any, journal, m(KhataEntry, KhataEntrySchema) as any, m(KhataAccount, KhataAccountSchema) as any);
   await svc.setup(STORE, { baseCurrency: 'PKR' }, { goLiveDate: GO_LIVE }, actor);
+  const cashStub: any = { expenseGet: async (_r: any, _s: string, id: string) => ({ success: true, data: { expense: { id } } }) };
+  books = new AccountingBooksService({ repositories: repos } as any, cashStub, {} as any, {} as any, settings as any, accounts as any);
 });
 afterAll(async () => { await h?.stop(); });
 
@@ -117,6 +121,23 @@ describe('Accounting: setup, sync and books (real MongoDB)', () => {
   it('journal entries cannot be edited or deleted', async () => {
     await expect(journal.updateOne({ storeId: STORE }, { $set: { memo: 'x' } })).rejects.toThrow(/append-only/);
     await expect(journal.deleteOne({ storeId: STORE })).rejects.toThrow(/append-only/);
+  });
+
+  it('a web expense gets the next EXP number, is approved at once and posts to the account chosen for its category', async () => {
+    const store = { _id: STORE, sellerId: 'seller-1', baseCurrency: 'PKR' };
+    await expect(books.createExpense(store, { category: 'rent', method: 'bank', amountMinor: 0 }, actor)).rejects.toThrow(/above 0/);
+    await expect(books.setExpenseAccounts(STORE, { accounts: { rent: 'cash' } })).rejects.toThrow(/expense account/);
+    await books.setExpenseAccounts(STORE, { accounts: { rent: 'exp_other' } });
+    const r: any = await books.createExpense(store, { category: 'rent', method: 'bank', amountMinor: 4_000_000, occurredAt: '2026-11-16', requestId: 'web-req-1' }, actor);
+    const again: any = await books.createExpense(store, { category: 'rent', method: 'bank', amountMinor: 4_000_000, requestId: 'web-req-1' }, actor);
+    expect(again.data.expense.id).toBe(r.data.expense.id); // idempotent per requestId
+    const doc: any = await h.repos.posExpenseModel.findById(r.data.expense.id).lean();
+    expect(doc.number).toMatch(/^EXP-\d{6}$/);
+    expect(doc.sessionId).toBeNull();
+    expect(await h.repos.posExpenseEventModel.countDocuments({ expenseId: r.data.expense.id, type: 'approved' })).toBe(1);
+    await sync.syncStore(STORE);
+    const e = await journal.findOne({ storeId: STORE, sourceType: 'expense', sourceId: r.data.expense.id }).lean();
+    expect(e.lines.map((l: any) => [l.accountKey, l.debitMinor, l.creditMinor])).toEqual([['exp_other', 4_000_000, 0], ['bank', 0, 4_000_000]]);
   });
 
   it('the go-live date is locked once entries exist', async () => {

@@ -80,6 +80,11 @@ describe('POS', () => {
     expect(d(expenseEntry({ _id: 'x1', category: 'other', amountMinor: 100, method: 'cash', currency: 'PKR' }, ctx, ':1')).sourceKey).toBe('expense:x1:1');
   });
 
+  it('an expense category can post to an account the store chose', () => {
+    const e = d(expenseEntry({ _id: 'x2', category: 'utilities', amountMinor: 500, method: 'cash', currency: 'PKR' }, ctx, '', { utilities: 'x_electricity' }));
+    expect(net(e)).toEqual({ x_electricity: 500, cash: -500 });
+  });
+
   it('cash movements: bank deposit, owner drawing, float top-up; expense cash-outs are skipped', () => {
     const session = { _id: 'ss1', currency: 'PKR', currencyExponent: 2 };
     expect(net(d(cashMovementEntry(session, { type: 'cash_out', category: 'bank_deposit', amountMinor: 50000 }, 0, ctx)))).toEqual({ bank: 50000, cash: -50000 });

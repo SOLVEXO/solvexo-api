@@ -116,10 +116,10 @@ export class AccountingSyncService {
       for (let i = 0; i < adjs.length; i++) await take('cash_movement', cashMovementEntry(s, adjs[i], i, ctx));
       await take('shift_close', shiftCloseEntry(s, ctx));
     });
-    await scan('pos_expenses', this.r.posExpenseModel, { storeId }, 'createdAt', d => this.expense(storeId, d, ctx, goLive, take));
+    await scan('pos_expenses', this.r.posExpenseModel, { storeId }, 'createdAt', d => this.expense(storeId, d, ctx, goLive, take, settings.expenseAccounts ?? {}));
     await scan('pos_expense_events', this.r.posExpenseEventModel, { storeId, type: { $in: ['approved', 'rejected'] } }, 'createdAt', async ev => {
       const exp = await this.r.posExpenseModel.findOne({ storeId, _id: ev.expenseId }).lean();
-      if (exp) await this.expense(storeId, exp, ctx, goLive, take);
+      if (exp) await this.expense(storeId, exp, ctx, goLive, take, settings.expenseAccounts ?? {});
     });
 
     // Stock and purchasing
@@ -169,7 +169,7 @@ export class AccountingSyncService {
   }
 
   /** A POS expense follows its latest approval decision: rejected → its entry is reversed; approved again → it posts again. */
-  private async expense(storeId: string, exp: any, ctx: PostingCtx, goLive: Date, take: (s: string, r: RuleResult) => Promise<void>) {
+  private async expense(storeId: string, exp: any, ctx: PostingCtx, goLive: Date, take: (s: string, r: RuleResult) => Promise<void>, accounts: Record<string, string>) {
     const last = await this.r.posExpenseEventModel.findOne({ storeId, expenseId: String(exp._id), type: { $in: ['approved', 'rejected'] } }).sort({ createdAt: -1 }).lean();
     const entries = await this.journal.find({ storeId, sourceType: 'expense', sourceId: String(exp._id), kind: 'auto' }).select('_id').lean();
     const reversed = new Set((await this.journal.find({ storeId, reversesEntryId: { $in: entries.map(e => String(e._id)) } }).select('reversesEntryId').lean()).map(r => r.reversesEntryId));
@@ -178,7 +178,7 @@ export class AccountingSyncService {
       for (const e of active) await this.accounting.reverse(storeId, String(e._id), SYSTEM, 'expense rejected', new Date(last.createdAt ?? Date.now()) < goLive ? goLive : new Date(last.createdAt ?? Date.now()));
       return;
     }
-    if (!active.length) await take('expense', expenseEntry(exp, ctx, entries.length ? `:${entries.length}` : ''));
+    if (!active.length) await take('expense', expenseEntry(exp, ctx, entries.length ? `:${entries.length}` : '', accounts));
   }
 }
 

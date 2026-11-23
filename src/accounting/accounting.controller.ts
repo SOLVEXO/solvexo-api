@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Patch, Post, Put, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -13,6 +15,7 @@ import { isoExponent } from '../common/money-minor.util';
 import { DatabaseService } from '../database/databaseservice';
 import { AccountingService } from './accounting.service';
 import { AccountingSyncService } from './accounting-sync.service';
+import { AccountingBooksService } from './accounting-books.service';
 
 /** The store's books (Accounting Plan, Phase 1). Permissions: accounting.view (read) / accounting.manage (setup, entries, sync). */
 @ApiTags('Accounting (seller)')
@@ -22,7 +25,7 @@ import { AccountingSyncService } from './accounting-sync.service';
 @UsePipes(new ValidationPipe({ transform: false }))
 @Controller('api/accounting/:storeId')
 export class AccountingController {
-  constructor(private readonly svc: AccountingService, private readonly sync: AccountingSyncService, private readonly db: DatabaseService) {}
+  constructor(private readonly svc: AccountingService, private readonly sync: AccountingSyncService, private readonly books: AccountingBooksService, private readonly db: DatabaseService) {}
 
   private async own(req: any, storeId: string) {
     const store: any = await verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, actingSellerId(req.user));
@@ -88,4 +91,49 @@ export class AccountingController {
 
   @Get('ledger/:key') @RequirePermission('accounting.view')
   async ledger(@Req() req: any, @Param('storeId') s: string, @Param('key') key: string, @Query() q: any) { await this.own(req, s); return this.svc.accountLedger(s, key, q); }
+  // ── Phase 2: expenses, cash book, supplier balances, POS profit and tax ─────────────────────────────────────────────
+
+  @Get('expenses') @RequirePermission('accounting.view')
+  async expenses(@Req() req: any, @Param('storeId') s: string, @Query() q: any) { const { store } = await this.own(req, s); return this.books.expenses(store, q); }
+
+  @Post('expenses') @RequirePermission('accounting.manage')
+  async createExpense(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { const { store, actor } = await this.own(req, s); return this.books.createExpense(store, b, actor); }
+
+  @Get('expenses/:id') @RequirePermission('accounting.view')
+  async expense(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string) { const { store } = await this.own(req, s); return this.books.expense(store, id); }
+
+  @Post('expenses/:id/decision') @RequirePermission('accounting.manage')
+  async decide(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string, @Body() b: any) { const { store } = await this.own(req, s); return this.books.decide(store, id, b); }
+
+  @Post('expenses/:id/receipt') @RequirePermission('accounting.manage')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: Number(process.env.EXPENSE_RECEIPT_MAX_BYTES) >= 1024 ? Number(process.env.EXPENSE_RECEIPT_MAX_BYTES) : 5 * 1024 * 1024 } }))
+  async receipt(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string, @UploadedFile() file: Express.Multer.File) { const { store } = await this.own(req, s); return this.books.receiptUpload(store, id, file); }
+
+  @Get('expenses/:id/receipt') @RequirePermission('accounting.view')
+  async receiptLink(@Req() req: any, @Res({ passthrough: true }) res: any, @Param('storeId') s: string, @Param('id') id: string) {
+    const { store } = await this.own(req, s);
+    res.setHeader('Cache-Control', 'no-store');
+    return this.books.receiptLink(store, id);
+  }
+
+  @Get('expense-accounts') @RequirePermission('accounting.view')
+  async expenseAccounts(@Req() req: any, @Param('storeId') s: string) { await this.own(req, s); await this.svc.requireEnabled(s); return this.books.expenseAccounts(s); }
+
+  @Put('expense-accounts') @RequirePermission('accounting.manage')
+  async setExpenseAccounts(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); await this.svc.requireEnabled(s); return this.books.setExpenseAccounts(s, b); }
+
+  @Get('daybook') @RequirePermission('accounting.view')
+  async daybook(@Req() req: any, @Param('storeId') s: string, @Query() q: any) { const { store } = await this.own(req, s); return this.books.daybook(store, q); }
+
+  @Get('payables') @RequirePermission('accounting.view')
+  async payables(@Req() req: any, @Param('storeId') s: string) { const { store } = await this.own(req, s); return this.books.payables(store); }
+
+  @Get('payables/:supplierId') @RequirePermission('accounting.view')
+  async supplierLedger(@Req() req: any, @Param('storeId') s: string, @Param('supplierId') id: string) { const { store } = await this.own(req, s); return this.books.supplierLedger(store, id); }
+
+  @Get('reports/profit') @RequirePermission('accounting.view')
+  async profit(@Req() req: any, @Param('storeId') s: string, @Query() q: any) { const { store } = await this.own(req, s); return this.books.profit(store, q); }
+
+  @Get('reports/tax') @RequirePermission('accounting.view')
+  async tax(@Req() req: any, @Param('storeId') s: string, @Query() q: any) { const { store } = await this.own(req, s); return this.books.tax(store, q); }
 }
