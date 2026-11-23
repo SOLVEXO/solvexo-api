@@ -66,6 +66,14 @@ function assertWholeNumberInRange(value: unknown, min: number, max: number, fiel
   }
 }
 
+const PROMO_LAYOUTS = ['image-left', 'image-right', 'image-top', 'image-bottom', 'overlay'] as const;
+
+/** An optional #RRGGBB colour; empty means "use the theme's colour". */
+function assertOptionalHex(value: unknown, field: string): void {
+  if (value === undefined || value === null || value === '') return;
+  if (typeof value !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(value)) throw new BadRequestException(`${field} must be a #RRGGBB colour`);
+}
+
 /** Grid columns: a whole number from 1 to 8 (the editor's Columns box). */
 function assertColumns(value: unknown): void {
   if (value === undefined || value === null) return;
@@ -625,6 +633,20 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       oneOf(settings.imageRatio, IMAGE_RATIOS, 'settings.imageRatio');
       break;
     }
+    case 'promo_cards': {
+      assertWholeNumberInRange(settings.columns, 1, 12, 'settings.columns');
+      oneOf(settings.layout, PROMO_LAYOUTS, 'settings.layout');
+      assertWholeNumberInRange(settings.cardHeight, 0, 2000, 'settings.cardHeight');
+      assertWholeNumberInRange(settings.imageWidth, 10, 90, 'settings.imageWidth');
+      assertWholeNumberInRange(settings.gap, 0, 200, 'settings.gap');
+      assertWholeNumberInRange(settings.radius, 0, 200, 'settings.radius');
+      assertWholeNumberInRange(settings.padding, 0, 200, 'settings.padding');
+      oneOf(settings.contentAlign, ['left', 'center', 'right'] as const, 'settings.contentAlign');
+      oneOf(settings.contentPosition, ['top', 'center', 'bottom', 'spread'] as const, 'settings.contentPosition');
+      assertWholeNumberInRange(settings.headingSize, 10, 160, 'settings.headingSize');
+      assertWholeNumberInRange(settings.bodySize, 9, 48, 'settings.bodySize');
+      break;
+    }
     case 'logo_list': {
       const h = settings.logoHeight;
       if (h !== undefined && (typeof h !== 'number' || !Number.isFinite(h) || h < 24 || h > 120)) {
@@ -1022,6 +1044,27 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       assertLinkTarget(settings.ctaLink, 'ctaLink');
       break;
 
+    // promo_cards section blocks (free-form cards with their own layout and colours)
+    case 'promo_card':
+      assertImageLink(settings);
+      if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      if (settings.layout !== undefined && settings.layout !== '') oneOf(settings.layout, PROMO_LAYOUTS, 'layout');
+      maxLen(settings.eyebrow, 60, 'eyebrow');
+      maxLen(settings.heading, 120, 'heading');
+      maxLen(settings.body, 600, 'body');
+      for (const k of ['ctaText', 'cta2Text'] as const) maxLen(settings[k], 40, k);
+      assertLinkTarget(settings.ctaLink, 'ctaLink');
+      assertLinkTarget(settings.cta2Link, 'cta2Link');
+      oneOf(settings.ctaStyle, ['solid', 'outline', 'link'] as const, 'ctaStyle');
+      oneOf(settings.cta2Style, ['solid', 'outline', 'link'] as const, 'cta2Style');
+      for (const k of ['bgColor', 'textColor', 'buttonBg', 'buttonText'] as const) assertOptionalHex(settings[k], k);
+      assertWholeNumberInRange(settings.overlayOpacity, 0, 100, 'overlayOpacity');
+      assertWholeNumberInRange(settings.colSpan, 1, 12, 'colSpan');
+      assertWholeNumberInRange(settings.cardHeight, 0, 2000, 'cardHeight');
+      oneOf(settings.imageFit, ['cover', 'contain'] as const, 'imageFit');
+      oneOf(settings.focalPoint, FOCAL_POINTS, 'focalPoint');
+      break;
+
     // collection_list section blocks (hand-picked tiles)
     case 'collection_item':
       if (settings.collectionId !== undefined && settings.collectionId !== null && typeof settings.collectionId !== 'string') {
@@ -1331,6 +1374,7 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   stats_counter: ['stat_item'],
   gallery_grid: ['gallery_image'],
   multicolumn: ['multicolumn_column'],
+  promo_cards: ['promo_card'],
   logo_list: ['logo_item'],
   marquee: ['marquee_item'],
   custom_html: [],

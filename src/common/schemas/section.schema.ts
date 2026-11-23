@@ -49,6 +49,7 @@ export const SECTION_TYPES = [
   'gallery_grid',
   // Shopify-parity section library (see `section-settings.types.ts`).
   'multicolumn',
+  'promo_cards',
   'logo_list',
   'marquee',
   'custom_html',

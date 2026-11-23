@@ -276,6 +276,54 @@ export interface MulticolumnSectionSettings extends BaseSectionSettings {
   textAlign?: 'left' | 'center';
   imageRatio?: 'default' | 'adapt' | 'portrait' | 'square' | 'landscape';
 }
+/** "Promo cards": a row of free-form cards (image + text panel) where every card can have its own layout and colours. */
+export type PromoCardLayout = 'image-left' | 'image-right' | 'image-top' | 'image-bottom' | 'overlay';
+export interface PromoCardsSectionSettings extends BaseSectionSettings {
+  /** Grid columns on desktop, 1-12 (cards can span several). */
+  columns?: number;
+  layout?: PromoCardLayout;
+  /** Card height in px, 0 or empty = fit the content. */
+  cardHeight?: number;
+  /** Share of the card the image takes in the side-by-side layouts, 10-90. */
+  imageWidth?: number;
+  /** Space between cards in px. */
+  gap?: number;
+  /** Corner radius in px; empty = the theme's own. */
+  radius?: number | null;
+  /** Space inside the text panel in px; empty = automatic. */
+  padding?: number | null;
+  contentAlign?: 'left' | 'center' | 'right';
+  contentPosition?: 'top' | 'center' | 'bottom' | 'spread';
+  headingSize?: number;
+  bodySize?: number;
+}
+export interface PromoCardBlockSettings {
+  imageUrl?: string;
+  imageLinkOn?: boolean;
+  imageLink?: LinkTarget;
+  /** Empty = follow the section's layout. */
+  layout?: PromoCardLayout | '';
+  /** How many grid columns this card takes (1-12). */
+  colSpan?: number;
+  /** This card's own height in px; empty = the section's. */
+  cardHeight?: number | null;
+  eyebrow?: string;
+  heading?: string;
+  body?: string;
+  ctaText?: string;
+  ctaLink?: LinkTarget;
+  ctaStyle?: 'solid' | 'outline' | 'link';
+  cta2Text?: string;
+  cta2Link?: LinkTarget;
+  cta2Style?: 'solid' | 'outline' | 'link';
+  bgColor?: string;
+  textColor?: string;
+  buttonBg?: string;
+  buttonText?: string;
+  overlayOpacity?: number;
+  imageFit?: 'cover' | 'contain';
+  focalPoint?: string;
+}
 export interface LogoListSectionSettings extends BaseSectionSettings {
   /** Logo height in px, 24-120. */
   logoHeight?: number;
@@ -372,6 +420,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   stats_counter: StatsCounterSectionSettings;
   gallery_grid: GalleryGridSectionSettings;
   multicolumn: MulticolumnSectionSettings;
+  promo_cards: PromoCardsSectionSettings;
   logo_list: LogoListSectionSettings;
   marquee: MarqueeSectionSettings;
   custom_html: CustomHtmlSectionSettings;
@@ -641,6 +690,7 @@ export const BLOCK_TYPES = [
   'multirow_row',
   'collage_item',
   'multicolumn_column',
+  'promo_card',
   'logo_item',
   'marquee_item',
   'collection_item',
@@ -698,6 +748,7 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   multirow_row: { imageUrl?: string; heading?: string; body?: string; ctaText?: string; ctaLink?: LinkTarget; focalPoint?: unknown };
   collage_item: { imageUrl: string; heading?: string; link?: LinkTarget };
   multicolumn_column: MulticolumnColumnBlockSettings;
+  promo_card: PromoCardBlockSettings;
   logo_item: LogoItemBlockSettings;
   marquee_item: MarqueeItemBlockSettings;
   collection_item: CollectionItemBlockSettings;
