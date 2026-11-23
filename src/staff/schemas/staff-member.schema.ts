@@ -89,6 +89,8 @@ export const STAFF_PERMISSIONS = [
   'b2b.view', 'b2b.manage',
   // Khata (customer ledger)
   'khata.view', 'khata.manage',
+  // Accounting (the store's books: chart of accounts, journal, trial balance)
+  'accounting.view', 'accounting.manage',
   // 3PL / fulfilment services
   'fulfillment.view', 'fulfillment.manage',
   // Product subscriptions (selling plans)
