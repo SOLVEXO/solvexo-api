@@ -297,6 +297,9 @@ export interface PromoCardsSectionSettings extends BaseSectionSettings {
   headingSize?: number;
   bodySize?: number;
 }
+/** "Collection columns": side-by-side columns, each listing one source's products as compact rows (photo, name, price). Every size/colour is the seller's. */
+export type CollectionColumnsSectionSettings = BaseSectionSettings & { [key: string]: unknown };
+export type CollectionColumnBlockSettings = { [key: string]: unknown };
 export interface PromoCardBlockSettings {
   imageUrl?: string;
   imageLinkOn?: boolean;
@@ -421,6 +424,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   gallery_grid: GalleryGridSectionSettings;
   multicolumn: MulticolumnSectionSettings;
   promo_cards: PromoCardsSectionSettings;
+  collection_columns: CollectionColumnsSectionSettings;
   logo_list: LogoListSectionSettings;
   marquee: MarqueeSectionSettings;
   custom_html: CustomHtmlSectionSettings;
@@ -691,6 +695,7 @@ export const BLOCK_TYPES = [
   'collage_item',
   'multicolumn_column',
   'promo_card',
+  'collection_column',
   'logo_item',
   'marquee_item',
   'collection_item',
@@ -749,6 +754,7 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   collage_item: { imageUrl: string; heading?: string; link?: LinkTarget };
   multicolumn_column: MulticolumnColumnBlockSettings;
   promo_card: PromoCardBlockSettings;
+  collection_column: CollectionColumnBlockSettings;
   logo_item: LogoItemBlockSettings;
   marquee_item: MarqueeItemBlockSettings;
   collection_item: CollectionItemBlockSettings;
