@@ -32,6 +32,12 @@ export interface FloatingContactConfig {
   /** Overrides the colours of the built-in buttons (null = brand/theme colour). */
   customBg: string;
   customFg: string;
+  /** Exact button size in px (0 = use `size`). */
+  sizePx: number;
+  /** Distance from the screen edge in px. */
+  edgeOffset: number;
+  /** Space between buttons in px (-1 = automatic). */
+  gapPx: number;
 }
 
 const URL_KEYS = ['facebook', 'instagram', 'tiktok', 'youtube', 'x', 'snapchat', 'linkedin'] as const;
@@ -40,8 +46,14 @@ export const DEFAULT_FLOATING_CONTACT: FloatingContactConfig = {
   enabled: false, position: 'right', vertical: 'middle', size: 'md', style: 'brand', showLabels: true, device: 'all',
   phone: '', phoneLabel: '', whatsapp: '', whatsappMessage: '', whatsappLabel: '', email: '', emailLabel: '',
   facebook: '', instagram: '', tiktok: '', youtube: '', x: '', snapchat: '', linkedin: '',
-  items: [], shape: 'flush', bubbleText: '', customBg: '', customFg: '',
+  items: [], shape: 'flush', bubbleText: '', customBg: '', customFg: '', sizePx: 0, edgeOffset: 0, gapPx: -1,
 };
+
+function whole(v: unknown, field: string, min: number, max: number, fallback: number): number {
+  if (v === undefined || v === null || v === '') return fallback;
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new BadRequestException(`floatingContact.${field} must be a number`);
+  return Math.min(max, Math.max(min, Math.round(v)));
+}
 
 function oneOf<T extends string>(v: unknown, allowed: readonly T[], field: string, fallback: T): T {
   if (v === undefined || v === null) return fallback;
@@ -108,6 +120,9 @@ export function normalizeFloatingContact(input: unknown): FloatingContactConfig 
     bubbleText: text(b.bubbleText, 'bubbleText', 60),
     customBg: hex(b.customBg, 'customBg'),
     customFg: hex(b.customFg, 'customFg'),
+    sizePx: whole(b.sizePx, 'sizePx', 0, 140, 0),
+    edgeOffset: whole(b.edgeOffset, 'edgeOffset', 0, 200, 0),
+    gapPx: whole(b.gapPx, 'gapPx', -1, 80, -1),
   };
   for (const k of URL_KEYS) out[k] = httpsUrl(b[k], k);
   return out;

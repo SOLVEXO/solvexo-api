@@ -263,6 +263,8 @@ export class StorefrontHeader {
   // Seller-built strip items (text / links / icons / popups with a designed QR) — validated by sanitizeChromeItems.
   @Prop({ type: [Object], default: [] }) topBarItems: Record<string, unknown>[];
   @Prop({ type: String, enum: ['sm', 'md', 'lg'], default: 'md' }) topBarSize: 'sm' | 'md' | 'lg';
+  @Prop({ type: Number, default: null }) topBarFontSize: number | null; // px, null = by topBarSize
+  @Prop({ type: Number, default: null }) topBarPadY: number | null; // px, null = by topBarSize
   @Prop({ type: String, default: null }) preset: string | null;
 }
 export const StorefrontHeaderSchema = SchemaFactory.createForClass(StorefrontHeader);

@@ -26,6 +26,25 @@ export interface ChromePopup {
   showShare: boolean;
   footnote: string;
   width: 'sm' | 'md' | 'lg';
+  /** 'below' = opens right under the strip item (default for the strip), 'center' = a centred window. */
+  placement: 'below' | 'center';
+  /** Exact width in px (overrides `width`); 0 = use `width`. */
+  widthPx: number;
+  /** 'side' = text with the QR/image beside it, 'stack' = everything in one column. */
+  layout: 'side' | 'stack';
+  /** Order of the parts; a part left out is hidden. */
+  order: string[];
+  bg: string;
+  fg: string;
+  /** Corner radius in px; -1 = the theme's own. */
+  radius: number;
+  /** Space inside in px; -1 = automatic. */
+  padding: number;
+  titleSize: number;
+  bodySize: number;
+  align: 'left' | 'center';
+  border: boolean;
+  shadow: boolean;
 }
 
 export interface ChromeItem {
@@ -40,7 +59,19 @@ export interface ChromeItem {
   bg: string;
   fg: string;
   device: 'all' | 'desktop' | 'mobile';
+  /** Text size in px; 0 = the strip's. */
+  fontSize: number;
+  bold: boolean;
   popup: ChromePopup | null;
+}
+
+export const POPUP_PARTS = ['title', 'body', 'image', 'qr', 'button', 'share', 'footnote'] as const;
+export const DEFAULT_POPUP_ORDER = [...POPUP_PARTS];
+
+function int(v: unknown, field: string, min: number, max: number, fallback: number): number {
+  if (v === undefined || v === null || v === '') return fallback;
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new BadRequestException(`${field} must be a number`);
+  return Math.min(max, Math.max(min, Math.round(v)));
 }
 
 export const MAX_CHROME_ITEMS = 12;
@@ -98,6 +129,17 @@ function sanitizeQr(v: unknown, field: string): ChromeQr | null {
   };
 }
 
+function sanitizeOrder(v: unknown, field: string): string[] {
+  if (v === undefined || v === null) return [...DEFAULT_POPUP_ORDER];
+  if (!Array.isArray(v) || v.length > POPUP_PARTS.length) throw new BadRequestException(`${field} is not valid`);
+  const out: string[] = [];
+  for (const k of v) {
+    if (typeof k !== 'string' || !(POPUP_PARTS as readonly string[]).includes(k)) throw new BadRequestException(`${field} has an unknown part`);
+    if (!out.includes(k)) out.push(k);
+  }
+  return out;
+}
+
 function sanitizePopup(v: unknown, field: string): ChromePopup | null {
   if (v === undefined || v === null) return null;
   if (typeof v !== 'object' || Array.isArray(v)) throw new BadRequestException(`${field} must be an object`);
@@ -112,6 +154,19 @@ function sanitizePopup(v: unknown, field: string): ChromePopup | null {
     showShare: p.showShare === true,
     footnote: text(p.footnote, `${field}.footnote`, 300),
     width: oneOf(p.width, ['sm', 'md', 'lg'], `${field}.width`, 'md'),
+    placement: oneOf(p.placement, ['below', 'center'], `${field}.placement`, 'below'),
+    widthPx: int(p.widthPx, `${field}.widthPx`, 0, 1600, 0),
+    layout: oneOf(p.layout, ['side', 'stack'], `${field}.layout`, 'side'),
+    order: sanitizeOrder(p.order, `${field}.order`),
+    bg: color(p.bg, `${field}.bg`),
+    fg: color(p.fg, `${field}.fg`),
+    radius: int(p.radius, `${field}.radius`, -1, 200, -1),
+    padding: int(p.padding, `${field}.padding`, -1, 200, -1),
+    titleSize: int(p.titleSize, `${field}.titleSize`, 0, 120, 0),
+    bodySize: int(p.bodySize, `${field}.bodySize`, 0, 48, 0),
+    align: oneOf(p.align, ['left', 'center'], `${field}.align`, 'left'),
+    border: p.border === true,
+    shadow: p.shadow !== false,
   };
 }
 
@@ -142,6 +197,8 @@ export function sanitizeChromeItems(input: unknown, field: string): ChromeItem[]
       bg: color(r.bg, `${at}.bg`),
       fg: color(r.fg, `${at}.fg`),
       device: oneOf(r.device, ['all', 'desktop', 'mobile'], `${at}.device`, 'all'),
+      fontSize: int(r.fontSize, `${at}.fontSize`, 0, 60, 0),
+      bold: r.bold === true,
       popup: kind === 'popup' ? sanitizePopup(r.popup, `${at}.popup`) : null,
     };
     if (!item.label && !item.icon && !item.iconUrl) throw new BadRequestException(`${at} needs a label or an icon`);
