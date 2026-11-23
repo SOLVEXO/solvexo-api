@@ -1719,6 +1719,24 @@ export class StoreService {
     // The store's home title/description/logo/domain feed the crawler view: clear it so a rename shows up at once.
     void this.redisService.del(`seo:meta:store:${String(store._id)}`).catch(() => undefined);
 
+    // Who the seller says they are / what they sell drives setup guidance and admin views, so a change is recorded.
+    const profileChanges: string[] = [];
+    if (sellerType !== undefined && (store.sellerType ?? null) !== (sellerType ?? null)) {
+      profileChanges.push(`seller type ${store.sellerType ?? 'not set'} -> ${sellerType ?? 'not set'}`);
+    }
+    if (updateData.productTypes) {
+      const before = [...(store.productTypes ?? [])].sort().join(',');
+      const after = [...updateData.productTypes].sort().join(',');
+      if (before !== after) profileChanges.push(`selling categories ${before || 'none'} -> ${after || 'none'}`);
+    }
+    if (profileChanges.length) {
+      this.activityLogService.log({
+        storeId, category: 'settings', action: 'store_business_profile_updated',
+        description: `Business profile changed: ${profileChanges.join('; ')}`,
+        actorId: sellerId, actorRole: 'seller',
+      });
+    }
+
     return {
       success: true,
       message: 'Store updated successfully',

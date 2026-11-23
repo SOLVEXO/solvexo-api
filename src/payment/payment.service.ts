@@ -1916,12 +1916,12 @@ export class PaymentService {
     await this.assertCouponStillUsable(checkout);
     await this.assertStoreCreditStillCovers(checkout);
     // Wholesale companies may be limited to certain payment methods (seller setting, snapshotted on the checkout). Store credit is never blocked.
-    if (method && method !== 'store_credit' && !isPaymentMethodAllowed(checkout?.b2b?.allowedPaymentMethods, method)) {
+    if (method && method !== 'store_credit' && method !== 'free' && !isPaymentMethodAllowed(checkout?.b2b?.allowedPaymentMethods, method)) {
       throw new BadRequestException('This payment method is not available for your company. Please choose another one.');
     }
     // The store's own checkout rules (validation blocks, hidden payment methods) are enforced here too, never only in the UI.
     const rules = this.moduleRef?.get(CheckoutRulesService, { strict: false });
-    if (rules && checkout?.userId) await rules.enforceCheckout(checkout, String(checkout.userId), method && method !== 'store_credit' ? { paymentMethod: method } : {});
+    if (rules && checkout?.userId) await rules.enforceCheckout(checkout, String(checkout.userId), method && method !== 'store_credit' && method !== 'free' ? { paymentMethod: method } : {});
   }
 
   private async assertCouponStillUsable(checkout: any) {
@@ -1964,6 +1964,19 @@ export class PaymentService {
    * not covered by the credit) goes through the normal Stripe/COD/bank-transfer paths instead.
    */
   async storeCreditPayment(userId: string, body: any) {
+    return this.placeZeroTotalOrder(userId, body, 'store_credit');
+  }
+
+  /**
+   * A checkout whose total is genuinely zero (free digital download / lead magnet, 100% discount) needs no payment
+   * at all — Shopify completes it straight away. The total is the server-computed `checkout.totalAmount`, never a
+   * client value, so this cannot be used to skip paying for anything that costs money.
+   */
+  async freePayment(userId: string, body: any) {
+    return this.placeZeroTotalOrder(userId, body, 'free');
+  }
+
+  private async placeZeroTotalOrder(userId: string, body: any, kind: 'store_credit' | 'free') {
     const { checkoutId } = body ?? {};
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
 
@@ -1980,13 +1993,17 @@ export class PaymentService {
       throw new BadRequestException('Checkout has expired');
     }
 
-    if (!checkout.storeCreditApplied || !((checkout.storeCreditDiscountTotalUSD ?? 0) > 0)) {
-      throw new BadRequestException('Apply your store credit first.');
+    if (kind === 'store_credit') {
+      if (!checkout.storeCreditApplied || !((checkout.storeCreditDiscountTotalUSD ?? 0) > 0)) {
+        throw new BadRequestException('Apply your store credit first.');
+      }
+      if (checkout.totalAmount > 0.005) {
+        throw new BadRequestException('Your store credit does not cover the full amount — choose a payment method for the rest.');
+      }
+    } else if (checkout.totalAmount > 0.005) {
+      throw new BadRequestException('This order is not free — choose a payment method.');
     }
-    if (checkout.totalAmount > 0.005) {
-      throw new BadRequestException('Your store credit does not cover the full amount — choose a payment method for the rest.');
-    }
-    await this.assertDiscountsStillValid(checkout, 'store_credit');
+    await this.assertDiscountsStillValid(checkout, kind);
 
     for (const item of checkout.items) {
       if (item.type !== 'physical') continue;
@@ -1998,16 +2015,16 @@ export class PaymentService {
       }
     }
 
-    await checkoutModel.findByIdAndUpdate(checkoutId, { paymentType: 'store_credit', status: 'payment_pending' });
+    await checkoutModel.findByIdAndUpdate(checkoutId, { paymentType: kind, status: 'payment_pending' });
 
-    const info = { paymentType: 'store_credit', isPaid: true, paymentStatus: 'paid' };
+    const info = { paymentType: kind, isPaid: true, paymentStatus: 'paid' };
     const orders = await this.createOrder(userId, checkout, orderModel, addressModel, info, info);
 
     await paymentTransactionModel.create({
       userId,
       checkoutId: checkout._id.toString(),
       orderIds: orders.map((o: any) => o._id.toString()),
-      paymentType: 'store_credit',
+      paymentType: kind,
       amount: 0,
       currency: checkout.currency,
       fxSnapshots: checkout.fxSnapshots,
@@ -2022,7 +2039,7 @@ export class PaymentService {
 
     return {
       success: true,
-      message: 'Order placed successfully (paid with store credit)',
+      message: kind === 'free' ? 'Order placed successfully' : 'Order placed successfully (paid with store credit)',
       data: { orders: orders.map((o: any) => this.formatOrder(o)) },
     };
   }

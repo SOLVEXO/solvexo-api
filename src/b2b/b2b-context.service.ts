@@ -123,7 +123,7 @@ export class B2BContextService {
 
   /** Store credit is the seller's own credit to the customer, so it is never blocked by the company's method list. */
   assertPaymentMethodAllowed(snapshot: { allowedPaymentMethods?: string[] } | null | undefined, method: string) {
-    if (!snapshot || method === 'store_credit') return;
+    if (!snapshot || method === 'store_credit' || method === 'free') return;
     if (!isPaymentMethodAllowed(snapshot.allowedPaymentMethods, method)) {
       throw new BadRequestException('This payment method is not available for your company. Please choose another one.');
     }

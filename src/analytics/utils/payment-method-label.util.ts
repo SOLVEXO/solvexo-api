@@ -19,6 +19,7 @@ export const PAYMENT_METHOD_LABELS: Record<string, string> = {
   stripe: 'Card (Stripe)',
   manual_bank_transfer: 'Manual Bank Transfer',
   store_credit: 'Store credit',
+  free: 'Free order',
   safepay: 'Safepay',
   jazzcash: 'JazzCash',
   easypaisa: 'Easypaisa',

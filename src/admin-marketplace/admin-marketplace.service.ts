@@ -199,6 +199,9 @@ export class AdminMarketplaceService {
       filter.verificationStatus = query.verificationStatus;
     }
     if (query.search) filter.name = { $regex: query.search, $options: 'i' };
+    // Business profile filters (values are enum-validated by LeadsQueryDto, so they are safe as exact matches).
+    if (query.sellerType) filter.sellerType = query.sellerType;
+    if (query.productType) filter.productTypes = query.productType;
 
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
