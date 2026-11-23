@@ -22,7 +22,7 @@ let books: AccountingBooksService;
 let settlements: AccountingSettlementsService;
 let integrations: AccountingIntegrationsService;
 let accountsModel: any;
-const STORE = 'store-acc-1';
+const STORE = '64b7f0c2a1b2c3d4e5f6acc1'; // a real store id shape: the integrations service looks the store up by _id
 const actor = { id: 'owner', role: 'seller' };
 const GO_LIVE = '2026-11-01';
 const raw = (model: any) => h.conn.collection(model.collection.name);
