@@ -67,7 +67,7 @@ function isPrivateOrReservedIp(ip: string): boolean {
   return true; // unrecognized shape — fail closed
 }
 
-async function assertPublicHost(hostname: string): Promise<void> {
+export async function assertPublicHost(hostname: string): Promise<void> {
   if (hostname === 'localhost' || hostname.endsWith('.local') || hostname.endsWith('.internal')) {
     throw new Error('Host not allowed');
   }

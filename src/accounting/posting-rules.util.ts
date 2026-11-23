@@ -12,8 +12,11 @@ import { EXPENSE_CATEGORY_ACCOUNT } from './chart.const';
 
 export interface PostingCtx { base: string; exp: number }
 export interface DraftLine { accountKey: string; debitMinor: number; creditMinor: number; memo?: string }
+/** Sales channel an entry belongs to, for statements by channel (Phase 3). */
+export type Channel = 'pos' | 'online' | 'b2b' | 'other';
 export interface EntryDraft {
   sourceType: string; sourceId: string; sourceKey: string; date: Date; reference: string; memo: string; lines: DraftLine[];
+  channel?: Channel; locationId?: string | null;
 }
 export interface Skip { skip: string }
 export type RuleResult = EntryDraft | Skip;
@@ -83,7 +86,7 @@ export function posSaleEntry(sale: any, ctx: PostingCtx): RuleResult {
   }
   lines.push(cr('sales_pos', total - tax, 'Sales'), cr('output_tax', tax, 'Sales tax'));
   return finalize({
-    sourceType: 'pos_sale', sourceId: String(sale._id), sourceKey: `pos_sale:${sale._id}`,
+    sourceType: 'pos_sale', sourceId: String(sale._id), sourceKey: `pos_sale:${sale._id}`, channel: 'pos', locationId: sale.locationId ?? null,
     date: dateOf(sale.invoice?.issuedAt, sale.createdAt), reference: sale.invoice?.number ?? sale.saleNumber ?? '',
     memo: `POS sale ${sale.invoice?.number ?? sale.saleNumber ?? ''}`.trim(), lines,
   });
@@ -100,26 +103,26 @@ function moneyBack(tenders: Array<{ method: string; amount: number }>, total: nu
 }
 
 /** A POS return (PosRefund), with its credit note's tax when found. */
-export function posRefundEntry(refund: any, creditNote: any | null, ctx: PostingCtx): RuleResult {
+export function posRefundEntry(refund: any, creditNote: any | null, ctx: PostingCtx, locationId: string | null = null): RuleResult {
   if (!sameCurrency(refund.currency, ctx)) return { skip: 'currency' };
   const exp = refund.currencyExponent ?? ctx.exp;
   const total = minorOr(refund.amountMinor, refund.amount, exp);
   const tenders = (refund.tenders ?? []).map((t: any) => ({ method: t.method, amount: minorOr(t.amountMinor, t.amount, exp) }));
   return finalize({
-    sourceType: 'pos_refund', sourceId: String(refund._id), sourceKey: `pos_refund:${refund._id}`, date: dateOf(refund.createdAt),
+    sourceType: 'pos_refund', sourceId: String(refund._id), sourceKey: `pos_refund:${refund._id}`, date: dateOf(refund.createdAt), channel: 'pos', locationId,
     reference: refund.reference ?? '', memo: `POS refund ${refund.reference ?? ''}`.trim(),
     lines: moneyBack(tenders.length ? tenders : [{ method: 'cash', amount: total }], total, num(creditNote?.taxMinor)),
   });
 }
 
 /** A POS void: its credit note (kind 'void') takes the whole sale back. */
-export function posVoidEntry(cn: any, ctx: PostingCtx): RuleResult {
+export function posVoidEntry(cn: any, ctx: PostingCtx, locationId: string | null = null): RuleResult {
   if (cn.kind !== 'void') return { skip: 'not_void' };
   if (!sameCurrency(cn.currency, ctx)) return { skip: 'currency' };
   const total = num(cn.totalMinor);
   const tenders = (cn.tenders ?? []).map((t: any) => ({ method: t.method, amount: num(t.amountMinor) }));
   return finalize({
-    sourceType: 'pos_void', sourceId: String(cn._id), sourceKey: `pos_void:${cn._id}`, date: dateOf(cn.createdAt),
+    sourceType: 'pos_void', sourceId: String(cn._id), sourceKey: `pos_void:${cn._id}`, date: dateOf(cn.createdAt), channel: 'pos', locationId,
     reference: cn.number ?? '', memo: `POS void ${cn.number ?? ''}`.trim(),
     lines: moneyBack(tenders.length ? tenders : [{ method: 'cash', amount: total }], total, num(cn.taxMinor)),
   });
@@ -137,12 +140,13 @@ export function paymentAccount(method: string | null | undefined): string {
 }
 
 /** A POS expense. `suffix` lets a re-approved expense post again after a rejection reversed it. */
-export function expenseEntry(exp: any, ctx: PostingCtx, suffix = '', accounts: Record<string, string> = {}): RuleResult {
+export function expenseEntry(exp: any, ctx: PostingCtx, suffix = '', accounts: Record<string, string> = {}, locationId: string | null = null): RuleResult {
   if (!sameCurrency(exp.currency, ctx)) return { skip: 'currency' };
   const amount = num(exp.amountMinor);
   const account = accounts[exp.category] ?? EXPENSE_CATEGORY_ACCOUNT[exp.category] ?? 'exp_other';
   return finalize({
     sourceType: 'expense', sourceId: String(exp._id), sourceKey: `expense:${exp._id}${suffix}`, date: dateOf(exp.occurredAt, exp.createdAt),
+    channel: exp.sessionId ? 'pos' : 'other', locationId,
     reference: exp.number ?? '', memo: `Expense: ${exp.category}${exp.payee ? ` (${exp.payee})` : ''}`,
     lines: [dr(account, amount, exp.note ?? ''), cr(paymentAccount(exp.method), amount, `Paid by ${exp.method}`)],
   });
@@ -160,7 +164,7 @@ export function cashMovementEntry(session: any, adj: any, index: number, ctx: Po
   const other = isIn ? (CASH_IN[adj.category] ?? 'other_income') : (CASH_OUT[adj.category] ?? 'exp_other');
   const label = String(adj.category ?? (isIn ? 'cash in' : 'cash out')).replace(/_/g, ' ');
   return finalize({
-    sourceType: 'cash_movement', sourceId: String(session._id), sourceKey: `cash:${session._id}:${adj.requestId ?? index}`,
+    sourceType: 'cash_movement', sourceId: String(session._id), sourceKey: `cash:${session._id}:${adj.requestId ?? index}`, channel: 'pos', locationId: session.locationId ?? null,
     date: dateOf(adj.occurredAt, adj.createdAt), reference: '', memo: `Cash ${isIn ? 'in' : 'out'}: ${label}${adj.reason ? `, ${adj.reason}` : ''}`,
     lines: isIn ? [dr('cash', amount), cr(other, amount)] : [dr(other, amount), cr('cash', amount)],
   });
@@ -175,6 +179,7 @@ export function shiftCloseEntry(session: any, ctx: PostingCtx): RuleResult {
   const over = diff > 0;
   return finalize({
     sourceType: 'shift_close', sourceId: String(session._id), sourceKey: `shift:${session._id}`, date: dateOf(session.closedAt, session.updatedAt),
+    channel: 'pos', locationId: session.locationId ?? null,
     reference: '', memo: `Shift closed ${over ? 'over' : 'short'}`,
     lines: over ? [dr('cash', diff), cr('cash_over_short', diff)] : [dr('cash_over_short', -diff), cr('cash', -diff)],
   });
@@ -204,6 +209,7 @@ export function stockMovementEntry(mv: any): RuleResult {
   const memo = `${mv.type.replace(/_/g, ' ')}: ${Math.abs(qty)} × ${name}`;
   return finalize({
     sourceType: 'stock', sourceId: String(mv._id), sourceKey: `stock:${mv._id}`, date: dateOf(mv.createdAt), reference: mv.sku ?? '', memo,
+    channel: ['sale', 'refund', 'void'].includes(mv.refType) || mv.sessionId ? 'pos' : 'other', locationId: mv.locationId ?? null,
     lines: qty < 0 ? [dr(other, value), cr('inventory', value)] : [dr('inventory', value), cr(other, value)],
   });
 }
@@ -249,7 +255,7 @@ export function supplierEntry(e: any, ctx: PostingCtx): RuleResult {
  */
 export function khataEntry(e: any, currency: string, ctx: PostingCtx, original?: any): RuleResult {
   if (!sameCurrency(currency, ctx)) return { skip: 'currency' };
-  const base = { sourceType: 'khata', sourceId: String(e._id), sourceKey: `khata:${e._id}`, date: dateOf(e.entryDate, e.createdAt), reference: e.reference ?? '' };
+  const base = { sourceType: 'khata', sourceId: String(e._id), sourceKey: `khata:${e._id}`, date: dateOf(e.entryDate, e.createdAt), reference: e.reference ?? '', channel: (e.source === 'pos' ? 'pos' : 'other') as Channel };
   if (e.type === 'reversal') {
     if (!original) return { skip: 'original_missing' };
     const o = khataEntry(original, currency, ctx);
@@ -330,7 +336,8 @@ export function orderAmounts(order: any, so: any, ctx: PostingCtx): { cash: numb
   };
 }
 
-const salesAccountFor = (order: any) => (String(order.paymentType ?? '').toLowerCase() === 'b2b_terms' || order.b2b ? 'sales_b2b' : 'sales_online');
+function salesAccountFor(order: any): string { return (String(order.paymentType ?? '').toLowerCase() === 'b2b_terms' || order.b2b ? 'sales_b2b' : 'sales_online'); }
+const orderChannel = (order: any): Channel => (salesAccountFor(order) === 'sales_b2b' ? 'b2b' : 'online');
 
 /** One seller's part of an online order, once it counts as a sale. */
 export function orderSaleEntry(order: any, so: any, ctx: PostingCtx): RuleResult {
@@ -343,7 +350,7 @@ export function orderSaleEntry(order: any, so: any, ctx: PostingCtx): RuleResult
   if (!gross) return { skip: 'zero' };
   const tax = Math.min(a.tax, gross);
   return finalize({
-    sourceType: 'order', sourceId: String(order._id), sourceKey: `order:${order._id}:${so.storeId}`, date: at,
+    sourceType: 'order', sourceId: String(order._id), sourceKey: `order:${order._id}:${so.storeId}`, date: at, channel: orderChannel(order),
     reference: order.orderNumber ?? '', memo: `Online order ${order.orderNumber ?? ''}`.trim(),
     lines: [
       dr(orderPaymentAccount(order, so), a.cash, `Paid by ${order.paymentType ?? 'card'}`),
@@ -373,10 +380,38 @@ export function orderRefundEntry(order: any, so: any, ctx: PostingCtx, alreadyMi
   const gross = a ? a.cash + a.giftCard + a.storeCredit : 0;
   const tax = a && gross > 0 ? Math.round((delta * Math.min(a.tax, gross)) / gross) : 0;
   return finalize({
-    sourceType: 'order_refund', sourceId: String(order._id), sourceKey: `order_refund:${order._id}:${so.storeId}:${cum}`, date: at,
+    sourceType: 'order_refund', sourceId: String(order._id), sourceKey: `order_refund:${order._id}:${so.storeId}:${cum}`, date: at, channel: orderChannel(order),
     reference: order.orderNumber ?? '', memo: `Refund on online order ${order.orderNumber ?? ''}`.trim(),
     lines: [dr('output_tax', tax, 'Sales tax reversed'), dr('sales_returns', delta - tax, 'Refunded sales'), cr(orderPaymentAccount(order, so), delta, 'Refunded')],
   });
+}
+
+/**
+ * Cost of goods sold for one seller's part of an online order, posted when the sale is (Phase 3). Online stock leaves without a stock
+ * movement, so the cost comes from the line: its batch (FIFO) cost when lots were consumed, else the variant's current average cost.
+ * Cancelled and digital lines carry no cost; a line with no known cost is left out (`missing` counts them). Returns restock through a
+ * stock adjustment, which posts the cost back.
+ */
+export function orderCogsEntry(order: any, so: any, ctx: PostingCtx, costOf: (variantId: string) => number | null, at: Date): RuleResult & { missing?: number } {
+  let total = 0, missing = 0;
+  for (const it of so.items ?? []) {
+    if (it?.type === 'digital' || it?.status === 'cancelled') continue;
+    const qty = num(it.quantity);
+    if (!qty) continue;
+    if (it.costOfGoodsSold != null && Number(it.costOfGoodsSold) > 0) { total += toMinor(Number(it.costOfGoodsSold), ctx.exp); continue; }
+    const parts: Array<{ variantId: string; qty: number }> = (it.bundleComponents ?? []).length
+      ? it.bundleComponents.map((c: any) => ({ variantId: String(c.variantId), qty: num(c.quantity) * qty }))
+      : it.variantId ? [{ variantId: String(it.variantId), qty }] : [];
+    if (!parts.length) { missing++; continue; }
+    for (const p of parts) { const c = costOf(p.variantId); if (c == null) { missing++; continue; } total += Math.round(c * p.qty); }
+  }
+  if (!total) return { skip: missing ? 'no_cost' : 'zero' };
+  const d = finalize({
+    sourceType: 'order_cogs', sourceId: String(order._id), sourceKey: `order_cogs:${order._id}:${so.storeId}`, date: at, channel: orderChannel(order),
+    reference: order.orderNumber ?? '', memo: `Cost of goods for online order ${order.orderNumber ?? ''}`.trim(),
+    lines: [dr('cogs', total), cr('inventory', total)],
+  });
+  return Object.assign(d, { missing });
 }
 
 // ── Solvexo balance ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -392,7 +427,7 @@ export function financeTxEntry(tx: any, ctx: PostingCtx): RuleResult {
     ? [dr('platform_fees', -amt, tx.description ?? ''), cr('solvexo_receivable', -amt)]
     : [dr('solvexo_receivable', amt), cr('other_income', amt, tx.description ?? '')];
   return finalize({
-    sourceType: 'fee', sourceId: String(tx._id), sourceKey: `fee:${tx._id}`, date: dateOf(tx.createdAt), reference: '',
+    sourceType: 'fee', sourceId: String(tx._id), sourceKey: `fee:${tx._id}`, date: dateOf(tx.createdAt), reference: '', channel: 'online',
     memo: tx.type === 'fee' ? 'Solvexo fee' : 'Solvexo balance adjustment', lines,
   });
 }
@@ -404,7 +439,7 @@ export function payoutEntry(p: any, ctx: PostingCtx): RuleResult {
   const amt = toMinor(Math.abs(num(p.amount)), ctx.exp);
   if (!amt) return { skip: 'zero' };
   return finalize({
-    sourceType: 'payout', sourceId: String(p._id), sourceKey: `payout:${p._id}`, date: dateOf(p.processedAt, p.updatedAt, p.createdAt),
+    sourceType: 'payout', sourceId: String(p._id), sourceKey: `payout:${p._id}`, date: dateOf(p.processedAt, p.updatedAt, p.createdAt), channel: 'online',
     reference: '', memo: 'Payout from Solvexo', lines: [dr('bank', amt), cr('solvexo_receivable', amt)],
   });
 }

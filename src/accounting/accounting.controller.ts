@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Patch, Post, Put, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Put, Query, Req, Res, StreamableFile, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -16,6 +16,9 @@ import { DatabaseService } from '../database/databaseservice';
 import { AccountingService } from './accounting.service';
 import { AccountingSyncService } from './accounting-sync.service';
 import { AccountingBooksService } from './accounting-books.service';
+import { AccountingStatementsService } from './accounting-statements.service';
+import { AccountingSettlementsService } from './accounting-settlements.service';
+import { AccountingIntegrationsService } from './accounting-integrations.service';
 
 /** The store's books (Accounting Plan, Phase 1). Permissions: accounting.view (read) / accounting.manage (setup, entries, sync). */
 @ApiTags('Accounting (seller)')
@@ -25,7 +28,8 @@ import { AccountingBooksService } from './accounting-books.service';
 @UsePipes(new ValidationPipe({ transform: false }))
 @Controller('api/accounting/:storeId')
 export class AccountingController {
-  constructor(private readonly svc: AccountingService, private readonly sync: AccountingSyncService, private readonly books: AccountingBooksService, private readonly db: DatabaseService) {}
+  constructor(private readonly svc: AccountingService, private readonly sync: AccountingSyncService, private readonly books: AccountingBooksService, private readonly statements: AccountingStatementsService,
+    private readonly settlements: AccountingSettlementsService, private readonly integrations: AccountingIntegrationsService, private readonly db: DatabaseService) {}
 
   private async own(req: any, storeId: string) {
     const store: any = await verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, actingSellerId(req.user));
@@ -136,4 +140,74 @@ export class AccountingController {
 
   @Get('reports/tax') @RequirePermission('accounting.view')
   async tax(@Req() req: any, @Param('storeId') s: string, @Query() q: any) { const { store } = await this.own(req, s); return this.books.tax(store, q); }
+  // ── Phase 3: statements, Excel, gateway settlements ─────────────────────────────────────────────────────────────────
+
+  @Get('statements/profit-and-loss') @RequirePermission('accounting.view')
+  async pnl(@Req() req: any, @Param('storeId') s: string, @Query() q: any) { await this.own(req, s); return this.statements.profitAndLoss(s, q); }
+
+  @Get('statements/balance-sheet') @RequirePermission('accounting.view')
+  async balanceSheet(@Req() req: any, @Param('storeId') s: string, @Query() q: any) { await this.own(req, s); return this.statements.balanceSheet(s, q); }
+
+  @Get('statements/sales-tax') @RequirePermission('accounting.view')
+  async salesTax(@Req() req: any, @Param('storeId') s: string, @Query() q: any) { await this.own(req, s); return this.statements.salesTax(s, q); }
+
+  /** An Excel file. kind: profit-and-loss | balance-sheet | sales-tax | trial-balance (same query as the screen). */
+  @Get('exports/:kind') @RequirePermission('accounting.view')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  async excel(@Req() req: any, @Param('storeId') s: string, @Param('kind') kind: string, @Query() q: any) {
+    await this.own(req, s); await this.svc.requireEnabled(s);
+    const { buffer, fileName } = await this.statements.excel(s, kind, q);
+    return new StreamableFile(buffer, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', disposition: `attachment; filename="${fileName}"` });
+  }
+
+  @Get('settlements') @RequirePermission('accounting.view')
+  async settlementList(@Req() req: any, @Param('storeId') s: string) { await this.own(req, s); return this.settlements.list(s); }
+
+  @Post('settlements') @RequirePermission('accounting.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async settlementImport(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { const { actor } = await this.own(req, s); return this.settlements.import(s, b, actor); }
+
+  @Get('settlements/:id') @RequirePermission('accounting.view')
+  async settlement(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string) { await this.own(req, s); return this.settlements.get(s, id); }
+
+  @Post('settlements/:id/post') @RequirePermission('accounting.manage')
+  async settlementPost(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string) { const { actor } = await this.own(req, s); return this.settlements.post(s, id, actor); }
+
+  @Post('settlements/:id/discard') @RequirePermission('accounting.manage')
+  async settlementDiscard(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string) { await this.own(req, s); return this.settlements.discard(s, id); }
+  // ── Phase 4: accounting app integrations ────────────────────────────────────────────────────────────────────────────
+
+  /** Tally import file (XML) for a period; one voucher a day by default, `mode=detail` for one per entry. */
+  @Get('integrations/tally') @RequirePermission('accounting.view')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  async tally(@Req() req: any, @Param('storeId') s: string, @Query() q: any) {
+    await this.own(req, s);
+    const { xml, fileName } = await this.integrations.tallyExport(s, q);
+    return new StreamableFile(Buffer.from(xml, 'utf8'), { type: 'application/xml; charset=utf-8', disposition: `attachment; filename="${fileName}"` });
+  }
+
+  @Get('integrations') @RequirePermission('accounting.view')
+  async integrationsList(@Req() req: any, @Param('storeId') s: string) { await this.own(req, s); return this.integrations.listConnections(s); }
+
+  @Put('integrations/:app') @RequirePermission('accounting.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async connect(@Req() req: any, @Param('storeId') s: string, @Param('app') app: string, @Body() b: any) { const { actor } = await this.own(req, s); return this.integrations.saveConnection(s, app, b, actor); }
+
+  @Post('integrations/:app/test') @RequirePermission('accounting.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async testConnection(@Req() req: any, @Param('storeId') s: string, @Param('app') app: string) { await this.own(req, s); return this.integrations.test(s, app); }
+
+  @Post('integrations/:app/sync') @RequirePermission('accounting.manage')
+  @Throttle({ default: { limit: 6, ttl: 60_000 } })
+  async syncApp(@Req() req: any, @Param('storeId') s: string, @Param('app') app: string) { await this.own(req, s); return this.integrations.sync(s, app); }
+
+  @Post('integrations/:app/disconnect') @RequirePermission('accounting.manage')
+  async disconnect(@Req() req: any, @Param('storeId') s: string, @Param('app') app: string) { await this.own(req, s); return this.integrations.removeConnection(s, app); }
+
+  @Get('integrations/:app/log') @RequirePermission('accounting.view')
+  async syncLog(@Req() req: any, @Param('storeId') s: string, @Param('app') app: string, @Query() q: any) { await this.own(req, s); return this.integrations.log(s, app, q); }
+
+  @Post('integrations/:app/log/:itemKey/retry') @RequirePermission('accounting.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async retryItem(@Req() req: any, @Param('storeId') s: string, @Param('app') app: string, @Param('itemKey') key: string) { await this.own(req, s); return this.integrations.retry(s, app, key); }
 }

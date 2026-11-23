@@ -10,7 +10,7 @@ import { isoExponent } from '../common/money-minor.util';
 import { AccountingSettings, AccountingSettingsDocument, JournalEntry, JournalEntryDocument } from './accounting.schema';
 import { AccountingService } from './accounting.service';
 import {
-  cashMovementEntry, expenseEntry, financeTxEntry, isSkip, khataEntry, orderRefundEntry, orderSaleEntry, payoutEntry, posRefundEntry, posSaleEntry,
+  cashMovementEntry, expenseEntry, orderCogsEntry, financeTxEntry, isSkip, khataEntry, orderRefundEntry, orderSaleEntry, payoutEntry, posRefundEntry, posSaleEntry,
   posVoidEntry, receiptEntry, shiftCloseEntry, stockMovementEntry, supplierEntry, type PostingCtx, type RuleResult,
 } from './posting-rules.util';
 
@@ -104,13 +104,31 @@ export class AccountingSyncService {
       }
     };
 
+    // Branch of a POS sale (refunds and voids belong to the sale's branch).
+    const saleLocations = new Map<string, string | null>();
+    const locationOfSale = async (saleId: any): Promise<string | null> => {
+      const id = String(saleId ?? '');
+      if (!id || !Types.ObjectId.isValid(id)) return null;
+      if (!saleLocations.has(id)) saleLocations.set(id, ((await this.r.saleModel.findOne({ storeId, _id: id }).select('locationId').lean()) as any)?.locationId ?? null);
+      return saleLocations.get(id) ?? null;
+    };
+    const variantCost = new Map<string, number | null>();
+    const costOf = async (ids: string[]) => {
+      const need = [...new Set(ids)].filter(i => !variantCost.has(i) && Types.ObjectId.isValid(i));
+      if (need.length) {
+        const rows: any[] = await this.r.productVariantModel.find({ _id: { $in: need } }).select('costPriceMinor costPrice').lean();
+        for (const i of need) variantCost.set(i, null);
+        for (const v of rows) variantCost.set(String(v._id), v.costPriceMinor != null ? Number(v.costPriceMinor) : v.costPrice != null ? Math.round(Number(v.costPrice) * 10 ** ctx.exp) : null);
+      }
+    };
+
     // POS
     await scan('pos_sales', this.r.saleModel, { storeId }, 'updatedAt', d => take('pos_sale', posSaleEntry(d, ctx)));
     await scan('pos_refunds', this.r.posRefundModel, { storeId }, 'createdAt', async d => {
       const cn = await this.r.posCreditNoteModel.findOne({ storeId, refundId: String(d._id) }).select('taxMinor').lean();
-      await take('pos_refund', posRefundEntry(d, cn, ctx));
+      await take('pos_refund', posRefundEntry(d, cn, ctx, await locationOfSale(d.saleId)));
     });
-    await scan('pos_voids', this.r.posCreditNoteModel, { storeId, kind: 'void' }, 'createdAt', d => take('pos_void', posVoidEntry(d, ctx)));
+    await scan('pos_voids', this.r.posCreditNoteModel, { storeId, kind: 'void' }, 'createdAt', async d => take('pos_void', posVoidEntry(d, ctx, await locationOfSale(d.saleId))));
     await scan('pos_sessions', this.r.registerSessionModel, { storeId }, 'updatedAt', async s => {
       const adjs: any[] = s.cashAdjustments ?? [];
       for (let i = 0; i < adjs.length; i++) await take('cash_movement', cashMovementEntry(s, adjs[i], i, ctx));
@@ -142,7 +160,13 @@ export class AccountingSyncService {
     await scan('orders', this.r.orderModel, { 'sellerOrders.storeId': storeId }, 'updatedAt', async o => {
       for (const so of (o.sellerOrders ?? []).filter((x: any) => x.storeId === storeId)) {
         await take('order', orderSaleEntry(o, so, ctx));
-        if (!(await this.journal.exists({ storeId, sourceKey: `order:${o._id}:${storeId}` }))) continue; // refunds only after a posted sale
+        const sale = await this.journal.findOne({ storeId, sourceKey: `order:${o._id}:${storeId}` }).select('date').lean();
+        if (!sale) continue; // cost and refunds only after a posted sale
+        if (!(await this.journal.exists({ storeId, sourceKey: `order_cogs:${o._id}:${storeId}` }))) {
+          const ids = (so.items ?? []).flatMap((it: any) => [it.variantId, ...(it.bundleComponents ?? []).map((c: any) => c.variantId)]).filter(Boolean).map(String);
+          await costOf(ids);
+          await take('order_cogs', orderCogsEntry(o, so, ctx, id => variantCost.get(id) ?? null, new Date(sale.date)));
+        }
         const prefix = `order_refund:${o._id}:${storeId}:`;
         const prior = await this.journal.find({ storeId, sourceType: 'order_refund', sourceId: String(o._id) }).select('sourceKey totalMinor').lean();
         const already = prior.filter(p => p.sourceKey.startsWith(prefix)).reduce((t, p) => t + p.totalMinor, 0);
@@ -178,7 +202,9 @@ export class AccountingSyncService {
       for (const e of active) await this.accounting.reverse(storeId, String(e._id), SYSTEM, 'expense rejected', new Date(last.createdAt ?? Date.now()) < goLive ? goLive : new Date(last.createdAt ?? Date.now()));
       return;
     }
-    if (!active.length) await take('expense', expenseEntry(exp, ctx, entries.length ? `:${entries.length}` : '', accounts));
+    if (active.length) return;
+    const loc = exp.sessionId && Types.ObjectId.isValid(String(exp.sessionId)) ? ((await this.r.registerSessionModel.findOne({ storeId, _id: exp.sessionId }).select('locationId').lean()) as any)?.locationId ?? null : null;
+    await take('expense', expenseEntry(exp, ctx, entries.length ? `:${entries.length}` : '', accounts, loc));
   }
 }
 

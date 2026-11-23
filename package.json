@@ -53,6 +53,7 @@
     "class-validator": "^0.14.3",
     "cloudinary": "^1.41.3",
     "cookie-parser": "^1.4.7",
+    "exceljs": "^4.4.0",
     "firebase-admin": "^13.6.1",
     "geoip-lite": "^1.4.10",
     "google-auth-library": "^10.9.0",

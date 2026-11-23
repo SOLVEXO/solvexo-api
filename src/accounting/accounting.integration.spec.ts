@@ -7,6 +7,9 @@ import { AccountingSettings, AccountingSettingsSchema, JournalEntry, JournalEntr
 import { AccountingService } from './accounting.service';
 import { AccountingSyncService } from './accounting-sync.service';
 import { AccountingBooksService } from './accounting-books.service';
+import { AccountingSettlementsService } from './accounting-settlements.service';
+import { AccountingConnection, AccountingConnectionSchema, AccountingExportLog, AccountingExportLogSchema, GatewaySettlement, GatewaySettlementSchema } from './accounting.schema';
+import { AccountingIntegrationsService } from './accounting-integrations.service';
 import { DEFAULT_ACCOUNTS } from './chart.const';
 
 jest.setTimeout(120_000);
@@ -16,6 +19,9 @@ let svc: AccountingService;
 let sync: AccountingSyncService;
 let journal: any;
 let books: AccountingBooksService;
+let settlements: AccountingSettlementsService;
+let integrations: AccountingIntegrationsService;
+let accountsModel: any;
 const STORE = 'store-acc-1';
 const actor = { id: 'owner', role: 'seller' };
 const GO_LIVE = '2026-11-01';
@@ -35,6 +41,7 @@ beforeAll(async () => {
     posExpenseEventModel: m(schema.PosExpenseEvent, schema.PosExpenseEventSchema),
     purchaseReceiptModel: m(schema.PurchaseReceipt, schema.PurchaseReceiptSchema),
     supplierLedgerEntryModel: m(schema.SupplierLedgerEntry, schema.SupplierLedgerEntrySchema),
+    paymentTransactionModel: m(schema.PaymentTransaction, schema.PaymentTransactionSchema),
   };
   h.repos.posExpenseModel = repos.posExpenseModel;
   h.repos.posExpenseEventModel = repos.posExpenseEventModel;
@@ -43,6 +50,14 @@ beforeAll(async () => {
   sync = new AccountingSyncService({ repositories: repos } as any, redis, svc, settings as any, journal, m(KhataEntry, KhataEntrySchema) as any, m(KhataAccount, KhataAccountSchema) as any);
   await svc.setup(STORE, { baseCurrency: 'PKR' }, { goLiveDate: GO_LIVE }, actor);
   const cashStub: any = { expenseGet: async (_r: any, _s: string, id: string) => ({ success: true, data: { expense: { id } } }) };
+  process.env.INTEGRATIONS_CREDENTIALS_ENCRYPTION_KEY = process.env.INTEGRATIONS_CREDENTIALS_ENCRYPTION_KEY || 'integration-test-key';
+  accountsModel = accounts;
+  const conns = m(AccountingConnection, AccountingConnectionSchema), xlog = m(AccountingExportLog, AccountingExportLogSchema);
+  await conns.init(); await xlog.init();
+  integrations = new AccountingIntegrationsService({ repositories: repos } as any, redis, svc, conns as any, xlog as any, journal, accounts as any);
+  integrations.checkHost = async () => undefined;
+  settlements = new AccountingSettlementsService({ repositories: repos } as any, svc, m(GatewaySettlement, GatewaySettlementSchema) as any);
+  h.repos.paymentTransactionModel = repos.paymentTransactionModel;
   books = new AccountingBooksService({ repositories: repos } as any, cashStub, {} as any, {} as any, settings as any, accounts as any);
 });
 afterAll(async () => { await h?.stop(); });
@@ -140,6 +155,79 @@ describe('Accounting: setup, sync and books (real MongoDB)', () => {
     await sync.syncStore(STORE);
     const e = await journal.findOne({ storeId: STORE, sourceType: 'expense', sourceId: r.data.expense.id }).lean();
     expect(e.lines.map((l: any) => [l.accountKey, l.debitMinor, l.creditMinor])).toEqual([['exp_other', 4_000_000, 0], ['bank', 0, 4_000_000]]);
+  });
+
+  it('an online JazzCash order posts its sale and cost; the gateway settlement matches it and empties the clearing account', async () => {
+    const variantId = new Types.ObjectId();
+    await raw(h.repos.productVariantModel).insertOne({ _id: variantId, costPriceMinor: 40000 });
+    const orderId = new Types.ObjectId();
+    await raw(h.repos.orderModel).insertOne({
+      _id: orderId, orderNumber: 'ORD-77', currency: 'PKR', paymentType: 'jazzcash', isPaid: true, paymentStatus: 'paid', paidAt: new Date('2026-11-18'),
+      createdAt: new Date('2026-11-18'), updatedAt: new Date('2026-11-18'),
+      sellerOrders: [{ storeId: STORE, sellerId: 'seller-1', subtotal: 1000, taxAmount: 180, includedTaxAmount: 0, platformSponsoredDiscountUSD: 0, settlementCurrency: 'PKR', settlementAmount: 1180, status: 'processing',
+        items: [{ productId: 'p1', variantId: String(variantId), type: 'physical', quantity: 2, price: 500, totalPrice: 1000 }] }],
+    });
+    await raw(h.repos.paymentTransactionModel).insertOne({ _id: new Types.ObjectId(), providerSessionId: 'T20261118000001', orderIds: [String(orderId)], checkoutId: 'c1', amount: 1180, currency: 'PKR' });
+    await sync.syncStore(STORE);
+    const sale = await journal.findOne({ storeId: STORE, sourceKey: `order:${orderId}:${STORE}` }).lean();
+    expect(sale.channel).toBe('online');
+    const cogs = await journal.findOne({ storeId: STORE, sourceKey: `order_cogs:${orderId}:${STORE}` }).lean();
+    expect(cogs.totalMinor).toBe(80000);
+
+    const csv = 'Transaction Date,pp_TxnRefNo,Transaction Amount,Fee,Net Amount\n2026-11-18,T20261118000001,"1,180.00",29.50,1150.50\n2026-11-18,T99,100.00,2.00,98.00\n';
+    const imp: any = await settlements.import(STORE, { gateway: 'jazzcash', settledOn: '2026-11-20', csv, fileName: 'jazz-nov.csv' }, actor);
+    expect(imp.settlement.lines.map((l: any) => l.match.status)).toEqual(['matched', 'unmatched']);
+    expect(imp.settlement.totals).toMatchObject({ grossMinor: 128000, feeMinor: 3150, netMinor: 124850, matched: 1, unmatched: 1 });
+    const posted: any = await settlements.post(STORE, String(imp.settlement._id), actor);
+    expect(posted.status).toBe('posted');
+    await expect(settlements.post(STORE, String(imp.settlement._id), actor)).rejects.toThrow(/already posted/);
+    const again: any = await settlements.import(STORE, { gateway: 'jazzcash', settledOn: '2026-11-21', csv }, actor);
+    expect(again.settlement.lines.every((l: any) => l.match.status === 'duplicate')).toBe(true);
+
+    const tb = await svc.trialBalance(STORE, {});
+    const bal = (k: string) => tb.rows.find((r: any) => r.key === k)?.balanceMinor ?? 0;
+    expect(bal('gateway_clearing')).toBe(118000 - 128000); // the unmatched T99 line is the visible difference
+    expect(bal('processing_fees')).toBe(3150);
+    expect(tb.totals.balanced).toBe(true);
+  });
+
+  it('Odoo sync sends every entry once, records failures and retries them; Tally export carries every account used', async () => {
+    let failCreate = true; let created = 0;
+    const seenRefs = new Set<string>();
+    integrations.fetchFn = (async (_u: string, init: any) => {
+      const p = JSON.parse(init.body).params;
+      const ok = (result: any) => ({ ok: true, status: 200, json: async () => ({ result }), text: async () => JSON.stringify({ result }) });
+      if (p.service === 'common') return ok(5);
+      const [, , , model, method, args] = p.args;
+      if (model === 'account.journal') return ok([{ id: 1, name: 'Misc' }]);
+      if (model === 'account.account') return ok(args[0][0][2].map((code: string, i: number) => ({ id: i + 10, code })));
+      if (model === 'account.move' && method === 'search_read') return ok(seenRefs.has(args[0][0][2]) ? [{ id: 1 }] : []);
+      if (model === 'account.move' && method === 'create') {
+        if (failCreate && created === 0) { created++; return { ok: false, status: 500, json: async () => ({}), text: async () => 'boom' }; }
+        created++; seenRefs.add(args[0].ref); return ok(created);
+      }
+      return ok(true);
+    }) as any;
+    // Give every account its Odoo code (the seller would do this in the chart of accounts).
+    const all = await accountsModel.find({ storeId: STORE }).lean();
+    for (const a of all) await accountsModel.updateOne({ _id: a._id }, { $set: { externalCode: a.code } });
+    const conn: any = await integrations.saveConnection(STORE, 'odoo', { baseUrl: 'https://acme.odoo.com', database: 'acme', login: 'a@acme.com', secret: 'KEY', from: 'go_live' }, actor);
+    expect(conn.lastCheck.ok).toBe(true);
+    expect(conn.secretEnc).toBeUndefined();
+    const total = await journal.countDocuments({ storeId: STORE });
+    const r1 = await integrations.sync(STORE, 'odoo');
+    expect(r1).toEqual({ sent: total - 1, failed: 1 });
+    const r2 = await integrations.sync(STORE, 'odoo'); // the failed one is retried
+    expect(r2).toEqual({ sent: 1, failed: 0 });
+    expect((await integrations.sync(STORE, 'odoo')).sent).toBe(0);
+    const log: any = await integrations.log(STORE, 'odoo', {});
+    expect(log.total).toBe(total);
+    expect(log.items.every((i: any) => i.status === 'sent')).toBe(true);
+
+    const t = await integrations.tallyExport(STORE, { from: '2026-11-01', to: '2026-11-30' });
+    expect(t.fileName).toBe('solvexo-tally-2026-11-01-to-2026-11-30.xml');
+    expect(t.xml).toContain('<VOUCHER REMOTEID="solvexo-day:2026-11-');
+    expect(t.xml).toContain('<PARENT>Cash-in-Hand</PARENT>');
   });
 
   it('the go-live date is locked once entries exist', async () => {
