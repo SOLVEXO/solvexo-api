@@ -14,6 +14,17 @@ export interface ChromeQr {
   logoUrl: string;
   caption: string;
   frame: boolean;
+  /** No background fill at all behind the dots (the seller makes sure the contrast works). */
+  transparent: boolean;
+  /** Colour of the card around the QR (only when `frame`); empty = the QR's own background. */
+  frameBg: string;
+}
+
+export interface PopupLink {
+  label: string;
+  url: string;
+  icon: string;
+  bold: boolean;
 }
 
 export interface ChromePopup {
@@ -45,6 +56,19 @@ export interface ChromePopup {
   align: 'left' | 'center';
   border: boolean;
   shadow: boolean;
+  /** 'theme' = the active theme's own popup look; 'classic' = flat and attached (how popups looked before). */
+  style: 'theme' | 'classic';
+  /** auto = the theme's default (classic: the width above), custom = widthPx / width, content = as wide as the page container, full = edge to edge. */
+  widthMode: 'auto' | 'custom' | 'content' | 'full';
+  /** Max height in px with scrolling inside; 0 = automatic. */
+  maxHeight: number;
+  /** Space between the strip and the popup in px; -1 = the theme's own. */
+  gap: number;
+  /** Where image + QR go: beside the text (see `layout`), under it or above it. */
+  mediaPlacement: 'side' | 'below' | 'above';
+  linksTitle: string;
+  linksColumns: number;
+  links: PopupLink[];
 }
 
 export interface ChromeItem {
@@ -65,7 +89,8 @@ export interface ChromeItem {
   popup: ChromePopup | null;
 }
 
-export const POPUP_PARTS = ['title', 'body', 'image', 'qr', 'button', 'share', 'footnote'] as const;
+export const POPUP_PARTS = ['title', 'body', 'links', 'image', 'qr', 'button', 'share', 'footnote'] as const;
+export const MAX_POPUP_LINKS = 30;
 export const DEFAULT_POPUP_ORDER = [...POPUP_PARTS];
 
 function int(v: unknown, field: string, min: number, max: number, fallback: number): number {
@@ -126,7 +151,28 @@ function sanitizeQr(v: unknown, field: string): ChromeQr | null {
     logoUrl: image(q.logoUrl, `${field}.logoUrl`),
     caption: text(q.caption, `${field}.caption`, 60),
     frame: q.frame !== false,
+    transparent: q.transparent === true,
+    frameBg: color(q.frameBg, `${field}.frameBg`),
   };
+}
+
+function sanitizeLinks(v: unknown, field: string): PopupLink[] {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) throw new BadRequestException(`${field} must be a list`);
+  if (v.length > MAX_POPUP_LINKS) throw new BadRequestException(`${field} can have at most ${MAX_POPUP_LINKS} links`);
+  const out: PopupLink[] = [];
+  v.forEach((raw, i) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new BadRequestException(`${field}[${i}] must be an object`);
+    const r = raw as Record<string, unknown>;
+    const label = text(r.label, `${field}[${i}].label`, 60);
+    const url = href(r.url, `${field}[${i}].url`);
+    if (!label && !url) return; // an empty row is simply dropped
+    if (!label) throw new BadRequestException(`${field}[${i}] needs a label`);
+    const icon = text(r.icon, `${field}[${i}].icon`, 32);
+    if (icon && !/^[a-z0-9-]+$/.test(icon)) throw new BadRequestException(`${field}[${i}].icon is not valid`);
+    out.push({ label, url, icon, bold: r.bold === true });
+  });
+  return out;
 }
 
 function sanitizeOrder(v: unknown, field: string): string[] {
@@ -167,6 +213,14 @@ function sanitizePopup(v: unknown, field: string): ChromePopup | null {
     align: oneOf(p.align, ['left', 'center'], `${field}.align`, 'left'),
     border: p.border === true,
     shadow: p.shadow !== false,
+    style: oneOf(p.style, ['theme', 'classic'], `${field}.style`, 'classic'),
+    widthMode: oneOf(p.widthMode, ['auto', 'custom', 'content', 'full'], `${field}.widthMode`, 'auto'),
+    maxHeight: int(p.maxHeight, `${field}.maxHeight`, 0, 2000, 0),
+    gap: int(p.gap, `${field}.gap`, -1, 200, -1),
+    mediaPlacement: oneOf(p.mediaPlacement, ['side', 'below', 'above'], `${field}.mediaPlacement`, 'side'),
+    linksTitle: text(p.linksTitle, `${field}.linksTitle`, 80),
+    linksColumns: int(p.linksColumns, `${field}.linksColumns`, 1, 6, 2),
+    links: sanitizeLinks(p.links, `${field}.links`),
   };
 }
 
