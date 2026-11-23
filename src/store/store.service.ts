@@ -27,6 +27,8 @@ import {
   type BusinessType, type VerificationDocumentType, type VerificationDocument,
   type VerificationStatus,
 } from './schemas/store.schema';
+import { buildSellerPersonalization, SELLER_PROFILES, CAPABILITIES } from './seller-personalization';
+import { ProductType as CatalogProductType } from '../products/schemas/product.schema';
 import { getVerificationRequirements, isFieldSatisfied, VERIFICATION_DECLARATION_VERSION } from './verification-requirements.config';
 import type { RequirementOptions } from './verification-requirements.config';
 import { CHANGE_SCALAR_FIELDS, CHANGE_CONTACT_FIELDS, CHANGE_DIRECTOR_FIELDS, mergeVerificationChange, describeChange } from './verification-change.util';
@@ -327,6 +329,29 @@ export class StoreService {
     if (!store) throw new NotFoundException('Store not found');
     if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
     return store;
+  }
+
+  /** Static seller-type defaults + what is really shipped — onboarding reads this before any store exists. */
+  getSellerProfiles() {
+    return {
+      success: true,
+      data: {
+        profiles: Object.fromEntries(Object.entries(SELLER_PROFILES).map(([id, p]) => [id, { defaultProductTypes: p.defaultProductTypes }])),
+        capabilities: CAPABILITIES,
+      },
+    };
+  }
+
+  /** Per-store personalization: seller type + selling categories + real counts from the store's own data. Owner-scoped. */
+  async getSellerPersonalization(sellerId: string, storeId: string) {
+    const store = await this.findOwnedStoreOrThrow(sellerId, storeId);
+    const { productModel, supplierModel } = this.databaseService.repositories;
+    const [physicalProducts, digitalProducts, suppliers] = await Promise.all([
+      productModel.countDocuments({ storeId, isDelete: false, productType: CatalogProductType.PHYSICAL }),
+      productModel.countDocuments({ storeId, isDelete: false, productType: { $in: [CatalogProductType.DIGITAL, CatalogProductType.EDUCATIONAL] } }),
+      supplierModel.countDocuments({ storeId, isDelete: false, status: 'active' }),
+    ]);
+    return { success: true, data: buildSellerPersonalization(store, { physicalProducts, digitalProducts, suppliers }) };
   }
 
   /** Documents are stored as Cloudinary private-type publicIds (never a bare
@@ -1459,6 +1484,10 @@ export class StoreService {
       throw new BadRequestException('Invalid sellerType');
     }
 
+    // productTypes must be a real array of known types; duplicates are collapsed (a non-array used to slip through and 500 in resolveTools).
+    if (productTypes !== undefined && productTypes !== null && !Array.isArray(productTypes)) {
+      throw new BadRequestException('productTypes must be an array');
+    }
     if (productTypes && Array.isArray(productTypes)) {
       const validTypes = Object.values(ProductType);
       for (const pt of productTypes) {
@@ -1675,9 +1704,10 @@ export class StoreService {
     if (floatingContact !== undefined) updateData.floatingContact = normalizeFloatingContact(floatingContact);
 
     // productTypes change ho to enabledTools bhi refresh
-    if (productTypes !== undefined) {
-      updateData.productTypes = productTypes;
-      updateData.enabledTools = resolveTools(productTypes);
+    if (productTypes !== undefined && productTypes !== null) {
+      const uniqueProductTypes = [...new Set(productTypes as ProductType[])];
+      updateData.productTypes = uniqueProductTypes;
+      updateData.enabledTools = resolveTools(uniqueProductTypes);
     }
 
     const updated = await this.databaseService.repositories.storeModel.findByIdAndUpdate(

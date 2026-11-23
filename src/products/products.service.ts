@@ -25,8 +25,9 @@ import { normalizeComplementaryIds } from './complementary-products.util';
 import { buildStoreProductFilter, productSort } from './product-list-filter.util';
 
 import { DatabaseService } from '@/database/databaseservice';
-import { ProductType as StoreProductType } from '@/store/schemas/store.schema';
+import { ProductType as StoreProductType, resolveTools } from '@/store/schemas/store.schema';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { MarketingService } from '@/marketing/marketing.service';
 import { EducationLevel } from './schemas/product.schema';
@@ -62,6 +63,22 @@ export class ProductsService {
     private redisService: RedisService,
     @InjectConnection() private readonly connection: Connection,
   ) {}
+
+  /**
+   * The onboarding "What you sell" answer is a starting point, never a restriction. Creating a product of a type the
+   * store hasn't switched on yet enables that capability (additive only — nothing already enabled is removed).
+   * An educational store already covers both physical and digital creation, as before.
+   */
+  private async ensureStoreSellsType(store: any, type: StoreProductType): Promise<void> {
+    const current: StoreProductType[] = Array.isArray(store.productTypes) ? store.productTypes : [];
+    if (current.includes(type) || current.includes(StoreProductType.EDUCATIONAL_RESOURCES)) return;
+    const next = [...current, type];
+    await this.databaseService.repositories.storeModel.updateOne(
+      { _id: store._id },
+      { $addToSet: { productTypes: type }, $set: { enabledTools: resolveTools(next) } },
+    );
+    store.productTypes = next;
+  }
 
   // Strips the private Cloudinary file manifest (publicId/name/size/mimeType)
   // from a digital product's `digital.files` before it's shown to a
@@ -1134,11 +1151,8 @@ export class ProductsService {
     if (!store) throw new BadRequestException('Store not found');
     if (store.status !== 'active') throw new BadRequestException('Your store is not active');
 
-    const allowsPhysical =
-      store.productTypes?.includes(StoreProductType.PHYSICAL_PRODUCTS) ||
-      store.productTypes?.includes(StoreProductType.EDUCATIONAL_RESOURCES);
-    if (!allowsPhysical) throw new BadRequestException('Your store does not support physical products');
-
+    // No product-type gate: the onboarding answer never restricts what can be sold. The capability is switched on
+    // (additively) once the product has actually been created — see ensureStoreSellsType below.
     await this.entitlementsService.assertCanCreateProduct(storeId);
 
     const name = normalizeName(body.name);
@@ -1243,6 +1257,7 @@ export class ProductsService {
     }
 
     await this.enforceProductLimitAfterCreate(String(storeId), String(productId));
+    await this.ensureStoreSellsType(store, StoreProductType.PHYSICAL_PRODUCTS);
 
     const defaultVariant = created.variants.find((v: any) => v.isDefault) || created.variants[0] || null;
     return {
@@ -1311,11 +1326,7 @@ export class ProductsService {
     if (!store) throw new BadRequestException('Store not found');
     if (store.status !== 'active') throw new BadRequestException('Your store is not active');
 
-    const allowsDigital =
-      store.productTypes?.includes(StoreProductType.DIGITAL_DOWNLOADS) ||
-      store.productTypes?.includes(StoreProductType.EDUCATIONAL_RESOURCES);
-    if (!allowsDigital) throw new BadRequestException('Your store does not support digital products');
-
+    // Same rule as physical: never blocked by the onboarding answer; the capability is enabled once the product exists.
     await this.entitlementsService.assertCanCreateProduct(storeId);
 
     const name = normalizeName(body.name);
@@ -1416,6 +1427,10 @@ export class ProductsService {
     }
 
     await this.enforceProductLimitAfterCreate(String(storeId), String(productId));
+    await this.ensureStoreSellsType(
+      store,
+      finalProductType === 'educational' ? StoreProductType.EDUCATIONAL_RESOURCES : StoreProductType.DIGITAL_DOWNLOADS,
+    );
 
     return { success: true, message: 'Digital product created successfully', data: created };
   }

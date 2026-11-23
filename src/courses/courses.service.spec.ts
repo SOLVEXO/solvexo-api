@@ -27,7 +27,10 @@ function setup() {
     if (a?.sourceOrderId && ['refunded', 'cancelled'].includes(k.orderModel.rows[0].sellerOrders[0].items[0].status)) { a.status = 'revoked'; return { allowed: false }; }
     return { allowed: !!a };
   } };
-  const upload: any = { generateSignedUrl: (id: string, _t: string, secs: number) => `https://signed/${id}?exp=${secs}` };
+  const upload: any = {
+    generateSignedUrl: (id: string, _t: string, secs: number) => `https://signed/${id}?exp=${secs}`,
+    generateExpiringPrivateUrl: (id: string, _t: string, secs: number) => `https://signed-expiring/${id}?exp=${secs}`,
+  };
   const memberships: any = { hasPlanAccess: async () => false };
   const svc = new CoursesService(k.db, upload, access, memberships, courses as any, enrolls as any);
   return { ...k, accessModel, courses, enrolls, svc, clean };

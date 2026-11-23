@@ -157,7 +157,11 @@ export class CoursesService {
     const { course, enrollment } = await this.gate(storeId, customerId, courseId);
     const l = this.openLesson(course, enrollment, lessonId);
     if (l.type === 'video') return { url: this.upload.generateSignedUrl(l.videoPublicId, 'video', MEDIA_URL_SECONDS), expiresInSeconds: MEDIA_URL_SECONDS };
-    if (l.type === 'file') return { url: this.upload.generateSignedUrl(l.filePublicId, 'raw', MEDIA_URL_SECONDS, l.fileName), expiresInSeconds: MEDIA_URL_SECONDS };
+    // A lesson FILE is a one-shot download, so it gets the link whose expiry Cloudinary really enforces (`generateSignedUrl`'s private
+    // delivery URL ignores expires_at and never expires — see UploadService.generateExpiringPrivateUrl). The VIDEO link above is
+    // deliberately left as is: a streamed video issues new range requests while playing, so a hard 5-minute expiry could cut off a long
+    // lesson — that needs a proxied stream or a real-Cloudinary playback test first (open item, not changed blindly).
+    if (l.type === 'file') return { url: this.upload.generateExpiringPrivateUrl(l.filePublicId, 'raw', MEDIA_URL_SECONDS, { fileName: l.fileName }), expiresInSeconds: MEDIA_URL_SECONDS };
     throw new BadRequestException('This lesson has no media');
   }
 

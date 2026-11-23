@@ -68,6 +68,22 @@ export class StoreController {
     return this.storeService.getSuggestedLocation(req.ip);
   }
 
+  // Seller-type defaults ("What you sell" pre-selection) + the honest capability list — used by Onboarding before a store exists.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('seller-profiles')
+  async getSellerProfiles() {
+    return this.storeService.getSellerProfiles();
+  }
+
+  // Dashboard guidance for one store (owner or staff acting for the owner).
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'staff')
+  @Get(':storeId/personalization')
+  async getSellerPersonalization(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeService.getSellerPersonalization(actingSellerId(req.user), storeId);
+  }
+
   // seller ke saare stores
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
