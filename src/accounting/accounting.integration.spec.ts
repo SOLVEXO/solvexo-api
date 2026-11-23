@@ -69,7 +69,9 @@ describe('Accounting: setup, sync and books (real MongoDB)', () => {
     ]);
     await raw(h.repos.stockMovementModel).insertOne({ _id: new Types.ObjectId(), storeId: STORE, variantId: 'v1', type: 'sale', qtyDelta: -2, unitCostMinor: 3000, productName: 'Mug', createdAt: new Date('2026-11-10T09:00:00Z') });
     const expenseId = new Types.ObjectId();
-    await raw(h.repos.posExpenseModel).insertOne({ _id: expenseId, storeId: STORE, number: 'EXP-1', seq: 1, category: 'utilities', amountMinor: 250000, currency: 'PKR', currencyExponent: 2, method: 'cash', occurredAt: new Date('2026-11-11'), createdAt: new Date('2026-11-11') });
+    // As the POS records it: the store's expense counter moves with every expense number handed out.
+    await raw(h.repos.posSettingsModel).insertOne({ storeId: STORE, expenseCounter: 1 });
+    await raw(h.repos.posExpenseModel).insertOne({ _id: expenseId, storeId: STORE, number: 'EXP-000001', seq: 1, category: 'utilities', amountMinor: 250000, currency: 'PKR', currencyExponent: 2, method: 'cash', occurredAt: new Date('2026-11-11'), createdAt: new Date('2026-11-11') });
 
     const first = await sync.syncStore(STORE);
     expect(first).not.toBe('busy');
@@ -132,7 +134,7 @@ describe('Accounting: setup, sync and books (real MongoDB)', () => {
     const again: any = await books.createExpense(store, { category: 'rent', method: 'bank', amountMinor: 4_000_000, requestId: 'web-req-1' }, actor);
     expect(again.data.expense.id).toBe(r.data.expense.id); // idempotent per requestId
     const doc: any = await h.repos.posExpenseModel.findById(r.data.expense.id).lean();
-    expect(doc.number).toMatch(/^EXP-\d{6}$/);
+    expect(doc.number).toBe('EXP-000002'); // the next number after the POS expense above
     expect(doc.sessionId).toBeNull();
     expect(await h.repos.posExpenseEventModel.countDocuments({ expenseId: r.data.expense.id, type: 'approved' })).toBe(1);
     await sync.syncStore(STORE);
