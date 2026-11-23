@@ -1449,7 +1449,15 @@ export const STOREFRONT_EN: Record<string, any> = {
   "your_profile_is_not_available": "Your profile is not available.",
   "your_review": "Your review",
   "verified_business": "Verified business",
-  "verified_business_hint": "Business identity checked by Solvexo"
+  "verified_business_hint": "Business identity checked by Solvexo",
+  "set_add_all": "Add all {{n}} to cart",
+  "set_adding": "Adding…",
+  "set_added_all": "All {{ok}} added to your cart.",
+  "set_added_some": "{{ok}} added to your cart. {{skipped}} could not be added (sold out or unavailable).",
+  "set_count": "{{n}} products",
+  "set_subtotal": "Individual subtotal",
+  "set_failed": "We could not load these products. Please try again.",
+  "set_empty": "No products in this collection yet."
  },
  "product": {
   "addToCart": "Add to Cart",
