@@ -169,6 +169,7 @@
   "storefront/public-store-pages.controller.ts#PublicStorePagesController.getPage",
   "storefront/public-store-pages.controller.ts#PublicStorePagesController.list",
   "storefront/public-store-section-defs.controller.ts#PublicStoreSectionDefsController.list",
+  "courses/courses.controller.ts#CourseStreamController.stream",
   "storefront/public-store-theme.controller.ts#PublicStoreThemeController.get",
   "storefront/public-store-theme.controller.ts#PublicStoreThemeController.getPreview",
   "subscriptions/webhooks/stripe-webhook.controller.ts#StripeWebhookController.handleStripeWebhook",
@@ -195,6 +196,7 @@
   "store-contact/store-contact.controller.ts#PublicStoreContactController.upload": "Storefront: contact form file attachment (throttled 8/min, type/size checked).",
   "store-contact/store-contact.controller.ts#PublicStoreContactController.event": "Storefront: contact form analytics event (throttled 40/min).",
   "storefront/public-saved-sections.controller.ts#PublicSavedSectionsController.list": "Storefront: the store's published saved sections (read).",
-  "storefront/public-store-section-defs.controller.ts#PublicStoreSectionDefsController.list": "Storefront: the store's custom section definitions used to render its pages (read)."
+  "storefront/public-store-section-defs.controller.ts#PublicStoreSectionDefsController.list": "Storefront: the store's custom section definitions used to render its pages (read).",
+  "courses/courses.controller.ts#CourseStreamController.stream": "Course video proxy (COURSE_VIDEO_PROXY=true): a <video> tag cannot send a bearer token, so a signed, expiring token in the URL is the capability; the course access gate is re-checked on every request; throttled per IP."
  }
 }

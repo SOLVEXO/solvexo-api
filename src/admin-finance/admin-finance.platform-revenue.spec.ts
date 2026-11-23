@@ -78,7 +78,8 @@ describe('AdminFinanceService.getPlatformRevenue (USD only; what sellers pay Sol
     await service.getPlatformRevenue(query);
     expect(planAgg.mock.calls[0][0][0].$match.status).toEqual({ $in: ['paid', 'partially_refunded', 'refunded'] });
     expect(billAgg.mock.calls[0][0][0].$match.status).toBe('paid');
-    expect(billAgg.mock.calls[1][0][0].$match.status).toEqual({ $in: ['invoiced', 'payment_failed'] });
+    // Still owed: invoiced, failed, and bills waiting for a manual payment (sellers with no card on file).
+    expect(billAgg.mock.calls[1][0][0].$match.status).toEqual({ $in: ['invoiced', 'payment_failed', 'awaiting_payment'] });
   });
 });
 
