@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { translatedHandleClause } from '../common/translated-handle.util';
 import { isValidObjectId } from 'mongoose';
@@ -136,6 +137,17 @@ export class CollectionsService {
 
     const updated = await this.r.collectionModel.findOneAndUpdate({ _id: collectionId, storeId }, { $set: set }, { new: true });
     if (typeof set.slug === 'string' && set.slug !== collection.slug) await this.redirectOldSlug(storeId, collection.slug, set.slug);
+    const changes = diffFields(typeof (collection as any).toObject === 'function' ? (collection as any).toObject() : collection, set, Object.keys(set).filter((k) => !k.startsWith('seo.')));
+    const seoChanges = diffFields((collection as any).seo ?? {}, { metaTitle: set['seo.metaTitle'], metaDescription: set['seo.metaDescription'] }, ['metaTitle', 'metaDescription']).map((c) => ({ ...c, field: `seo.${c.field}` }));
+    const all = [...changes, ...seoChanges];
+    if (all.length) {
+      void this.activityLogService.log({
+        storeId, category: 'marketing', action: 'collection_updated',
+        description: `${updated?.name ?? collection.name} updated (${all.map((c) => c.field).join(', ')})`,
+        actorId: sellerId, actorRole: 'seller', targetId: collectionId, targetType: 'collection',
+        metadata: { changes: all },
+      });
+    }
     return { success: true, message: 'Collection updated', data: updated };
   }
 
@@ -166,6 +178,12 @@ export class CollectionsService {
       { $set: { productIds: dto.productIds } },
       { new: true },
     );
+    void this.activityLogService.log({
+      storeId, category: 'marketing', action: 'collection_products_updated',
+      description: `${collection.name}: products ${(collection as any).productIds?.length ?? 0} → ${dto.productIds.length}`,
+      actorId: sellerId, actorRole: 'seller', targetId: collectionId, targetType: 'collection',
+      metadata: { changes: [{ field: 'products', before: (collection as any).productIds?.length ?? 0, after: dto.productIds.length }] },
+    });
     return { success: true, message: 'Collection products updated', data: updated };
   }
 

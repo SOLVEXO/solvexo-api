@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Get, Param, Patch, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -15,6 +16,7 @@ import { UpdateOrderDocumentSettingsDto } from './dto/update-order-document-sett
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'staff')
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
+@AuditStoreWrites('order_documents', 'settings')
 @Controller('api/order-documents')
 export class OrderDocumentsController {
   constructor(private readonly service: OrderDocumentsService) {}

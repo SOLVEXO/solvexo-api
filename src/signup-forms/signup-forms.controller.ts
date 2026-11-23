@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Get, HttpCode, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -39,6 +40,7 @@ export class PublicSignupFormsController {
 
 @ApiTags('Signup forms')
 @ApiBearerAuth()
+@AuditStoreWrites('signup_form', 'marketing')
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'staff')
 @RequirePermission('marketing.manage')

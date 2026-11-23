@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, Get, Param, Post, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -16,6 +17,7 @@ import { SavedFormsService } from './saved-forms.service';
 @Roles('seller', 'staff')
 @RequirePermission('onlinestore.content.manage')
 @UsePipes(new ValidationPipe({ whitelist: false, transform: false }))
+@AuditStoreWrites('saved_form', 'marketing')
 @Controller('api/store-contact/saved-forms')
 export class SavedFormsController {
   constructor(private readonly service: SavedFormsService) {}

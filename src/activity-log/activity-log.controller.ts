@@ -47,9 +47,19 @@ export class ActivityLogController {
   @RequirePermission('activity_log.view')
   @Get(':storeId/export')
   async export(@Req() req: any, @Param('storeId') storeId: string, @Query() query: any, @Res() res: Response) {
-    const csv = await this.activityLogService.exportCsv(actingSellerId(req.user), storeId, query);
-    res.header('Content-Type', 'text/csv');
-    res.header('Content-Disposition', `attachment; filename="activity-log-${storeId}.csv"`);
+    const { csv, count, truncated } = await this.activityLogService.exportCsv(actingSellerId(req.user), storeId, query);
+    // Exporting the audit trail is itself an auditable act (who took a copy of the store's history).
+    void this.activityLogService.log({
+      storeId, category: 'security', action: 'activity_log_exported',
+      description: `Activity log exported (${count} event${count === 1 ? '' : 's'}${truncated ? ', limited to the most recent' : ''})`,
+      actorId: String(req.user.userId ?? req.user.sub ?? req.user.id ?? ''), actorRole: req.user.role, ip: req.ip,
+      userAgent: req.headers?.['user-agent'] ?? null,
+    });
+    res.header('Content-Type', 'text/csv; charset=utf-8');
+    res.header('Content-Disposition', `attachment; filename="activity-log-${storeId}-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.header('Access-Control-Expose-Headers', 'X-Export-Truncated, X-Export-Count');
+    res.header('X-Export-Count', String(count));
+    res.header('X-Export-Truncated', truncated ? 'true' : 'false');
     res.send(csv);
   }
 }

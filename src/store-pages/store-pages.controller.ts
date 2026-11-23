@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -23,6 +24,7 @@ import { UpdateSectionsDto } from './dto/update-sections.dto';
 @Roles('seller', 'staff')
 @RequirePermission('onlinestore.content.manage')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+@AuditStoreWrites('page', 'settings')
 @Controller('api/store-pages')
 export class StorePagesController {
   constructor(private readonly storePagesService: StorePagesService) {}

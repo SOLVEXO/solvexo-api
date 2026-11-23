@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { assertWithinPosPlanLimit } from '../pos-plans/pos-plan-limits.util';
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
@@ -88,6 +89,7 @@ export class StoreLocationService {
     await this.verifyStoreOwnership(storeId, sellerId);
     const location = await this.locationModel.findOne({ _id: locationId, storeId, isDelete: false });
     if (!location) throw new NotFoundException('Location not found');
+    const locationBefore = location.toObject();
 
     if (dto.name !== undefined) location.name = dto.name;
     if (dto.addressLine1 !== undefined) location.addressLine1 = dto.addressLine1 ?? null;
@@ -116,6 +118,10 @@ export class StoreLocationService {
     if (dto.status !== undefined) location.status = dto.status;
 
     await location.save();
+    const locChanges = diffFields(locationBefore, location.toObject(), [...Object.keys(dto), 'coordsSource'].filter((k) => k !== 'coordsSource' || (dto.latitude !== undefined || dto.longitude !== undefined)));
+    if (locChanges.length) {
+      void this.activityLogService.log({ storeId, category: 'settings', action: 'pos_location_updated', description: `Branch "${location.name}" updated (${locChanges.map((c) => c.field).join(', ')})`, actorId: sellerId, actorRole: 'seller', targetId: locationId, targetType: 'pos_location', metadata: { changes: locChanges } });
+    }
     return { success: true, data: location };
   }
 

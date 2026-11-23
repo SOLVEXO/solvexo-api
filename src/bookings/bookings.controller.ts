@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import {
   Controller, Get, Post, Patch, Delete, Put,
   Param, Body, Query, Req, UseGuards, UseInterceptors,
@@ -23,6 +24,7 @@ import { CancelBookingDto } from './dto/cancel-booking.dto';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @ApiTags('Bookings')
+@AuditStoreWrites('booking', 'products')
 @Controller('api/bookings')
 export class BookingsController {
   constructor(

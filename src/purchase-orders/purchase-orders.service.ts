@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { Injectable, BadRequestException, ConflictException, NotFoundException, BadGatewayException } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import { refreshExpiredStock } from '../common/expired-stock.util';
@@ -55,6 +56,7 @@ export class PurchaseOrdersService {
       leadTimeDays: dto.leadTimeDays ?? null, paymentTerms: dto.paymentTerms?.trim() || null,
       status: 'active',
     });
+    void this.activityLogService.log({ storeId, category: 'inventory', action: 'supplier_created', description: `Supplier "${dto.name}" added`, actorId: sellerId, actorRole: 'seller', targetId: String(supplier._id), targetType: 'supplier' });
     return supplier.toObject();
   }
 
@@ -123,6 +125,7 @@ export class PurchaseOrdersService {
     await verifyStoreOwnershipOrForbidden(this.repos.storeModel, storeId, sellerId);
     const supplier = await this.repos.supplierModel.findOne({ _id: supplierId, storeId, isDelete: false });
     if (!supplier) throw new NotFoundException('Supplier not found');
+    const supplierBefore = supplier.toObject();
     if (dto.name !== undefined) supplier.name = dto.name;
     if (dto.email !== undefined) supplier.email = dto.email ?? null;
     if (dto.phone !== undefined) supplier.phone = dto.phone ?? null;
@@ -135,7 +138,10 @@ export class PurchaseOrdersService {
     if (dto.paymentTerms !== undefined) supplier.paymentTerms = dto.paymentTerms?.trim() || null;
     if (dto.status !== undefined) supplier.status = dto.status;
     await supplier.save();
-    return supplier.toObject();
+    const supplierAfter = supplier.toObject();
+    const changes = diffFields(supplierBefore, supplierAfter, Object.keys(dto));
+    if (changes.length) void this.activityLogService.log({ storeId, category: 'inventory', action: 'supplier_updated', description: `Supplier "${supplier.name}" updated (${changes.map((c) => c.field).join(', ')})`, actorId: sellerId, actorRole: 'seller', targetId: supplierId, targetType: 'supplier', metadata: { changes } });
+    return supplierAfter;
   }
 
   async archiveSupplier(storeId: string, sellerId: string, supplierId: string) {
@@ -146,6 +152,7 @@ export class PurchaseOrdersService {
       { new: true },
     );
     if (!supplier) throw new NotFoundException('Supplier not found');
+    void this.activityLogService.log({ storeId, category: 'inventory', action: 'supplier_archived', description: `Supplier "${supplier.name}" archived`, actorId: sellerId, actorRole: 'seller', targetId: supplierId, targetType: 'supplier', metadata: { changes: [{ field: 'status', before: 'active', after: 'archived' }] } });
     return supplier.toObject();
   }
 

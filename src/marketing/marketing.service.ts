@@ -1,10 +1,11 @@
 /* eslint-disable prettier/prettier */
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException, ConflictException } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { CreateCouponDto } from './dto/create-coupon.dto';
 import { UpdateCouponDto } from './dto/update-coupon.dto';
-import { importCouponsCsv } from './coupons-bulk-import';
+import { importCouponsCsv } from './coupons-bulk-import';
 
 @Injectable()
 export class MarketingService {
@@ -144,6 +145,7 @@ export class MarketingService {
       targetType: 'coupon',
       ip,
       userAgent,
+      metadata: (() => { const changes = diffFields(coupon.toObject(), update, Object.keys(update)); return changes.length ? { changes } : null; })(),
     });
 
     return { success: true, message: 'Coupon updated', data: updated };

@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
@@ -150,6 +151,7 @@ export class DiscountsService {
     if (dto.startsAt !== undefined) patch.startsAt = dto.startsAt ? new Date(dto.startsAt) : null;
     if (dto.endsAt !== undefined) patch.endsAt = dto.endsAt ? new Date(dto.endsAt) : null;
 
+    const before = await this.r.automaticDiscountModel.findOne({ _id: discountId, storeId, isDelete: false }).lean();
     const discount = await this.r.automaticDiscountModel.findOneAndUpdate(
       { _id: discountId, storeId, isDelete: false },
       { $set: patch },
@@ -157,10 +159,12 @@ export class DiscountsService {
     );
     if (!discount) throw new NotFoundException('Discount not found');
 
+    const changes = diffFields(before as any, patch, Object.keys(patch));
     this.activityLogService.log({
       storeId, category: 'marketing', action: 'automatic_discount_updated',
       description: `${discount.name} updated`, actorId: sellerId, actorRole: 'seller',
       targetId: discountId, targetType: 'automatic_discount',
+      metadata: changes.length ? { changes } : null,
     });
 
     return { success: true, message: 'Discount updated', data: discount };

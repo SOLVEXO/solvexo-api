@@ -1,3 +1,4 @@
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Controller, Get, Put, Delete, Body, Param, UseGuards, HttpCode, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -12,6 +13,7 @@ import { SetMarketPriceDto } from './dto/create-market-price.dto';
 /** Shopify catalog fixed prices per market (Settings > Markets > a market > Products & prices). */
 @ApiTags('Market Pricing')
 @ApiBearerAuth()
+@AuditStoreWrites('market_pricing', 'settings')
 @Controller('api/stores/:storeId/market-pricing')
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, StoreAccessGuard)
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))

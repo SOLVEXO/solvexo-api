@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
@@ -76,6 +77,7 @@ export class StoreSeoService {
     await this.activityLog.log({
       storeId, category: 'seo', action: 'store_seo_updated',
       description: 'Store SEO meta updated',
+      metadata: (() => { const changes = diffFields(current, patch, Object.keys(patch)); return changes.length ? { changes } : null; })(),
       actorId: actor.id, actorName: actor.name ?? null, actorRole: actor.role ?? null,
       targetId: storeId, targetType: 'store_seo',
     });

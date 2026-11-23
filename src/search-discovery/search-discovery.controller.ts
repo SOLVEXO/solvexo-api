@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, Get, Param, Put, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -18,6 +19,7 @@ import { SearchDiscoveryService } from './search-discovery.service';
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'staff')
 @UsePipes(new ValidationPipe({ transform: false }))
+@AuditStoreWrites('search_settings', 'settings')
 @Controller('api/search-discovery/:storeId')
 export class SearchDiscoveryController {
   constructor(private readonly svc: SearchDiscoveryService, private readonly db: DatabaseService) {}

@@ -1,3 +1,4 @@
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { DigitalAccessService } from '../digital-access/digital-access.service';
 import {
   Controller,
@@ -251,6 +252,7 @@ export class productController {
   @Roles('seller', 'staff')
   @RequirePermission('products.create')
   @RequireActiveBilling()
+  @AuditStoreWrites('product', 'products')
   @Post('store-products/:storeId/import')
   @UseInterceptors(
     FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }),
@@ -291,6 +293,7 @@ export class productController {
   @Roles('seller', 'staff')
   @RequirePermission('products.create')
   @RequireActiveBilling()
+  @AuditStoreWrites('product_variant', 'products')
   @Post('store-products/:storeId/variants/import')
   @UseInterceptors(
     FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }),

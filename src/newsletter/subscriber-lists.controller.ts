@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -38,6 +39,7 @@ function sendCsv(res: Response, filename: string, csv: string) {
 /** A store's own subscriber list — seller (or staff with customer access). */
 @ApiTags('Newsletter — store subscribers')
 @ApiBearerAuth()
+@AuditStoreWrites('subscriber', 'marketing')
 @Controller('api/newsletter/stores/:storeId/subscribers')
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'staff')

@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
@@ -72,14 +73,17 @@ export class LoyaltyService {
 
     const program = await this.getOrCreateProgram(storeId);
 
+    const programBefore = { isEnabled: program.isEnabled, pointsExpiryMonths: program.pointsExpiryMonths };
     if (dto.isEnabled !== undefined) program.isEnabled = dto.isEnabled;
     if (dto.pointsExpiryMonths !== undefined) program.pointsExpiryMonths = dto.pointsExpiryMonths;
     await program.save();
+    const programChanges = diffFields(programBefore, { isEnabled: program.isEnabled, pointsExpiryMonths: program.pointsExpiryMonths }, ['isEnabled', 'pointsExpiryMonths']);
 
     this.activityLogService.log({
       storeId, category: 'loyalty', action: 'program_settings_updated',
       description: dto.isEnabled !== undefined ? `Loyalty program ${dto.isEnabled ? 'enabled' : 'disabled'}` : 'Program settings updated',
       actorId: sellerId, actorRole: 'seller',
+      metadata: programChanges.length ? { changes: programChanges } : null,
     });
 
     return { success: true, message: 'Program updated', data: program };
@@ -354,13 +358,16 @@ export class LoyaltyService {
     const reward = await this.r.rewardModel.findOne({ _id: rewardId, storeId, isDelete: false });
     if (!reward) throw new NotFoundException('Reward not found');
 
+    const rewardBefore = reward.toObject();
     Object.assign(reward, dto);
     await reward.save();
+    const rewardChanges = diffFields(rewardBefore, reward.toObject(), Object.keys(dto));
 
     this.activityLogService.log({
       storeId, category: 'loyalty', action: 'reward_updated',
       description: `${reward.name} updated`, actorId: sellerId, actorRole: 'seller',
       targetId: rewardId, targetType: 'reward',
+      metadata: rewardChanges.length ? { changes: rewardChanges } : null,
     });
 
     return { success: true, message: 'Reward updated', data: reward };

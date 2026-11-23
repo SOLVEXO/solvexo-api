@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { MarketingService } from './marketing.service';
@@ -30,6 +31,7 @@ export class MarketingController {
   }
 
   @RequirePermission('discounts.manage')
+  @AuditStoreWrites('coupon', 'marketing')
   @Post(':storeId/coupons/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   importCoupons(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {

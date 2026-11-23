@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Param, Query, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { Response } from 'express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { ActivityLogService } from './activity-log.service';
@@ -46,10 +46,19 @@ export class AdminActivityLogController {
 
   @RequirePermission('activity.view')
   @Get('export')
-  async export(@Query() query: any, @Res() res: Response) {
-    const csv = await this.activityLogService.adminExportCsv(query);
-    res.header('Content-Type', 'text/csv');
-    res.header('Content-Disposition', 'attachment; filename="admin-activity-log.csv"');
+  async export(@Req() req: any, @Query() query: any, @Res() res: Response) {
+    const { csv, count, truncated } = await this.activityLogService.adminExportCsv(query);
+    void this.activityLogService.log({
+      category: 'admin_audit', action: 'activity_log_exported',
+      description: `Platform activity log exported (${count} event${count === 1 ? '' : 's'}${truncated ? ', limited to the most recent' : ''})`,
+      actorId: String(req.user?.userId ?? req.user?.sub ?? req.user?.id ?? ''), actorRole: req.user?.role, ip: req.ip,
+      userAgent: req.headers?.['user-agent'] ?? null, isSecurityAlert: false,
+    });
+    res.header('Content-Type', 'text/csv; charset=utf-8');
+    res.header('Content-Disposition', `attachment; filename="admin-activity-log-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.header('Access-Control-Expose-Headers', 'X-Export-Truncated, X-Export-Count');
+    res.header('X-Export-Count', String(count));
+    res.header('X-Export-Truncated', truncated ? 'true' : 'false');
     res.send(csv);
   }
 }

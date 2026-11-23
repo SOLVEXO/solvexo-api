@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Controller, Post, Get, Patch, Delete, Body, Req, Res, Param, Query, UseGuards, UseInterceptors, UploadedFile, ForbiddenException } from '@nestjs/common';
 import { PublicCache, PublicCacheInterceptor } from '@/storefront/public-cache.interceptor';
 import { PUBLIC_BROWSE_LIMIT } from '@/storefront/public-throttle';
@@ -174,6 +175,7 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @AuditStoreWrites('verification', 'settings')
   @Patch(':storeId/verification')
   async updateVerification(@Req() req: any, @Param('storeId') storeId: string, @Body() body: UpdateVerificationDto) {
     return this.storeService.updateVerification(req.user.userId, storeId, body);
@@ -181,6 +183,7 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @AuditStoreWrites('verification_document', 'settings')
   @Post(':storeId/verification/documents')
   async attachVerificationDocument(
     @Req() req: any,
@@ -196,6 +199,7 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @AuditStoreWrites('verification', 'settings')
   @Post(':storeId/verification/submit')
   async submitVerification(@Req() req: any, @Param('storeId') storeId: string, @Body() body: SubmitVerificationDto) {
     return this.storeService.submitVerification(req.user.userId, storeId, {
@@ -245,7 +249,7 @@ export class StoreController {
     if (req.user.role === 'staff' && updateData.country !== undefined) {
       throw new ForbiddenException('Only the store owner can change the store country.');
     }
-    return this.storeService.updateStore(actingSellerId(req.user), storeId, updateData);
+    return this.storeService.updateStore(actingSellerId(req.user), storeId, updateData, { id: String(req.user.userId ?? req.user.sub), role: req.user.role });
   }
 
   // ── Builder APIs ──────────────────────────────────────────────────────────
@@ -253,6 +257,7 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('onlinestore.themes.manage')
+  @AuditStoreWrites('builder_config', 'settings')
   @Post('save-builder-config')
   async saveBuilderConfig(@Req() req: any, @Body() body: any) {
     const userId = actingSellerId(req.user);
@@ -361,6 +366,7 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('settings.general.manage')
+  @AuditStoreWrites('privacy_request', 'customers')
   @Patch(':storeId/privacy-requests/:requestId/complete')
   async completePrivacyRequest(@Req() req: any, @Param('storeId') storeId: string, @Param('requestId') requestId: string) {
     return this.storeService.completePrivacyRequest(actingSellerId(req.user), storeId, requestId);
@@ -449,6 +455,7 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('customers.edit')
+  @AuditStoreWrites('customer', 'customers')
   @Post(':storeId/customers/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async importStoreCustomers(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any, @Body() body: any) {
@@ -483,6 +490,7 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('customers.edit')
+  @AuditStoreWrites('customers', 'customers')
   @Post(':storeId/customers/bulk-marketing')
   async bulkCustomerMarketing(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: BulkCustomerMarketingDto) {
     return this.storeService.bulkSetCustomerMarketing(actingSellerId(req.user), storeId, dto, req.ip, req.headers['user-agent']);
@@ -491,6 +499,7 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('customers.edit')
+  @AuditStoreWrites('customers', 'customers')
   @Patch(':storeId/customers/bulk-archive')
   async bulkArchiveCustomers(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: BulkArchiveCustomersDto) {
     return this.storeService.bulkArchiveCustomers(actingSellerId(req.user), storeId, dto, req.ip, req.headers['user-agent']);

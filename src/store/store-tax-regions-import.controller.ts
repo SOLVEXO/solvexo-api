@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Controller, Get, Param, Post, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -38,6 +39,7 @@ export class StoreTaxRegionsImportController {
     return buildTemplatePayload('tax-regions-import-template.csv', TAX_REGION_IMPORT_COLUMNS);
   }
 
+  @AuditStoreWrites('tax_region', 'settings')
   @Post('import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async import(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {

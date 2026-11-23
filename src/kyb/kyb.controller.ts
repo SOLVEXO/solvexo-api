@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import {
   Body, Controller, Delete, Get, Param, Post, Put, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe,
 } from '@nestjs/common';
@@ -32,6 +33,7 @@ export class UploadKybDocumentDto { @IsIn([...KYB_DOCUMENT_TYPES]) type: string;
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+@AuditStoreWrites('verification', 'settings')
 @Controller('api/kyb/:storeId')
 export class KybController {
   constructor(private readonly kyb: KybService) {}

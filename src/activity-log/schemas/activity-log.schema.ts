@@ -35,6 +35,9 @@ export const ACTIVITY_LOG_CATEGORIES = [
   'api_token',
 ] as const;
 
+/** Categories that are never auto-deleted — they are the evidence trail for money, access and admin actions. */
+export const ACTIVITY_LOG_KEEP_FOREVER: readonly string[] = ['security', 'finance', 'admin_audit', 'admin_team', 'platform_billing', 'platform_plans', 'moderation'];
+
 export type ActivityLogCategory = (typeof ACTIVITY_LOG_CATEGORIES)[number];
 
 @Schema({ timestamps: true })
@@ -79,10 +82,16 @@ export class ActivityLog {
 
   @Prop({ type: Object, default: null })
   metadata: object | null;
+
+  /** TTL: Mongo deletes the row after this date. Left unset for security / finance / admin entries, which are kept for good. */
+  @Prop({ type: Date })
+  expireAt?: Date;
 }
 
 export const ActivityLogSchema = SchemaFactory.createForClass(ActivityLog);
 
+// Rows without expireAt never expire (every row written before this field existed is therefore untouched).
+ActivityLogSchema.index({ expireAt: 1 }, { expireAfterSeconds: 0 });
 ActivityLogSchema.index({ storeId: 1, createdAt: -1 });
 ActivityLogSchema.index({ storeId: 1, category: 1 });
 ActivityLogSchema.index({ storeId: 1, actorId: 1 });

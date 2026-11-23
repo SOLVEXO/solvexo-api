@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
@@ -142,6 +143,7 @@ export class ShippingZonesService {
       actorRole: 'seller',
       targetId: zoneId,
       targetType: 'shipping_zone',
+      metadata: (() => { const changes = diffFields(typeof (existing as any).toObject === 'function' ? (existing as any).toObject() : existing, set, Object.keys(set)); return changes.length ? { changes } : null; })(),
     });
 
     return { success: true, message: 'Shipping zone updated', data: zone };

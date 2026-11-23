@@ -1,3 +1,4 @@
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, HttpCode, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -12,6 +13,7 @@ import { UpdateMarketDto } from './dto/update-market.dto';
 
 @ApiTags('Markets')
 @ApiBearerAuth()
+@AuditStoreWrites('market', 'settings')
 @Controller('api/stores/:storeId/markets')
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, StoreAccessGuard)
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))

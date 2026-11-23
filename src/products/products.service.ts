@@ -1676,6 +1676,11 @@ export class ProductsService {
       if (compareAtPrice !== undefined) variantUpdate.compareAtPrice = compareAtPrice === null ? null : assertMoney(compareAtPrice, 'Compare-at price');
     }
 
+    // Pre-edit default variant — only read when the edit touches variant fields, so the activity log can show price before → after.
+    const variantBefore = Object.keys(variantUpdate).length > 0
+      ? await productVariantModel.findOne({ productId, isDefault: true, isDelete: false }).lean().catch(() => null)
+      : null;
+
     let updatedProduct: any = product;
     let updatedVariant: any;
     try {
@@ -1705,6 +1710,11 @@ export class ProductsService {
 
     const changed = [...Object.keys(productUpdate), ...Object.keys(variantUpdate)];
     if (changed.length > 0) {
+      // Before → after for every field that really changed (long text is clipped) — shown in the activity detail and the CSV export.
+      const changes = [
+        ...diffFields(product.toObject?.() ?? product, productUpdate, Object.keys(productUpdate).filter((k) => !['updatedAt', 'slugHistory'].includes(k))),
+        ...diffFields(variantBefore, variantUpdate, Object.keys(variantUpdate)),
+      ];
       void this.activityLogService.log({
         storeId: String(product.storeId),
         category: 'products',
@@ -1714,6 +1724,7 @@ export class ProductsService {
         actorRole: 'seller',
         targetId: String(productId),
         targetType: 'product',
+        metadata: changes.length ? { changes } : null,
       } as any);
     }
 

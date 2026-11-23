@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -27,6 +28,7 @@ import { METAFIELD_DEFINITION_IMPORT_COLUMNS } from './metafield-definitions-bul
 @Roles('seller', 'staff')
 @RequirePermission('content.metaobjects.manage')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+@AuditStoreWrites('metafield', 'settings')
 @Controller('api/metafields')
 export class MetafieldsController {
   constructor(private readonly metafieldsService: MetafieldsService) {}
@@ -41,6 +43,7 @@ export class MetafieldsController {
     return buildTemplatePayload('metafield-definitions-import-template.csv', METAFIELD_DEFINITION_IMPORT_COLUMNS);
   }
 
+  @AuditStoreWrites('metafield_definition', 'settings')
   @Post(':storeId/definitions/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   importDefinitions(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {

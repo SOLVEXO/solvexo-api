@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Get, Param, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
@@ -56,6 +57,7 @@ export class BuyerRenewalInvoicesController {
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'staff')
 @RequirePermission('members.manage')
+@AuditStoreWrites('membership_invoice', 'finance')
 @Controller('api/memberships/store/:storeId/invoices')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
 export class SellerRenewalInvoicesController {

@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, Get, Header, Param, Patch, Post, Put, Query, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -20,6 +21,7 @@ import { CreateContactMessageDto, ReplyContactMessageDto, UpdateContactMessageDt
 @Roles('seller', 'staff')
 @RequirePermission('onlinestore.content.manage')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+@AuditStoreWrites('contact_message', 'customers')
 @Controller('api/store-contact')
 export class StoreContactController {
   constructor(private readonly service: StoreContactService) {}

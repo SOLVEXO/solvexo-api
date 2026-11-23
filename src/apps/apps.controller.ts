@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Controller, Get, Post, Delete, Param, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -16,6 +17,7 @@ import { AppsService } from './apps.service';
  * installing an app / configuring its blocks is exactly that kind of
  * content-management action.
  */
+@AuditStoreWrites('app', 'apps')
 @Controller('api/apps')
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'admin', 'staff')

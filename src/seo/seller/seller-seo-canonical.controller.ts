@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '@/auth/guards/jwt-auth.guard';
@@ -48,6 +49,7 @@ export class SellerSeoCanonicalController {
   }
 
   @RequirePermission('seo.manage')
+  @AuditStoreWrites('canonical_rule', 'seo')
   @Post('import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async importRules(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any, @Res() res: any) {

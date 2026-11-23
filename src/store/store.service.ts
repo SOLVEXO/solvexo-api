@@ -43,6 +43,7 @@ import { currencyForCountry } from '@/common/country-currency.const';
 import { UploadService } from '@/upload/upload.service';
 import { isOwnKycPublicId, KYC_DOCUMENT_RESOURCE_TYPES } from '@/upload/upload-file-validation';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { EntitlementsService, trimToMarketsLimit } from '@/platform-plans/entitlements.service';
 import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
@@ -1465,7 +1466,7 @@ export class StoreService {
   // recovery flows should be able to change. Accepting it from the request
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
-  async updateStore(sellerId: string, storeId: string, body: any) {
+  async updateStore(sellerId: string, storeId: string, body: any, actor?: { id: string; role: string }) {
     const { name, logo, faviconUrl, description, tagline, contactEmail, contactPhone, mailingAddress, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, taxId, taxRegistered, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, floatingContact, customerAccounts, timezone, currencyDisplay, defaultLanguage } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');

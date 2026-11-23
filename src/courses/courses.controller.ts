@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Get, Param, Patch, Post, Query, Req, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -66,6 +67,7 @@ export class LearnerCoursesController {
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'staff')
 @RequirePermission('courses.manage')
+@AuditStoreWrites('course', 'products')
 @Controller('api/courses/store/:storeId')
 export class SellerCoursesController {
   constructor(private readonly svc: CoursesService, private readonly db: DatabaseService, private readonly entitlements: EntitlementsService) {}

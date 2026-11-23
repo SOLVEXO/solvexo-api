@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -15,6 +16,7 @@ import { CreateMarketingCampaignDto, UpdateMarketingCampaignDto } from './dto/ma
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'staff')
 @RequirePermission('marketing.manage')
+@AuditStoreWrites('campaign', 'marketing')
 @Controller('api/marketing-campaigns')
 export class MarketingCampaignsController {
   constructor(private readonly service: MarketingCampaignsService) {}

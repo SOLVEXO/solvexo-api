@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Get, Param, Patch, Post, Query, Req, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -18,6 +19,7 @@ import { ProductFeedsService } from './product-feeds.service';
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'staff')
 @UsePipes(new ValidationPipe({ transform: false }))
+@AuditStoreWrites('product_feed', 'integrations')
 @Controller('api/feeds/:storeId')
 export class ProductFeedsController {
   constructor(private readonly svc: ProductFeedsService, private readonly db: DatabaseService) {}
