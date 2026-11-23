@@ -159,6 +159,7 @@ export class AccountingService {
         storeId, seq: s.entrySeq, date: d.date, kind, sourceType: d.sourceType, sourceId: d.sourceId, sourceKey: d.sourceKey,
         reference: d.reference.slice(0, 80), memo: d.memo.slice(0, 300), lines: d.lines.map(l => ({ ...l, memo: (l.memo ?? '').slice(0, 200) })),
         totalMinor: d.lines.reduce((t, l) => t + l.debitMinor, 0), currency: s.baseCurrency, reversesEntryId, actorId,
+        channel: d.channel ?? null, locationId: d.locationId ?? null,
       });
       return doc.toObject();
     } catch (e: any) {
@@ -176,6 +177,7 @@ export class AccountingService {
     const posted = await this.post(storeId, {
       sourceType: e.sourceType, sourceId: e.sourceId ?? String(e._id), sourceKey: `reverse:${e._id}`, date: date ?? new Date(),
       reference: e.reference, memo: (memo ? `Reversal of #${e.seq}: ${memo}` : `Reversal of #${e.seq}`), lines: swapped(e.lines as DraftLine[]),
+      channel: (e.channel ?? undefined) as any, locationId: e.locationId ?? null,
     }, 'reversal', actor.id, String(e._id));
     if (!posted) throw new ConflictException('This entry has already been reversed.');
     return posted;

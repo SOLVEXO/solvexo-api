@@ -7,6 +7,8 @@ import { AccountingSettings, AccountingSettingsSchema, JournalEntry, JournalEntr
 import { AccountingService } from './accounting.service';
 import { AccountingSyncService } from './accounting-sync.service';
 import { AccountingBooksService } from './accounting-books.service';
+import { AccountingSettlementsService } from './accounting-settlements.service';
+import { GatewaySettlement, GatewaySettlementSchema } from './accounting.schema';
 import { DEFAULT_ACCOUNTS } from './chart.const';
 
 jest.setTimeout(120_000);
@@ -16,6 +18,7 @@ let svc: AccountingService;
 let sync: AccountingSyncService;
 let journal: any;
 let books: AccountingBooksService;
+let settlements: AccountingSettlementsService;
 const STORE = 'store-acc-1';
 const actor = { id: 'owner', role: 'seller' };
 const GO_LIVE = '2026-11-01';
@@ -35,6 +38,7 @@ beforeAll(async () => {
     posExpenseEventModel: m(schema.PosExpenseEvent, schema.PosExpenseEventSchema),
     purchaseReceiptModel: m(schema.PurchaseReceipt, schema.PurchaseReceiptSchema),
     supplierLedgerEntryModel: m(schema.SupplierLedgerEntry, schema.SupplierLedgerEntrySchema),
+    paymentTransactionModel: m(schema.PaymentTransaction, schema.PaymentTransactionSchema),
   };
   h.repos.posExpenseModel = repos.posExpenseModel;
   h.repos.posExpenseEventModel = repos.posExpenseEventModel;
@@ -43,6 +47,8 @@ beforeAll(async () => {
   sync = new AccountingSyncService({ repositories: repos } as any, redis, svc, settings as any, journal, m(KhataEntry, KhataEntrySchema) as any, m(KhataAccount, KhataAccountSchema) as any);
   await svc.setup(STORE, { baseCurrency: 'PKR' }, { goLiveDate: GO_LIVE }, actor);
   const cashStub: any = { expenseGet: async (_r: any, _s: string, id: string) => ({ success: true, data: { expense: { id } } }) };
+  settlements = new AccountingSettlementsService({ repositories: repos } as any, svc, m(GatewaySettlement, GatewaySettlementSchema) as any);
+  h.repos.paymentTransactionModel = repos.paymentTransactionModel;
   books = new AccountingBooksService({ repositories: repos } as any, cashStub, {} as any, {} as any, settings as any, accounts as any);
 });
 afterAll(async () => { await h?.stop(); });
@@ -140,6 +146,40 @@ describe('Accounting: setup, sync and books (real MongoDB)', () => {
     await sync.syncStore(STORE);
     const e = await journal.findOne({ storeId: STORE, sourceType: 'expense', sourceId: r.data.expense.id }).lean();
     expect(e.lines.map((l: any) => [l.accountKey, l.debitMinor, l.creditMinor])).toEqual([['exp_other', 4_000_000, 0], ['bank', 0, 4_000_000]]);
+  });
+
+  it('an online JazzCash order posts its sale and cost; the gateway settlement matches it and empties the clearing account', async () => {
+    const variantId = new Types.ObjectId();
+    await raw(h.repos.productVariantModel).insertOne({ _id: variantId, costPriceMinor: 40000 });
+    const orderId = new Types.ObjectId();
+    await raw(h.repos.orderModel).insertOne({
+      _id: orderId, orderNumber: 'ORD-77', currency: 'PKR', paymentType: 'jazzcash', isPaid: true, paymentStatus: 'paid', paidAt: new Date('2026-11-18'),
+      createdAt: new Date('2026-11-18'), updatedAt: new Date('2026-11-18'),
+      sellerOrders: [{ storeId: STORE, sellerId: 'seller-1', subtotal: 1000, taxAmount: 180, includedTaxAmount: 0, platformSponsoredDiscountUSD: 0, settlementCurrency: 'PKR', settlementAmount: 1180, status: 'processing',
+        items: [{ productId: 'p1', variantId: String(variantId), type: 'physical', quantity: 2, price: 500, totalPrice: 1000 }] }],
+    });
+    await raw(h.repos.paymentTransactionModel).insertOne({ _id: new Types.ObjectId(), providerSessionId: 'T20261118000001', orderIds: [String(orderId)], checkoutId: 'c1', amount: 1180, currency: 'PKR' });
+    await sync.syncStore(STORE);
+    const sale = await journal.findOne({ storeId: STORE, sourceKey: `order:${orderId}:${STORE}` }).lean();
+    expect(sale.channel).toBe('online');
+    const cogs = await journal.findOne({ storeId: STORE, sourceKey: `order_cogs:${orderId}:${STORE}` }).lean();
+    expect(cogs.totalMinor).toBe(80000);
+
+    const csv = 'Transaction Date,pp_TxnRefNo,Transaction Amount,Fee,Net Amount\n2026-11-18,T20261118000001,"1,180.00",29.50,1150.50\n2026-11-18,T99,100.00,2.00,98.00\n';
+    const imp: any = await settlements.import(STORE, { gateway: 'jazzcash', settledOn: '2026-11-20', csv, fileName: 'jazz-nov.csv' }, actor);
+    expect(imp.settlement.lines.map((l: any) => l.match.status)).toEqual(['matched', 'unmatched']);
+    expect(imp.settlement.totals).toMatchObject({ grossMinor: 128000, feeMinor: 3150, netMinor: 124850, matched: 1, unmatched: 1 });
+    const posted: any = await settlements.post(STORE, String(imp.settlement._id), actor);
+    expect(posted.status).toBe('posted');
+    await expect(settlements.post(STORE, String(imp.settlement._id), actor)).rejects.toThrow(/already posted/);
+    const again: any = await settlements.import(STORE, { gateway: 'jazzcash', settledOn: '2026-11-21', csv }, actor);
+    expect(again.settlement.lines.every((l: any) => l.match.status === 'duplicate')).toBe(true);
+
+    const tb = await svc.trialBalance(STORE, {});
+    const bal = (k: string) => tb.rows.find((r: any) => r.key === k)?.balanceMinor ?? 0;
+    expect(bal('gateway_clearing')).toBe(118000 - 128000); // the unmatched T99 line is the visible difference
+    expect(bal('processing_fees')).toBe(3150);
+    expect(tb.totals.balanced).toBe(true);
   });
 
   it('the go-live date is locked once entries exist', async () => {
