@@ -6,7 +6,8 @@ import { DatabaseService } from '@/database/databaseservice';
 const SELLER_ID = 'seller-1';
 const STORE_ID = 'store-1';
 const OTHER_STORE_ID = 'store-2';
-const ORDER_ID = 'order-1';
+// A real ObjectId: markPaid refuses ids that are not (NotFound) before looking anything up.
+const ORDER_ID = '64b7f0c2a1b2c3d4e5f60718';
 const ACTOR = { actorId: SELLER_ID, actorRole: 'seller' as const };
 
 function makeOrder(overrides: Partial<Record<string, any>> = {}) {

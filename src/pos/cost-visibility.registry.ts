@@ -70,6 +70,8 @@ export const COST_FIELD_DECISIONS: Readonly<Record<string, { classified: 'cost' 
 export const NOT_COST: ReadonlySet<string> = new Set([
   'hideCostsFromManagers', 'costsHidden', 'discountValue', 'discountValueMinor', 'redeemValueMinor', 'avgTransactionValue', 'avgTransactionValueMinor',
   'valueRemaining', 'useValue', 'defaultValue', 'value', 'costStore', 'expenses', 'expensesMinor', 'expensesByCategoryMinor',
+  // page-layout margins (storefront section spacing), not a profit margin
+  'margins',
   // internal names, never a response key
   'costMinorMetrics', '_costDecimal', 'GLOBAL_COST_KEYS', 'SCOPED_COST_KEYS', 'NOT_COST', 'COST_FIELD_DECISIONS',
 ]);
