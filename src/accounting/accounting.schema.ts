@@ -84,6 +84,9 @@ export class JournalEntry {
   @Prop({ required: true }) totalMinor: number;
   @Prop({ required: true }) currency: string;
   @Prop({ type: String, default: null }) reversesEntryId: string | null;
+  /** Sales channel (pos, online, b2b, other) and branch (POS location) for statements by channel / branch. Null on entries made before Phase 3. */
+  @Prop({ type: String, default: null }) channel: string | null;
+  @Prop({ type: String, default: null }) locationId: string | null;
   @Prop({ default: '' }) actorId: string;
   createdAt?: Date;
 }
@@ -96,3 +99,29 @@ JournalEntrySchema.index({ storeId: 1, 'lines.accountKey': 1, date: 1 });
 JournalEntrySchema.index({ storeId: 1, sourceType: 1, sourceId: 1 });
 JournalEntrySchema.index({ storeId: 1, reversesEntryId: 1 }, { unique: true, partialFilterExpression: { reversesEntryId: { $type: 'string' } } });
 makeAppendOnly(JournalEntrySchema);
+
+/**
+ * One imported payment-gateway settlement report (JazzCash, Easypaisa, Safepay, …): what the gateway paid into the bank, net of its fees.
+ * Each line is matched to the store's orders by the gateway's transaction reference or the order number. Posting it moves the gross
+ * out of "Online payment gateways clearing" into the bank, with the fees as processing fees. Posted once; a posted import cannot change.
+ */
+@Schema({ timestamps: true, collection: 'gateway_settlements' })
+export class GatewaySettlement {
+  @Prop({ required: true, index: true }) storeId: string;
+  @Prop({ required: true, maxlength: 40 }) gateway: string;
+  @Prop({ type: String, default: '', maxlength: 120 }) fileName: string;
+  /** The date the money reached the bank (the posting date). */
+  @Prop({ type: Date, required: true }) settledOn: Date;
+  @Prop({ required: true }) currency: string;
+  @Prop({ type: [Object], default: [] }) lines: Array<{
+    row: number; date: string | null; reference: string; grossMinor: number; feeMinor: number; netMinor: number;
+    match: { status: 'matched' | 'unmatched' | 'amount_differs' | 'duplicate'; orderIds: string[]; orderNumbers: string[]; expectedMinor: number | null };
+  }>;
+  @Prop({ type: Object, required: true }) totals: { grossMinor: number; feeMinor: number; netMinor: number; matched: number; unmatched: number };
+  @Prop({ default: 'draft', enum: ['draft', 'posted', 'discarded'] }) status: string;
+  @Prop({ type: String, default: null }) journalEntryId: string | null;
+  @Prop({ default: '' }) importedBy: string;
+}
+export type GatewaySettlementDocument = HydratedDocument<GatewaySettlement>;
+export const GatewaySettlementSchema = SchemaFactory.createForClass(GatewaySettlement);
+GatewaySettlementSchema.index({ storeId: 1, createdAt: -1 });
