@@ -231,6 +231,14 @@ export interface CollectionListSectionSettings extends BaseSectionSettings {
   cardStyle?: 'none' | 'bordered' | 'filled';
   /** Look of each tile's button (only tiles that have button text show one). */
   buttonStyle?: 'solid' | 'outline' | 'link';
+  /** link = a tile opens its collection page (default). show_products = a tile shows that collection's products under the grid, with an "Add all to cart" button. */
+  clickAction?: 'link' | 'show_products';
+  /** show_products only: print the total price of the shown products. Default on. */
+  showSubtotal?: boolean;
+  /** show_products only: own text for the add-all button (empty = "Add all N to cart"). */
+  addAllLabel?: string;
+  /** show_products only: product columns (1-8). */
+  productColumns?: number;
 }
 export interface StoreLocationsSectionSettings extends BaseSectionSettings {}
 export interface RelatedProductsSectionSettings extends BaseSectionSettings {

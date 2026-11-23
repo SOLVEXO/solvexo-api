@@ -685,6 +685,12 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       if (settings.showDescription !== undefined && typeof settings.showDescription !== 'boolean') {
         throw new BadRequestException('settings.showDescription must be true or false');
       }
+      oneOf(settings.clickAction, ['link', 'show_products'] as const, 'settings.clickAction');
+      if (settings.showSubtotal !== undefined && typeof settings.showSubtotal !== 'boolean') {
+        throw new BadRequestException('settings.showSubtotal must be true or false');
+      }
+      maxLen(settings.addAllLabel, 60, 'settings.addAllLabel');
+      assertWholeNumberInRange(settings.productColumns, 1, 8, 'settings.productColumns');
       break;
     }
     case 'multicolumn': {
