@@ -97,9 +97,12 @@ describe('EntitlementsService — trial vs. paid limits', () => {
 
     const limits = await service.getLimits(STORE_ID);
 
-    // A plan saved before the two newest fields existed gets their
-    // defaults merged in (never `undefined`) — everything else is the plan's own value.
-    expect(limits).toEqual({ calculatedShippingRatesAllowed: false, maxMarkets: 3, ...PAID_PLAN.limits });
+    // A plan saved before the newest fields existed gets their defaults merged in (never `undefined`)
+    // — everything else is the plan's own value.
+    expect(limits).toEqual({
+      calculatedShippingRatesAllowed: false, maxMarkets: 3, digitalCoursesAllowed: true, maxB2BCatalogs: -1, monthlyEmailSends: 10000,
+      ...PAID_PLAN.limits,
+    });
   });
 
   it('a store with no subscription row at all (legacy/pre-migration) falls back to FALLBACK_LIMITS, not the trial bypass', async () => {

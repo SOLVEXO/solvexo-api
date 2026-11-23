@@ -1,10 +1,12 @@
 /* eslint-disable prettier/prettier */
 import { INestApplication, ExecutionContext, CallHandler } from '@nestjs/common';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
+import { StoreWriteAuditInterceptor } from '../activity-log/audit-store-writes';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { StoreThemeController } from './store-theme.controller';
 import { StoreThemeService } from './store-theme.service';
+import { ThemeContentCarryService } from './theme-content-carry.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -24,12 +26,15 @@ describe('Brand Kit HTTP routes (StoreThemeController)', () => {
     const allow = { canActivate: (ctx: ExecutionContext) => { ctx.switchToHttp().getRequest().user = user; return true; } };
     const moduleRef = await Test.createTestingModule({
       controllers: [StoreThemeController],
-      providers: [{ provide: StoreThemeService, useValue: service }],
+      // The controller's second dependency (carrying section content across a theme switch) is not used by the brand-kit routes.
+      providers: [{ provide: StoreThemeService, useValue: service }, { provide: ThemeContentCarryService, useValue: {} }],
     })
       .overrideGuard(JwtAuthGuard).useValue(allow)
       .overrideGuard(RolesGuard).useValue({ canActivate: () => true })
       .overrideGuard(PermissionsGuard).useValue({ canActivate: () => true })
       .overrideInterceptor(IdempotencyInterceptor).useValue({ intercept: (_ctx: ExecutionContext, next: CallHandler) => next.handle() })
+      // The store activity log is written by an interceptor; it is not what these routing tests are about.
+      .overrideInterceptor(StoreWriteAuditInterceptor).useValue({ intercept: (_ctx: ExecutionContext, next: CallHandler) => next.handle() })
       .compile();
     app = moduleRef.createNestApplication();
     await app.init();

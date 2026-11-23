@@ -17,9 +17,10 @@ describe('MetafieldsService.getPublicValues — Storefronts access', () => {
 
   beforeEach(() => {
     const definitionModel = {
-      find: jest.fn().mockImplementation((f: any) => ({
-        lean: () => Promise.resolve(defs.filter(d => d.storeId === f.storeId && d.ownerResource === f.ownerResource && (f.storefrontAccess === undefined || (d as any).storefrontAccess === f.storefrontAccess))),
-      })),
+      find: jest.fn().mockImplementation((f: any) => {
+        const q = { lean: () => Promise.resolve(defs.filter(d => d.storeId === f.storeId && d.ownerResource === f.ownerResource && (f.storefrontAccess === undefined || (d as any).storefrontAccess === f.storefrontAccess))) };
+        return { ...q, sort: () => q }; // definitions are read in their saved order (position, then creation)
+      }),
     };
     const valueModel = { find: jest.fn().mockReturnValue({ lean: () => Promise.resolve(values) }) };
     service = new MetafieldsService({ repositories: { metafieldDefinitionModel: definitionModel, metafieldValueModel: valueModel, storeModel: {} } } as unknown as DatabaseService);
