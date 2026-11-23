@@ -37,6 +37,7 @@
   "cod-protection/public-cod.controller.ts#PublicCodController.confirm",
   "cod-protection/public-cod.controller.ts#PublicCodController.view",
   "contact/contact.controller.ts#ContactController.submit",
+  "courses/courses.controller.ts#CourseStreamController.stream",
   "courses/courses.controller.ts#PublicCertificateController.verify",
   "customer-social-login/customer-social-login.controller.ts#BuyerSocialLoginController.callback",
   "customer-social-login/customer-social-login.controller.ts#BuyerSocialLoginController.exchange",
