@@ -838,7 +838,7 @@ export class StoreThemeService {
     const headerKeys = ['logoPosition', 'menuPosition', 'logoWidth', 'mobileLogoWidth', 'sticky', 'showSearch', 'showAccount', 'showWishlist', 'showShopMenu',
       'shopMenuLabel', 'includePagesInNav', 'showDefaultBlogLink', 'blogLinkLabel', 'bgColor', 'textColor', 'paddingY', 'showDivider', 'stickyMode', 'transparentOnHome', 'transparentTextColor',
       'navFontSize', 'navUppercase', 'navHoverStyle', 'searchStyle', 'searchPosition', 'ctaLabel', 'ctaLink', 'topBarEnabled', 'topBarText', 'topBarPhone',
-      'topBarEmail', 'topBarBg', 'topBarTextColor', 'topBarSize', 'topBarFontSize', 'topBarPadY', 'preset'] as const;
+      'topBarEmail', 'topBarBg', 'topBarTextColor', 'topBarSize', 'topBarFontSize', 'topBarPadY', 'menuOverflow', 'preset'] as const;
     if (dto.topBarItems !== undefined) set['draft.header.topBarItems'] = sanitizeChromeItems(dto.topBarItems, 'topBarItems');
     const trimmed = new Set(['shopMenuLabel', 'blogLinkLabel', 'ctaLabel', 'ctaLink', 'topBarText', 'topBarPhone', 'topBarEmail', 'preset']);
     for (const key of headerKeys) {

@@ -265,6 +265,8 @@ export class StorefrontHeader {
   @Prop({ type: String, enum: ['sm', 'md', 'lg'], default: 'md' }) topBarSize: 'sm' | 'md' | 'lg';
   @Prop({ type: Number, default: null }) topBarFontSize: number | null; // px, null = by topBarSize
   @Prop({ type: Number, default: null }) topBarPadY: number | null; // px, null = by topBarSize
+  // Menu with more items than fit: one scrolling line with arrows ('scroll', default) or the old wrapping rows ('wrap').
+  @Prop({ type: String, enum: ['scroll', 'wrap'], default: 'scroll' }) menuOverflow: 'scroll' | 'wrap';
   @Prop({ type: String, default: null }) preset: string | null;
 }
 export const StorefrontHeaderSchema = SchemaFactory.createForClass(StorefrontHeader);

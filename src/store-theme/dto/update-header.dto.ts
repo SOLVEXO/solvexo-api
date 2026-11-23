@@ -85,6 +85,7 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false, enum: ['sm', 'md', 'lg'] }) @IsOptional() @IsIn(['sm', 'md', 'lg']) topBarSize?: 'sm' | 'md' | 'lg';
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsInt() @Min(8) @Max(48) topBarFontSize?: number | null;
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsInt() @Min(0) @Max(80) topBarPadY?: number | null;
+  @ApiProperty({ required: false, enum: ['scroll', 'wrap'] }) @IsOptional() @IsIn(['scroll', 'wrap']) menuOverflow?: 'scroll' | 'wrap';
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(40) preset?: string | null;
 
   @ApiProperty({ required: false, type: [SectionInputDto], description: 'Extra sections shown with the header/footer (validated per type in the service)' })
