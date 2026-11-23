@@ -1734,7 +1734,8 @@ export class StoreService {
       this.activityLogService.log({
         storeId, category: 'settings', action: 'store_business_profile_updated',
         description: `Business profile changed: ${profileChanges.join('; ')}`,
-        actorId: sellerId, actorRole: 'seller',
+        // A staff member acts for the owner: record who really did it (the controller passes the caller as `actor`).
+        actorId: actor?.id ?? sellerId, actorRole: actor?.role ?? 'seller',
       });
     }
 

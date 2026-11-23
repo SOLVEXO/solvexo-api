@@ -7,7 +7,7 @@ import { DigitalAccessModule } from '../digital-access/digital-access.module';
 import { MembershipsModule } from '../memberships/memberships.module';
 import { Course, CourseSchema, CourseEnrollment, CourseEnrollmentSchema } from './course.schema';
 import { CoursesService } from './courses.service';
-import { LearnerCoursesController, PublicCertificateController, SellerCoursesController } from './courses.controller';
+import { LearnerCoursesController, PublicCertificateController, CourseStreamController, SellerCoursesController } from './courses.controller';
 
 @Module({
   imports: [
@@ -21,7 +21,7 @@ import { LearnerCoursesController, PublicCertificateController, SellerCoursesCon
       { name: CourseEnrollment.name, schema: CourseEnrollmentSchema },
     ]),
   ],
-  controllers: [PublicCertificateController, LearnerCoursesController, SellerCoursesController],
+  controllers: [PublicCertificateController, CourseStreamController, LearnerCoursesController, SellerCoursesController],
   providers: [CoursesService],
   exports: [CoursesService],
 })

@@ -8,9 +8,11 @@ import { DigitalAccessService } from '../digital-access/digital-access.service';
 import { MembershipsService } from '../memberships/memberships.service';
 import { Course, CourseDocument, CourseEnrollment, EnrollmentDocument } from './course.schema';
 import { certificateId, isUnlocked, sanitizeCourse, scoreQuiz, unlockDate } from './course.util';
+import { signCourseStreamToken, verifyCourseStreamToken } from '../common/course-stream-token.util';
 
 const DEAD_ITEM = ['cancelled', 'refunded'];
 const MEDIA_URL_SECONDS = 300;
+const STREAM_TOKEN_HOURS = 6;
 const latin = (s: string) => String(s ?? '').replace(/[^\x20-\x7E]/g, '?'); // standard PDF fonts cannot draw other scripts
 
 @Injectable()
@@ -152,11 +154,38 @@ export class CoursesService {
     return lesson;
   }
 
+  /**
+   * Opens the storage video for a proxied playback request. The signed token only names the lesson and customer; the
+   * course gate (published, store active, paid access or plan, drip) is checked AGAIN here on every request, so a
+   * refund or revoked access stops the video at the next range request. Forwards only a well-formed `Range` header.
+   */
+  async openVideoStream(token: string, range?: string): Promise<Response> {
+    const t = verifyCourseStreamToken(token);
+    if (!t) throw new ForbiddenException('This video link is not valid any more');
+    const { course, enrollment } = await this.gate(t.storeId, t.customerId, t.courseId);
+    const l = this.openLesson(course, enrollment, t.lessonId);
+    if (l.type !== 'video' || !l.videoPublicId) throw new BadRequestException('This lesson has no video');
+    const headers: Record<string, string> = {};
+    if (typeof range === 'string' && /^bytes=\d*-\d*$/.test(range)) headers.range = range;
+    const res = await fetch(this.upload.generateSignedUrl(l.videoPublicId, 'video', MEDIA_URL_SECONDS), { headers });
+    if (!res.ok || !res.body) throw new BadRequestException('The video could not be loaded');
+    return res;
+  }
+
   /** Short-lived signed URL for a video or file lesson: never the raw storage URL. */
   async mediaUrl(storeId: string, customerId: string, courseId: string, lessonId: string) {
     const { course, enrollment } = await this.gate(storeId, customerId, courseId);
     const l = this.openLesson(course, enrollment, lessonId);
-    if (l.type === 'video') return { url: this.upload.generateSignedUrl(l.videoPublicId, 'video', MEDIA_URL_SECONDS), expiresInSeconds: MEDIA_URL_SECONDS };
+    if (l.type === 'video') {
+      // COURSE_VIDEO_PROXY=true: the video is played through this API (access re-checked on every request), so a copied
+      // link dies with the buyer's access. Off by default because the video bytes then pass through the API server.
+      const origin = String(process.env.API_PUBLIC_URL ?? '').replace(/\/+$/, '');
+      if (process.env.COURSE_VIDEO_PROXY === 'true' && origin) {
+        const token = signCourseStreamToken({ storeId, courseId, lessonId, customerId });
+        return { url: `${origin}/api/courses/stream/${token}`, expiresInSeconds: STREAM_TOKEN_HOURS * 3600 };
+      }
+      return { url: this.upload.generateSignedUrl(l.videoPublicId, 'video', MEDIA_URL_SECONDS), expiresInSeconds: MEDIA_URL_SECONDS };
+    }
     // A lesson FILE is a one-shot download, so it gets the link whose expiry Cloudinary really enforces (`generateSignedUrl`'s private
     // delivery URL ignores expires_at and never expires — see UploadService.generateExpiringPrivateUrl). The VIDEO link above is
     // deliberately left as is: a streamed video issues new range requests while playing, so a hard 5-minute expiry could cut off a long
