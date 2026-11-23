@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { solvexoEmail } from '../notifications/templates/notification-email.template';
 import {
   BadRequestException,
   ConflictException,
@@ -801,9 +802,9 @@ export class SalesPartnersService {
     await this.referrals.updateOne({ _id: ref._id }, { $set: { supportNoticeAt: at, supportNoticeReason: reason, commissionEndsAt: ends } });
     const names = await this.merchantNames([sellerId]);
     if (p.email) {
-      void this.email.sendMail(p.email, 'Notice: commission on a seller is ending', `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1c1d1b"><p>Hi ${escapeHtml(p.name)},</p>
+      void this.email.sendMail(p.email, 'Notice: commission on a seller is ending', solvexoEmail('Commission on a seller is ending', `<p>Hi ${escapeHtml(p.name)},</p>
         <p>This is written notice under the partner programme (B4.4) that commission on <strong>${escapeHtml(names.get(sellerId) ?? 'a seller')}</strong> ends on <strong>${ends.toISOString().slice(0, 10)}</strong>, because: ${escapeHtml(reason)}</p>
-        <p>Commission already earned is not affected. Reply to this email if you think this is a mistake.</p></div>`).catch(() => false);
+        <p>Commission already earned is not affected. Reply to this email if you think this is a mistake.</p>`, { note: 'You are receiving this as a member of the Solvexo Channel Partner Programme.' })).catch(() => false);
     }
     this.logger.log(`Support notice for seller ${sellerId} of partner ${partnerId} by ${actor.adminId}`);
     return this.getPartner(partnerId);
@@ -866,7 +867,7 @@ export class SalesPartnersService {
   private statementEmail(p: any, month: string, st: { openingPKR: number; earnedPKR: number; paidPKR: number; closingPKR: number }, payable: number, s: { payoutDay: number; withholdingTaxPercent: number | null }) {
     const pkr = (n: number) => `PKR ${n.toLocaleString('en-PK')}`;
     const wht = p.whtPercent ?? s.withholdingTaxPercent;
-    return `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1c1d1b"><h2 style="color:#D97757">Statement for ${month}</h2>
+    return solvexoEmail(`Statement for ${month}`, `
       <p>Hi ${escapeHtml(p.name)}, here is your commission statement.</p>
       <table style="border-collapse:collapse;font-size:14px">
         <tr><td style="padding:4px 12px 4px 0">Owed at the start of the month</td><td align="right">${pkr(st.openingPKR)}</td></tr>
@@ -875,7 +876,7 @@ export class SalesPartnersService {
         <tr><td style="padding:4px 12px 4px 0"><strong>Owed at the end of the month</strong></td><td align="right"><strong>${pkr(st.closingPKR)}</strong></td></tr>
       </table>
       <p>${payable > 0 ? `${pkr(payable)} is payable now and will be paid by the ${s.payoutDay}th${wht ? `, less ${wht}% withholding tax` : ''}.` : 'Nothing is payable yet: amounts are held for the refund window first.'}</p>
-      <p>The full statement is on your partner page under My earnings.</p></div>`;
+      <p>The full statement is on your partner page under My earnings.</p>`, { note: 'You are receiving this as a member of the Solvexo Channel Partner Programme.' });
   }
 
   /** Held amounts whose refund window has passed become payable. */

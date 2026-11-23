@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
+import { escapeEmailText, solvexoEmail } from '../notifications/templates/notification-email.template';
 import { EmailService } from '../otp/services/email.service';
 
 export interface CriticalAlertPayload {
@@ -79,7 +80,11 @@ export class CriticalAlertService {
       await this.emailService.sendMail(
         to,
         `[Solvexo Alert] ${title}`,
-        `<p><strong>${title}</strong></p><p>${message}</p>${contextBlock ? `<pre style="background:#f4f4f4;padding:12px;border-radius:6px;white-space:pre-wrap;">${contextBlock}</pre>` : ''}`,
+        solvexoEmail(
+          title,
+          `<div class="danger">${escapeEmailText(message)}</div>${contextBlock ? `<pre style="background:#f8f6f4;padding:12px;border-radius:12px;white-space:pre-wrap;font-size:12px;">${escapeEmailText(contextBlock)}</pre>` : ''}`,
+          { note: 'Automatic alert from the Solvexo API.' },
+        ),
       );
     } catch (err: any) {
       this.logger.warn(`Email alert delivery failed (non-fatal): ${err?.message}`);

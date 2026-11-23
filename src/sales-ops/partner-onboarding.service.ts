@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { solvexoEmail } from '../notifications/templates/notification-email.template';
 import { InjectModel } from '@nestjs/mongoose';
 import { Cron } from '@nestjs/schedule';
 import { Model } from 'mongoose';
@@ -536,7 +537,6 @@ export class PartnerOnboardingService {
   }
 
   private mail(title: string, body: string) {
-    return `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1c1d1b"><h2 style="color:#D97757">${esc(title)}</h2>${body}
-      <p style="color:#888;font-size:12px;margin-top:24px">Solvexo Channel Partner Programme · solvexo.store</p></div>`;
+    return solvexoEmail(title, body, { note: 'Solvexo Channel Partner Programme · solvexo.store' });
   }
 }

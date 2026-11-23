@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { searchStoreCustomers } from '../common/store-customer-search.util';
+import { escapeEmailText, notificationEmailShell } from '../notifications/templates/notification-email.template';
 import { emailUiStrings, isRtlLocale } from '../notifications/customer-email-locales';
 import { resolveStoreAccent } from '../common/store-brand-accent.util';
 import { buildInvoiceItemsHtml, buildInvoicePdf, fetchInvoiceLogo, invoiceNumber, type InvoiceStore } from './draft-order-invoice.util';
@@ -331,14 +332,15 @@ export class DraftOrdersService {
     const invoiceUrl = `${frontendBase}/pay-invoice/${token}`;
 
     const symbol = draft.currency === 'PKR' ? 'Rs' : draft.currency === 'USD' ? '$' : draft.currency;
-    const html = `
-      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;">
-        <h2>Invoice from ${(store as any).name}</h2>
-        <p>Hi ${draft.customerName},</p>
-        <p>You have a new invoice for <strong>${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>${draft.paymentTerms === 'due_on_receipt' ? ' due on receipt' : draft.dueDate ? ` due by ${new Date(draft.dueDate).toLocaleDateString()}` : ''}.</p>
-        <p><a href="${invoiceUrl}" style="display:inline-block;background:#D97757;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Pay Invoice</a></p>
-        <p style="color:#888;font-size:12px;">If the button doesn't work, copy this link: ${invoiceUrl}</p>
-      </div>`;
+    // Fallback mail (used only if the store's notification templates fail): still in the store's brand.
+    const html = notificationEmailShell(
+      `Invoice from ${escapeEmailText((store as any).name)}`,
+      `<p>Hi ${escapeEmailText(draft.customerName)},</p>
+        <p>You have a new invoice for <strong>${escapeEmailText(symbol)} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>${draft.paymentTerms === 'due_on_receipt' ? ' due on receipt' : draft.dueDate ? ` due by ${new Date(draft.dueDate).toLocaleDateString()}` : ''}.</p>
+        <p style="color:#888;font-size:12px;">If the button doesn't work, copy this link: ${invoiceUrl}</p>`,
+      { label: 'Pay invoice', url: invoiceUrl },
+      { name: String((store as any).name ?? 'Store') },
+    );
     const dueText = draft.paymentTerms === 'due_on_receipt' ? 'Payment is due on receipt.' : draft.dueDate ? `Payment is due by ${new Date(draft.dueDate).toLocaleDateString()}.` : '';
     const invoiceDraft = {
       id: String(draft._id), customerName: draft.customerName, customerEmail: draft.customerEmail, currency: draft.currency,

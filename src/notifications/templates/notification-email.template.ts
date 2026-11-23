@@ -32,6 +32,8 @@ export function notificationEmailShell(
   cta?: { label: string; url: string },
   /** A STORE's name: customer-facing mails (shipped, delivered, ...) are branded as the store, not the platform. */
   storeBrand?: string | EmailStoreBrand | null,
+  /** Platform mail only: the line under the copyright. Left out = the account-activity line; null = none. */
+  platformNote?: string | null,
 ): string {
   const esc = (s: string) => repairMojibake(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const b: EmailStoreBrand | null = typeof storeBrand === 'string' ? { name: storeBrand } : storeBrand ?? null;
@@ -48,7 +50,7 @@ export function notificationEmailShell(
     ? `${b.footerText ? `<p>${esc(b.footerText)}</p>` : ''}<p>&copy; ${new Date().getFullYear()} ${brand}. ${ui.rightsReserved}</p>
     ${b.hideReceivingNotice ? '' : `<p>${ui.receivingBecause.replace('{brand}', brand)}</p>`}`
     : `<p>&copy; ${new Date().getFullYear()} ${APP_NAME}. All rights reserved.</p>
-    <p>You're receiving this because of activity on your ${APP_NAME} account. Manage preferences in the app under Notifications.</p>`;
+    ${platformNote === undefined ? `<p>You're receiving this because of activity on your ${APP_NAME} account. Manage preferences in the app under Notifications.</p>` : platformNote ? `<p>${esc(platformNote)}</p>` : ''}`;
   return `
 <!DOCTYPE html>
 <html lang="${lang}" dir="${rtl ? 'rtl' : 'ltr'}">
@@ -96,6 +98,14 @@ export function notificationEmailShell(
   .row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
   .label { color: #767676; }
   .value { font-weight: 600; color: #222; }
+  .amount { font-size: 28px; font-weight: 700; text-align: center; margin: 10px 0; }
+  .note, .success, .warning, .danger { border-radius: 12px; padding: 14px 18px; margin: 20px 0; font-size: 14px; }
+  .note { background: #f8f6f4; }
+  .success { background: #e8f8ee; border-left: 4px solid #22c55e; }
+  .warning { background: #fff6dd; border-left: 4px solid #f2b705; }
+  .danger { background: #fdecea; border-left: 4px solid #e53935; }
+  .code { font-size: 32px; font-weight: 800; letter-spacing: 8px; text-align: center; color: #1f1f1f; background: #f8f6f4; border-radius: 12px; padding: 18px; margin: 20px 0; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; }
+  .muted { color: #767676; font-size: 13px; }
   .cta {
     display: inline-block;
     margin: 24px 0 8px;
@@ -127,4 +137,17 @@ export function notificationEmailShell(
   </div>
 </body>
 </html>`;
+}
+
+/**
+ * A Solvexo-branded platform email (Solvexo talking to its sellers, staff, admins, partners and leads). `bodyHtml` must
+ * already be escaped. `note` replaces the footer's "activity on your account" line (null = no line).
+ */
+export function solvexoEmail(title: string, bodyHtml: string, opts: { cta?: { label: string; url: string }; note?: string | null } = {}): string {
+  return notificationEmailShell(escapeEmailText(title), bodyHtml, opts.cta, null, opts.note);
+}
+
+/** Escapes text for an email body. */
+export function escapeEmailText(s: unknown): string {
+  return repairMojibake(String(s ?? '')).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

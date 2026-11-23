@@ -1,4 +1,5 @@
 import { preorderCanFill } from '../common/preorder.util';
+import { solvexoEmail } from '../notifications/templates/notification-email.template';
 import { stockLinesForItem } from '../common/bundle.util';
 import { sellerAppUrl } from '@/common/app-urls.util';
 import { emitOrdersDisputed } from '../common/order-events';
@@ -3132,11 +3133,11 @@ export class PaymentService {
         const itemCount = so.items.length;
         const newOrderEmail = {
           subject: `[${soStore?.name ?? 'Your store'}] New order #${createdOrder.orderNumber}`,
-          html: `<div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;color:#222;">
-                <h2 style="margin-bottom:4px;">New order #${createdOrder.orderNumber}</h2>
-                <p style="color:#555;">${escapeHtml(soStore?.name ?? 'Your store')} just received an order for ${itemCount} item(s).</p>
-                <p style="text-align:center;margin:20px 0;"><a href="${orderLink}" style="background:#111;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;">View order</a></p>
-              </div>`,
+          html: solvexoEmail(
+            `New order #${createdOrder.orderNumber}`,
+            `<p>${escapeHtml(soStore?.name ?? 'Your store')} just received an order for ${itemCount} item(s).</p>`,
+            { cta: { label: 'View order', url: orderLink } },
+          ),
         };
         // Extra recipients the seller added under Settings → Notifications (Shopify staff order notifications).
         if (firstForStore) this.notificationsService.sendStaffOrderEmails(String(so.storeId), newOrderEmail.subject, newOrderEmail.html).catch(() => {});
