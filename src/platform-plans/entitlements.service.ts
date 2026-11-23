@@ -219,6 +219,8 @@ export class EntitlementsService {
 
   async getLimits(storeId: string): Promise<PlatformPlanLimits> {
     const { plan, subscription } = await this.resolvePlan(storeId);
+    // 'canceled' (Stripe subscription ended) behaves like trial_ended: no paid limits, restricted FALLBACK only.
+    if (subscription?.status === 'canceled') return FALLBACK_LIMITS;
     const base: PlatformPlanLimits = plan?.limits ? { ...NEW_FIELD_DEFAULTS, ...(plan.limits as PlatformPlanLimits) } : FALLBACK_LIMITS;
     return this.applyTrialOverride(base, subscription);
   }
@@ -254,17 +256,10 @@ export class EntitlementsService {
    * (pending invites included — an invite holds a seat). POS-only employees
    * (PIN login, no dashboard access) are deliberately NOT counted — Shopify's
    * own rule: "POS only staff ... do not count toward the user limit".
-   * Any still-active legacy "extra staff seat" add-on keeps its paid seats
-   * until that add-on lapses (the add-on itself is no longer sold).
    */
-  async countStaffSeats(storeId: string): Promise<{ used: number; extraSeats: number }> {
-    const [used, extraSeatAddons] = await Promise.all([
-      this.db.repositories.staffMemberModel.countDocuments({ storeId, isDelete: false, status: 'active' }),
-      this.db.repositories.platformAddonPurchaseModel
-        .find({ storeId, addonType: 'extra_staff_seat', status: 'active' }).lean(),
-    ]);
-    const extraSeats = (extraSeatAddons as any[]).reduce((sum: number, a: any) => sum + (a.quantity ?? 1), 0);
-    return { used, extraSeats };
+  async countStaffSeats(storeId: string): Promise<{ used: number }> {
+    const used = await this.db.repositories.staffMemberModel.countDocuments({ storeId, isDelete: false, status: 'active' });
+    return { used };
   }
 
   /** Throws if the store is already at (or over) its staff-account limit. Call BEFORE inviting or re-activating a dashboard staff member. */
@@ -272,8 +267,8 @@ export class EntitlementsService {
     const limits = await this.getLimits(storeId);
     if (limits.maxStaffAccounts === -1) return;
 
-    const { used, extraSeats } = await this.countStaffSeats(storeId);
-    const effectiveLimit = limits.maxStaffAccounts + extraSeats;
+    const { used } = await this.countStaffSeats(storeId);
+    const effectiveLimit = limits.maxStaffAccounts;
     if (used >= effectiveLimit) {
       throw new BadRequestException(
         effectiveLimit === 0
@@ -326,19 +321,18 @@ export class EntitlementsService {
   }
 
   /**
-   * Marketing emails this store has used this calendar month (UTC): campaign emails (queued), automation emails (welcome, back in
-   * stock, price drop, win-back: delivered ones) and abandoned-cart reminders. Order and account mails are not marketing and not counted.
+   * Marketing emails this store has used this calendar month (UTC): campaign emails (queued) and automation emails (welcome, back in
+   * stock, price drop, win-back: delivered ones). Abandoned-checkout emails are free and not counted (as on Shopify); order and
+   * account mails are not marketing and not counted either.
    */
   async getMonthlyEmailUsage(storeId: string, now = new Date()): Promise<number> {
     const from = startOfMonthUTC(now);
     const r = this.db.repositories as any;
-    const [campaign, automation, abandoned, abandonedSecond] = await Promise.all([
+    const [campaign, automation] = await Promise.all([
       r.emailCampaignSendModel.countDocuments({ storeId, createdAt: { $gte: from } }),
       r.automationSendLogModel ? r.automationSendLogModel.countDocuments({ storeId, delivered: true, createdAt: { $gte: from } }) : 0,
-      r.checkoutModel ? r.checkoutModel.countDocuments({ abandonedEmailStoreId: storeId, abandonedEmailSentAt: { $gte: from } }) : 0,
-      r.checkoutModel ? r.checkoutModel.countDocuments({ abandonedEmailStoreId: storeId, abandonedSecondEmailSentAt: { $gte: from } }) : 0,
     ]);
-    return campaign + automation + abandoned + abandonedSecond;
+    return campaign + automation;
   }
 
   /** How many more marketing emails this store may send this month (0 when the plan has no marketing emails or the allowance is used up). */
@@ -395,7 +389,9 @@ export class EntitlementsService {
    */
   async getEntitlementsSummary(storeId: string) {
     const { plan, subscription } = await this.resolvePlan(storeId);
-    const base: PlatformPlanLimits = plan?.limits ? { ...NEW_FIELD_DEFAULTS, ...(plan.limits as PlatformPlanLimits) } : FALLBACK_LIMITS;
+    const base: PlatformPlanLimits = subscription?.status === 'canceled'
+      ? FALLBACK_LIMITS
+      : plan?.limits ? { ...NEW_FIELD_DEFAULTS, ...(plan.limits as PlatformPlanLimits) } : FALLBACK_LIMITS;
     const limits: PlatformPlanLimits = this.applyTrialOverride(base, subscription);
 
     const [productCount, staffSeats, posLocationCount, aiWallet, allActivePlans] = await Promise.all([
@@ -421,18 +417,18 @@ export class EntitlementsService {
 
     return {
       // `plan` is legitimately null while trialing (see `getActivePlanForStore`'s
-      // doc comment) — "Trial" there, never a borrowed/fake plan name; the
-      // genuine no-subscription-row-at-all fallback still reads "Starter (default)".
-      currentPlanName: plan?.name ?? (subscription?.status === 'trialing' ? 'Trial' : 'Starter (default)'),
+      // doc comment) — "Free trial" there, and "No plan" for a store that has not (or no longer) paid for one;
+      // never a borrowed/fake plan name.
+      currentPlanName: plan?.name ?? (subscription?.status === 'trialing' ? 'Free trial' : 'No plan'),
       currentPlanId: plan?._id?.toString?.() ?? null,
       maxProducts: {
         limit: limits.maxProducts, used: productCount,
         allowed: limits.maxProducts === -1 || productCount < limits.maxProducts,
       },
       maxStaffAccounts: {
-        limit: limits.maxStaffAccounts === -1 ? -1 : limits.maxStaffAccounts + staffSeats.extraSeats,
+        limit: limits.maxStaffAccounts === -1 ? -1 : limits.maxStaffAccounts,
         used: staffSeats.used,
-        allowed: limits.maxStaffAccounts === -1 || staffSeats.used < limits.maxStaffAccounts + staffSeats.extraSeats,
+        allowed: limits.maxStaffAccounts === -1 || staffSeats.used < limits.maxStaffAccounts,
       },
       maxPosLocations: {
         limit: limits.maxPosLocations, used: posLocationCount,

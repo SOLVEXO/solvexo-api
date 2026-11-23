@@ -70,6 +70,16 @@ export class EmailCampaignsController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('marketing.manage')
+  @Get(':storeId/:campaignId/report')
+  getReport(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string) {
+    return this.emailCampaignsService.getReport(actingSellerId(req.user), storeId, campaignId);
+  }
+
+  // Guards restored: they had moved onto the report route above when it was added, leaving this route unguarded.
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('marketing.manage')
   @Get(':storeId/:campaignId')
   getOne(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string) {
     return this.emailCampaignsService.getOne(actingSellerId(req.user), storeId, campaignId);

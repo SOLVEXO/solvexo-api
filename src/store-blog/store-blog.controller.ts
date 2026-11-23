@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -23,6 +24,7 @@ import { UpdateBlogDto } from './dto/update-blog.dto';
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'staff')
 @RequirePermission('onlinestore.content.manage')
+@AuditStoreWrites('blog', 'marketing')
 @Controller('api/store-blog')
 export class StoreBlogController {
   constructor(private readonly storeBlogService: StoreBlogService) {}

@@ -10,7 +10,6 @@ describe('RevenueModelService', () => {
     const r: any = {
       platformPlanInvoiceModel: agg([{ _id: { m: '2026-10', s: 'st1' }, amount: 49 }, { _id: { m: '2026-09', s: 'st1' }, amount: 49 }]),
       transactionFeeBillModel: agg([{ _id: { m: '2026-10', s: 'st2' }, amount: 12 }]),
-      platformAddonPurchaseModel: agg([{ _id: { m: '2026-10', s: 'st1' }, amount: 9 }]),
       transactionModel: agg([
         { _id: { m: '2026-10', s: 'st2', c: 'PKR' }, amount: 2800 },  // 2800 PKR at 280/USD = $10
         { _id: { m: '2026-10', s: 'st3', c: 'XYZ' }, amount: 500 },   // no rate: excluded and disclosed
@@ -23,11 +22,11 @@ describe('RevenueModelService', () => {
     };
     const { data } = await new RevenueModelService({ repositories: r } as any).getRevenueModel(3, NOW);
     const oct = data.monthly.find((m: any) => m.month === '2026-10');
-    expect(oct.streams).toEqual({ plans: 49, transactionFees: 12, commission: 10, addons: 9, posPlans: 20, promotions: 0 });
-    expect(oct).toMatchObject({ total: 100, transactional: 22, gmv: 2000, takeRatePercent: 5, transactionalTakeRatePercent: 1.1 });
-    expect(data.summary).toMatchObject({ totalRevenue: 149, totalGmv: 3000, takeRatePercent: 4.97, payingStores: 3, thisMonthSoFar: 100 });
+    expect(oct.streams).toEqual({ plans: 49, transactionFees: 12, commission: 10, posPlans: 20, promotions: 0 });
+    expect(oct).toMatchObject({ total: 91, transactional: 22, gmv: 2000, takeRatePercent: 4.55, transactionalTakeRatePercent: 1.1 });
+    expect(data.summary).toMatchObject({ totalRevenue: 140, totalGmv: 3000, takeRatePercent: 4.67, payingStores: 3, thisMonthSoFar: 91 });
     expect(data.summary.lastFullMonth).toEqual({ month: '2026-09', revenue: 49, takeRatePercent: 4.9 });
-    expect(data.concentration.top[0]).toMatchObject({ storeName: 'Bloom', amount: 107, sellerId: 'se1' });
+    expect(data.concentration.top[0]).toMatchObject({ storeName: 'Bloom', amount: 98, sellerId: 'se1' });
     expect(data.notes.unconvertedCurrencies).toEqual(['XYZ']);
     expect(data.monthly.map((m: any) => m.month)).toEqual(['2026-08', '2026-09', '2026-10']);
   });

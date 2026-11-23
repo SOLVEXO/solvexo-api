@@ -150,8 +150,8 @@ export class AdminFinanceService {
   async getPlatformRevenue(query: any) {
     const { from, to } = resolveDateRange(query);
 
-    return this.cached(this.key('platform-revenue-v3', { r: rangeCacheKey(query) }), async () => {
-      const [planRows, paidBillRows, openBillRows, accruedRows, rates, addonRows, oneOffTaxUSD] = await Promise.all([
+    return this.cached(this.key('platform-revenue-v4', { r: rangeCacheKey(query) }), async () => {
+      const [planRows, paidBillRows, openBillRows, accruedRows, rates, oneOffTaxUSD] = await Promise.all([
         this.r.platformPlanInvoiceModel.aggregate([
           { $match: { status: { $in: ['paid', 'partially_refunded', 'refunded'] }, isDelete: false, paidAt: { $gte: from, $lte: to } } },
           // Solvexo's own tax inside `amountUSD` is NOT revenue (it is owed to the tax authority): revenue is net of it,
@@ -180,19 +180,10 @@ export class AdminFinanceService {
           { $group: { _id: '$currency', amount: { $sum: { $abs: '$amount' } } } },
         ]),
         this.getUsdRates(),
-        // Add-ons (extra AI credits, staff seats...): every successful charge in range — purchases made before
-        // `charges` existed count as one charge of `priceUSD` at `createdAt`.
-        this.r.platformAddonPurchaseModel.aggregate([
-          { $addFields: { _charges: { $cond: [{ $gt: [{ $size: { $ifNull: ['$charges', []] } }, 0] }, '$charges', [{ amountUSD: '$priceUSD', chargedAt: '$createdAt' }]] } } },
-          { $unwind: '$_charges' },
-          { $match: { '_charges.chargedAt': { $gte: from, $lte: to } } },
-          { $group: { _id: null, total: { $sum: '$_charges.amountUSD' }, tax: { $sum: { $ifNull: ['$_charges.taxUSD', 0] } }, count: { $sum: 1 } } },
-        ]),
         // Tax collected on promotions, store-app fees and POS plans (rows written when each charge was confirmed).
         this.platformTax?.collectedTaxUSD(from, to) ?? Promise.resolve(0),
       ]);
 
-      const addonGross = round(addonRows[0]?.total ?? 0);
       const planGross = round(planRows[0]?.gross ?? 0);
       const planRefunded = round(planRows[0]?.refunded ?? 0);
       const planNet = round(planGross - planRefunded);
@@ -216,8 +207,8 @@ export class AdminFinanceService {
           range: { from, to },
           planRevenue: { grossUSD: planGross, refundedUSD: planRefunded, netUSD: planNet, invoiceCount: planRows[0]?.count ?? 0 },
           // Solvexo's own tax collected on plan fees (owed to the tax authority, kept out of revenue above).
-          // (plan invoices net of refunds + add-on charges + transaction-fee bills + promotions/app fees/POS plans)
-          planTax: { collectedUSD: round((planRows[0]?.taxGross ?? 0) - (planRows[0]?.taxRefunded ?? 0) + (addonRows[0]?.tax ?? 0) + (paidBillRows[0]?.tax ?? 0) + oneOffTaxUSD) },
+          // (plan invoices net of refunds + transaction-fee bills + promotions/app fees/POS plans)
+          planTax: { collectedUSD: round((planRows[0]?.taxGross ?? 0) - (planRows[0]?.taxRefunded ?? 0) + (paidBillRows[0]?.tax ?? 0) + oneOffTaxUSD) },
           transactionFees: {
             collectedUSD: feesCollected,
             billCount: paidBillRows[0]?.count ?? 0,
@@ -225,9 +216,8 @@ export class AdminFinanceService {
             accruedUnbilledUSD: round(accruedUnbilled),
             ...(unconvertibleCurrencies.length ? { unconvertibleCurrencies } : {}),
           },
-          addons: { grossUSD: addonGross, chargeCount: addonRows[0]?.count ?? 0 },
-          totalRevenueUSD: round(planNet + feesCollected + addonGross),
-          note: 'Revenue = what sellers pay Solvexo: platform plans (net of refunds) + add-ons + third-party transaction fees collected on their monthly bills. "invoicedUnpaidUSD" and "accruedUnbilledUSD" are NOT counted until collected. Buyer card payments settle directly into the seller\'s own connected account and are not platform revenue.',
+          totalRevenueUSD: round(planNet + feesCollected),
+          note: 'Revenue = what sellers pay Solvexo: platform plans (net of refunds) + third-party transaction fees collected on their monthly bills. "invoicedUnpaidUSD" and "accruedUnbilledUSD" are NOT counted until collected. Buyer card payments settle directly into the seller\'s own connected account and are not platform revenue.',
         },
       };
     });

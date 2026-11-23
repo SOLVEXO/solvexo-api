@@ -163,6 +163,7 @@ export class GiftCardsService {
       storeId, category: 'marketing', action: 'gift_card_adjusted',
       description: `${giftCard.code} — ${rounded > 0 ? '+' : ''}${rounded} ${giftCard.currency} (${reason || 'no reason given'})`,
       actorId: sellerId, actorRole: 'seller', targetId: giftCardId, targetType: 'gift_card',
+      metadata: { changes: [{ field: 'balance', before: giftCard.balance, after: newBalance }] },
     });
 
     let emailed: 'sent' | 'failed' | 'disabled' | 'no_recipient' | null = null;
@@ -180,6 +181,7 @@ export class GiftCardsService {
 
   async disableGiftCard(sellerId: string, storeId: string, giftCardId: string, notify = false) {
     await this.verifyStoreOwnership(storeId, sellerId);
+    const before = await this.r.giftCardModel.findOne({ _id: giftCardId, storeId, isDelete: false }).select('status').lean();
     const giftCard = await this.r.giftCardModel.findOneAndUpdate(
       { _id: giftCardId, storeId, isDelete: false },
       { status: 'disabled' },
@@ -191,6 +193,7 @@ export class GiftCardsService {
       storeId, category: 'marketing', action: 'gift_card_disabled',
       description: `${giftCard.code} disabled`, actorId: sellerId, actorRole: 'seller',
       targetId: giftCardId, targetType: 'gift_card',
+      metadata: { changes: [{ field: 'status', before: (before as any)?.status ?? null, after: 'disabled' }] },
     });
 
     let emailed: 'sent' | 'failed' | 'disabled' | 'no_recipient' | null = null;

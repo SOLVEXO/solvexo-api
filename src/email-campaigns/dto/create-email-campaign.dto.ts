@@ -21,6 +21,7 @@ export class CreateEmailCampaignDto {
   @ApiProperty({ example: 'Hi {{customerName}}, ...' })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(500_000)
   message: string;
 
   @ApiProperty({ enum: ['all', 'buyers', 'abandoned'] })

@@ -170,9 +170,6 @@ export class DatabaseService {
     @InjectModel(schema.AiCreditsWallet.name)
     private aiCreditsWalletModel: Model<schema.AiCreditsWalletDocument>,
 
-    @InjectModel(schema.PlatformAddonPurchase.name)
-    private platformAddonPurchaseModel: Model<schema.PlatformAddonPurchaseDocument>,
-
     @InjectModel(schema.StoreLocation.name)
     private storeLocationModel: Model<schema.StoreLocationDocument>,
 
@@ -558,6 +555,10 @@ export class DatabaseService {
     private courierBookingModel: Model<schema.CourierBookingDocument>,
     @InjectModel(schema.CustomerSegment.name)
     private customerSegmentModel: Model<schema.CustomerSegmentDocument>,
+    @InjectModel(schema.MarketingCampaign.name)
+    private marketingCampaignModel: Model<schema.MarketingCampaignDocument>,
+    @InjectModel(schema.SignupForm.name)
+    private signupFormModel: Model<schema.SignupFormDocument>,
 
     // Phase 5 — Product Tracking Foundation.
     @InjectModel(schema.ProductView.name)
@@ -630,7 +631,6 @@ export class DatabaseService {
       transactionFeeBillModel: this.transactionFeeBillModel,
       platformPlanPaymentAttemptModel: this.platformPlanPaymentAttemptModel,
       aiCreditsWalletModel: this.aiCreditsWalletModel,
-      platformAddonPurchaseModel: this.platformAddonPurchaseModel,
       storeLocationModel: this.storeLocationModel,
       bookableServiceModel: this.bookableServiceModel,
       serviceAvailabilityModel: this.serviceAvailabilityModel,
@@ -772,6 +772,8 @@ export class DatabaseService {
       orderPaymentRecordModel: this.orderPaymentRecordModel,
       courierBookingModel: this.courierBookingModel,
       customerSegmentModel: this.customerSegmentModel,
+      marketingCampaignModel: this.marketingCampaignModel,
+      signupFormModel: this.signupFormModel,
       productViewModel: this.productViewModel,
       storefrontSessionModel: this.storefrontSessionModel,
       savedReportModel: this.savedReportModel,

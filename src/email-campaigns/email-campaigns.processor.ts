@@ -19,6 +19,7 @@ interface EmailCampaignSendJob {
   message: string;
   // Optional only for jobs already queued before these fields existed.
   storeContactEmail?: string | null;
+  storeAddress?: string | null;
   unsubscribeUrl?: string;
   designed?: boolean;
 }
@@ -39,7 +40,7 @@ export class EmailCampaignsProcessor extends WorkerHost {
   }
 
   async process(job: Job<EmailCampaignSendJob>): Promise<void> {
-    const { sendId, campaignId, email, customerName, storeName, subject, message, storeContactEmail, unsubscribeUrl, designed } = job.data;
+    const { sendId, campaignId, email, customerName, storeName, subject, message, storeContactEmail, storeAddress, unsubscribeUrl, designed } = job.data;
 
     const maxAttempts = job.opts.attempts ?? 1;
     const isLastAttempt = job.attemptsMade + 1 >= maxAttempts;
@@ -66,6 +67,7 @@ export class EmailCampaignsProcessor extends WorkerHost {
         ctaUrl: clickBase,
         openPixelUrl: `${API_PUBLIC_ORIGIN}/api/email-campaigns/track/open/${sendId}`,
         unsubscribeUrl: unsubscribeUrl ?? null,
+        storeAddress: storeAddress ?? null,
       });
       const sent = await this.emailService.sendMail(email, rendered.subject, rendered.html, storeContactEmail ?? null, unsubscribeHeaders(unsubscribeUrl), undefined, storeName);
       if (sent) {

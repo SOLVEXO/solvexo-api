@@ -24,7 +24,6 @@ import {
 import { DatabaseService } from '@/database/databaseservice';
 import { availableStock, AVAILABLE_STOCK_EXPR, isPurchasableOnline } from '@/common/stock-availability.util';
 import { MarketingService } from '@/marketing/marketing.service';
-import { pickBestCampaign } from '@/marketing/campaign-pricing.util';
 import { AdminConfigService } from '@/admin-config/admin-config.service';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
 import { FxSnapshot } from '@/exchange-rate/schemas/exchange-rate.schema';
@@ -635,58 +634,11 @@ export class CheckoutService {
       }
     }
 
-    // Pass 3: automatic platform-campaign discount. Resolved per store — a
-    // store can be opted into more than one currently-active campaign, so
-    // whichever one currently saves the buyer the most on that store's
-    // subtotal wins (see pickBestCampaign).
-    let campaignSavingsUSD = 0;
-    const appliedCampaigns: Array<{
-      campaignId: string;
-      name: string;
-      storeId: string;
-      discountUSD: number;
-      sponsorType: 'seller' | 'platform';
-    }> = [];
+    // Pass 3: seller's own automatic (no-code) discount (DiscountsService),
+    // computed server-side, never client-supplied. Only the single best-value
+    // discount per store is applied, evaluated against each discount's own
+    // targeted subset of items (whole store / a set of categories / a set of products).
     const cartStoreIds = [...new Set(checkoutItems.map((i) => i.storeId))];
-    const activeCampaignsByStore =
-      await this.marketingService.getActiveCampaignsForStores(cartStoreIds);
-
-    for (const storeId of cartStoreIds) {
-      const campaigns = activeCampaignsByStore.get(storeId);
-      if (!campaigns || campaigns.length === 0) continue;
-
-      const storeItems = checkoutItems.filter((i) => i.storeId === storeId);
-      const storeSubtotal = this.round(
-        storeItems.reduce((s, i) => s + i.totalPrice, 0),
-      );
-      const best = pickBestCampaign(campaigns, storeSubtotal);
-      if (!best || best.discountAmount <= 0) continue;
-
-      this.distributeCampaignDiscount(
-        storeItems,
-        best.discountAmount,
-        best.campaign.campaignId,
-        best.campaign.sponsorType,
-      );
-      campaignSavingsUSD = this.round(campaignSavingsUSD + best.discountAmount);
-      appliedCampaigns.push({
-        campaignId: best.campaign.campaignId,
-        name: best.campaign.name,
-        storeId,
-        discountUSD: best.discountAmount,
-        sponsorType: best.campaign.sponsorType,
-      });
-    }
-
-    // Pass 3.5: seller's own automatic (no-code) discount (DiscountsService)
-    // — same "computed server-side, never client-supplied" rule as campaign
-    // discount above, resolved on top of it. An item that already got a
-    // campaign discount is excluded, same "not combinable with an active
-    // sale" rule CheckoutService.applyCoupon's eligibility filter uses.
-    // Only the single best-value discount per store is applied — same
-    // one-per-store selection as pickBestCampaign, just evaluated against
-    // each discount's own targeted subset of items (whole store / a set of
-    // categories / a set of products).
     let autoDiscountSavingsUSD = 0;
     const segmentMemberCache = new Map<string, boolean>();
     const activeDiscountsByStore = await this.discountsService.getActiveDiscountsForStores(cartStoreIds);
@@ -1011,7 +963,7 @@ export class CheckoutService {
       shippingFee: 0,
       taxAmount,
       includedTaxAmount,
-      campaignDiscountTotalUSD: campaignSavingsUSD,
+      campaignDiscountTotalUSD: 0, // platform sale campaigns no longer exist; the field stays for old data
       autoDiscountTotalUSD: autoDiscountSavingsUSD,
       ruleDiscountTotal,
       ruleDiscountLabels,
@@ -1122,11 +1074,10 @@ export class CheckoutService {
           includedTaxAmount,
           totalAmount,
           internationalDutiesNotice: hasPhysical ? await this.internationalDutiesNotice(cardStoreIds, resolvedAddress?.country) : false,
-          campaignDiscountUSD: campaignSavingsUSD,
+          campaignDiscountUSD: 0,
           autoDiscountUSD: autoDiscountSavingsUSD,
           ...this.splitSubtotalsByType(checkoutItems),
         },
-        appliedCampaigns,
       },
     };
   }
@@ -1757,6 +1708,13 @@ export class CheckoutService {
    *  coupon's own store (a coupon never discounts another seller's items in
    *  a mixed-store cart). Replacing an already-applied coupon reverts the
    *  old one first so discounts never compound. */
+  /** True when this buyer already has a (not deleted) order that used this coupon code at this store. */
+  private async hasUsedCouponBefore(userId: string, coupon: any): Promise<boolean> {
+    const filter: any = { userId, couponCode: coupon.code, isDelete: false };
+    if (coupon.storeId) filter['sellerOrders.storeId'] = String(coupon.storeId);
+    return !!(await (this.databaseService.repositories as any).orderModel.exists(filter));
+  }
+
   async applyCoupon(userId: string, body: any) {
     const { checkoutId, code } = body;
     if (!checkoutId) throw new BadRequestException('checkoutId is required');
@@ -1819,6 +1777,11 @@ export class CheckoutService {
       if (!member) throw new BadRequestException('This coupon is not available for your account');
     }
 
+    // "One use per customer": a buyer who already placed an order with this code cannot use it again.
+    if ((coupon as any).oncePerCustomer && (await this.hasUsedCouponBefore(userId, coupon))) {
+      throw new BadRequestException('You have already used this coupon.');
+    }
+
     // Revert any previously-applied coupon first so re-applying (or
     // switching codes) always computes from a clean, undiscounted baseline.
     this.revertCouponFromItems(items);
@@ -1876,6 +1839,13 @@ export class CheckoutService {
       throw new BadRequestException(
         "This coupon can't be combined with the active sale on these items.",
       );
+    }
+    // Minimum quantity of items (counted on the items the coupon can actually discount).
+    if ((coupon as any).minQuantity != null) {
+      const qty = eligibleItems.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+      if (qty < (coupon as any).minQuantity) {
+        throw new BadRequestException(`This coupon requires at least ${(coupon as any).minQuantity} item${(coupon as any).minQuantity === 1 ? '' : 's'} in your cart.`);
+      }
     }
     const eligibleSubtotal = isPlatformCoupon
       ? this.convertedSubtotal(eligibleItems, couponStoreCurrency, checkout.fxSnapshots as any)
@@ -2596,34 +2566,8 @@ export class CheckoutService {
     });
   }
 
-  /** Distributes an automatic platform-campaign discount across a store's
-   *  items, mutating price/totalPrice in place. Unlike a coupon, a campaign
-   *  discount is never toggled off by the buyer, so it needs no "before"
-   *  revert fields — it's simply recomputed fresh every time a checkout is
-   *  (re)created from the cart. `originalPrice` is set only if a subscriber
-   *  discount hasn't already set it, so it always reflects the true pre-any-
-   *  discount price for receipt display. */
-  private distributeCampaignDiscount(
-    storeItems: any[],
-    totalDiscount: number,
-    campaignId: string,
-    sponsorType: 'seller' | 'platform',
-  ) {
-    this.proportionallyDistribute(storeItems, totalDiscount, (item, share) => {
-      if (item.originalPrice == null) item.originalPrice = item.price;
-      item.campaignId = campaignId;
-      item.campaignDiscountUSD = share;
-      item.campaignSponsorType = sponsorType;
-      item.totalPrice = this.round(item.totalPrice - share);
-      item.price =
-        item.quantity > 0
-          ? this.round(item.totalPrice / item.quantity)
-          : item.totalPrice;
-    });
-  }
-
   /** Distributes a seller's own AutomaticDiscount (DiscountsService) across
-   *  the subset of items it targets — same math as distributeCampaignDiscount,
+   *  the subset of items it targets — same math as a coupon's distribution,
    *  writing to the discount-specific fields instead. */
   /** Store rules that hide / rename / reorder payment methods (single-store checkouts only). */
   private async applyPaymentRules(checkout: any, userId: string, storeIds: string[], methods: string[]): Promise<string[]> {

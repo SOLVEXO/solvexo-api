@@ -56,7 +56,8 @@ export class BillingAccessGuard implements CanActivate {
           : 'This store is currently locked — choose a plan and complete payment from the billing page to resume selling.',
       );
     }
-    if (sub && (sub as any).status === 'trial_ended') {
+    // 'canceled' (the Stripe subscription ended) is treated exactly like a trial that ended: choose a plan to continue.
+    if (sub && ((sub as any).status === 'trial_ended' || (sub as any).status === 'canceled')) {
       throw new ForbiddenException(
         forBuyer
           ? 'This store is not currently accepting orders.'

@@ -61,6 +61,17 @@ export class PaymentController {
     return this.paymentService.storeCreditPayment(userId, body);
   }
 
+  // A checkout whose server-computed total is zero (free digital download, 100% discount): no payment step.
+  @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
+  @Roles('user')
+  @RequireActiveBilling({ blockDuringTrial: true, audience: 'buyer' })
+  @UseInterceptors(IdempotencyInterceptor)
+  @Post('free-payment')
+  async freePayment(@Req() req: any, @Body() body: any) {
+    const { userId } = req.user;
+    return this.paymentService.freePayment(userId, body);
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard, BillingAccessGuard)
   @Roles('user')
   @RequireActiveBilling({ blockDuringTrial: true, audience: 'buyer' })

@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Get, Param, Post, Req, UploadedFiles, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -25,6 +26,7 @@ const APP_ASSET_UPLOAD = FileFieldsInterceptor(
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('seller')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+@AuditStoreWrites('app_request', 'apps')
 @Controller('api/store-app-requests')
 export class StoreAppRequestsController {
   constructor(private readonly storeAppRequestsService: StoreAppRequestsService) {}

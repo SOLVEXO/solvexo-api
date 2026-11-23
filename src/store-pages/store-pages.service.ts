@@ -46,16 +46,10 @@ export function starterHomeSections() {
   return [
     // Text-only welcome banner (no image needed): the seller swaps in a photo and their own words.
     { type: 'image_banner' as SectionType, settings: { heading: 'Welcome to our store', subheading: 'Discover our latest products, picked with care.', ctaText: 'Shop now', ctaLink: { linkType: 'search' }, heightPreset: 'medium', contentAlign: 'center', contentPosition: 'middle' }, blocks: [] },
-    {
-      type: 'trust_badges' as SectionType, settings: {}, blocks: [
-        { type: 'trust_badge_item', settings: { icon: 'lock', text: 'Secure checkout' } },
-        { type: 'trust_badge_item', settings: { icon: 'shield', text: 'Quality you can trust' } },
-        { type: 'trust_badge_item', settings: { icon: 'headset', text: 'Friendly support' } },
-      ],
-    },
-    { type: 'featured_products' as SectionType, settings: { heading: 'New arrivals', source: 'newArrivals', limit: 8, columns: 4 }, blocks: [] },
-    { type: 'featured_products' as SectionType, settings: { heading: 'Best sellers', source: 'bestsellers', limit: 4, columns: 4 }, blocks: [] },
-    { type: 'newsletter' as SectionType, settings: { heading: 'Stay in the loop', subtext: 'Be first to hear about new arrivals and offers.' }, blocks: [] },
+    // Shopify rule: nothing on the storefront that the seller did not choose. This is ONE empty "Featured products" slot (hand-picked,
+    // nothing picked yet): it stays hidden on the live store until the seller picks products. No auto "New arrivals" / "Best sellers"
+    // lists, no trust row, no sign-up block: the seller adds those from "Add section" when they want them.
+    { type: 'featured_products' as SectionType, settings: { heading: 'Featured products', source: 'manual', productIds: [], limit: 8, columns: 4 }, blocks: [] },
   ];
 }
 
@@ -82,7 +76,7 @@ export class StorePagesService {
     if (!this.storeThemeModel) return undefined;
     const query = installedThemeId
       ? { _id: installedThemeId, storeId }
-      : { storeId, status: 'active' };
+      : { storeId, status: 'active' as const };
     const theme = await this.storeThemeModel.findOne(query).select('_id themeDefinitionId').lean();
     if (!theme && installedThemeId) throw new NotFoundException('Installed theme not found');
     return theme?._id ? String(theme._id) : undefined;

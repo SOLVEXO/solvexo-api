@@ -28,7 +28,7 @@ const LIST_PROJECTION = {
   name: 1, slug: 1, status: 1, sellerId: 1, country: 1, businessType: 1, taxId: 1, categoryId: 1, createdAt: 1,
   verificationStatus: 1, verificationSubmittedAt: 1, verificationDueAt: 1, riskLevel: 1, riskReasons: 1, payoutHold: 1,
   'verification.taxId': 1, 'verification.cnicNumber': 1, 'verification.strn': 1, 'verification.businessProfile': 1,
-  'verification.history.action': 1, 'verification.history.at': 1,
+  'verification.history.action': 1, 'verification.history.at': 1, 'verification.change.status': 1,
 };
 
 /**
@@ -68,10 +68,13 @@ export class AdminSellerTrustService {
 
   // ── Settings ──
 
-  private shapeSettings(s: { enforcementStartedAt: Date | null; graceDays: number }) {
+  private shapeSettings(s: { enforcementStartedAt: Date | null; graceDays: number; requireStrnForPk?: boolean; kycRetentionYears?: number; kycDraftRetentionDays?: number }) {
     return {
       enforcementStartedAt: s.enforcementStartedAt,
       graceDays: s.graceDays,
+      requireStrnForPk: s.requireStrnForPk === true,
+      kycRetentionYears: s.kycRetentionYears ?? 6,
+      kycDraftRetentionDays: s.kycDraftRetentionDays ?? 90,
       firstDueAt: s.enforcementStartedAt ? new Date(new Date(s.enforcementStartedAt).getTime() + s.graceDays * DAY_MS) : null,
     };
   }
@@ -82,14 +85,28 @@ export class AdminSellerTrustService {
 
   /** `enforcementStartedAt: 'now'` starts enforcement (kept as-is if it already started, so a second click can't
    *  push everyone's deadline out); `null` stops it. Deadlines + marketplace visibility are re-synced right away. */
-  async updateSettings(dto: { enforcementStartedAt?: 'now' | null; graceDays?: number }, meta: AuditMeta) {
+  async updateSettings(dto: { enforcementStartedAt?: 'now' | null; graceDays?: number; requireStrnForPk?: boolean; kycRetentionYears?: number; kycDraftRetentionDays?: number }, meta: AuditMeta) {
     const current = await this.sellerTrust.getSettings();
+    // `patch` holds only the enforcement keys: those re-sync deadlines. The STRN switch changes what a seller must
+    // submit, not who is limited, so it is saved and logged on its own.
     const patch: { enforcementStartedAt?: Date | null; graceDays?: number } = {};
     if (dto.enforcementStartedAt === null) patch.enforcementStartedAt = null;
     else if (dto.enforcementStartedAt === 'now' && !current.enforcementStartedAt) patch.enforcementStartedAt = new Date();
     if (dto.graceDays !== undefined) patch.graceDays = dto.graceDays;
+    const strnChanged = dto.requireStrnForPk !== undefined && dto.requireStrnForPk !== (current.requireStrnForPk === true);
 
-    const next = await this.adminConfig.updateSellerTrustSettings(patch, meta);
+    // Document retention (see KycRetentionService): saved and logged on its own, like the STRN switch.
+    const retention: { kycRetentionYears?: number; kycDraftRetentionDays?: number } = {};
+    if (dto.kycRetentionYears !== undefined && dto.kycRetentionYears !== (current.kycRetentionYears ?? 6)) retention.kycRetentionYears = dto.kycRetentionYears;
+    if (dto.kycDraftRetentionDays !== undefined && dto.kycDraftRetentionDays !== (current.kycDraftRetentionDays ?? 90)) retention.kycDraftRetentionDays = dto.kycDraftRetentionDays;
+
+    const next = await this.adminConfig.updateSellerTrustSettings({ ...patch, ...(strnChanged ? { requireStrnForPk: dto.requireStrnForPk } : {}), ...retention }, meta);
+    if (Object.keys(retention).length) {
+      this.log('seller_trust_retention_changed', `Verification document retention changed: ${Object.entries(retention).map(([k, v]) => `${k === 'kycRetentionYears' ? 'closed stores' : 'unsubmitted drafts'} ${v} ${k === 'kycRetentionYears' ? 'years' : 'days'}`).join(', ')}`, meta, undefined, { ...retention });
+    }
+    if (strnChanged) {
+      this.log('seller_trust_strn_rule_' + (dto.requireStrnForPk ? 'on' : 'off'), `STRN is now ${dto.requireStrnForPk ? 'required from every Pakistani seller' : 'required only from sellers who are sales-tax registered'}`, meta, undefined, { requireStrnForPk: dto.requireStrnForPk });
+    }
     // "now" always re-syncs, even when enforcement was already started: if an earlier attempt saved the start
     // date but failed while stamping deadlines, pressing Start again finishes the job (syncDeadlines is idempotent).
     if (Object.keys(patch).length === 0 && dto.enforcementStartedAt === 'now' && current.enforcementStartedAt) {
@@ -119,6 +136,7 @@ export class AdminSellerTrustService {
             byStatus: [{ $group: { _id: '$verificationStatus', n: { $sum: 1 } } }],
             byRisk: [{ $group: { _id: '$riskLevel', n: { $sum: 1 } } }],
             deadlinePassed: [{ $match: { verificationStatus: { $ne: 'verified' }, verificationDueAt: { $ne: null, $lte: now } } }, { $count: 'n' }],
+            changeRequests: [{ $match: { 'verification.change.status': 'pending' } }, { $count: 'n' }],
           },
         },
       ]),
@@ -148,7 +166,8 @@ export class AdminSellerTrustService {
       mediumRisk: risk.medium,
       waitingReview: byStatus.pending + byStatus.under_review,
       deadlinePassed: n(f.deadlinePassed),
-      enforcement: { startedAt: shaped.enforcementStartedAt, graceDays: shaped.graceDays, firstDueAt: shaped.firstDueAt },
+      changeRequests: n(f.changeRequests),
+      enforcement: { startedAt: shaped.enforcementStartedAt, graceDays: shaped.graceDays, firstDueAt: shaped.firstDueAt, requireStrnForPk: shaped.requireStrnForPk, kycRetentionYears: shaped.kycRetentionYears, kycDraftRetentionDays: shaped.kycDraftRetentionDays },
     };
   }
 
@@ -164,6 +183,7 @@ export class AdminSellerTrustService {
     if (q.ntn === 'yes') and.push(HAS_NTN_FILTER);
     if (q.ntn === 'no') and.push({ $nor: HAS_NTN_FILTER.$or });
     if (q.status) and.push(q.status === 'not_started' ? { verificationStatus: { $in: ['not_started', null] } } : { verificationStatus: q.status });
+    if (q.changePending === 'yes') and.push({ 'verification.change.status': 'pending' });
     if (q.risk) and.push(q.risk === 'low' ? { riskLevel: { $in: ['low', null] } } : { riskLevel: q.risk });
     if (q.limited === 'yes') and.push({ verificationStatus: { $ne: 'verified' }, verificationDueAt: { $ne: null, $lte: now } });
     if (q.limited === 'no') and.push({ $or: [{ verificationStatus: 'verified' }, { verificationDueAt: null }, { verificationDueAt: { $gt: now } }] });
@@ -233,6 +253,7 @@ export class AdminSellerTrustService {
         dueAt: trust.dueAt,
         limited: trust.limited,
         payoutHold: trust.payoutHold,
+        changePending: v.change?.status === 'pending',
         categories: v.businessProfile?.regulatedCategories ?? [],
         sourcing: v.businessProfile?.sourcing ?? null,
         categoryName: s.categoryId ? categoryById.get(String(s.categoryId)) ?? null : null,
@@ -274,7 +295,7 @@ export class AdminSellerTrustService {
 
   // ── Detail ──
 
-  async getStoreDetail(storeId: string, now = new Date()) {
+  async getStoreDetail(storeId: string, now = new Date(), meta?: AuditMeta) {
     this.assertStoreId(storeId);
     const store: any = await this.r.storeModel.findOne({ _id: storeId, isDelete: false })
       .select('+verification +riskLevel +riskReasons +riskUpdatedAt').lean();
@@ -286,6 +307,14 @@ export class AdminSellerTrustService {
       this.sellerTrust.getSettings(),
     ]);
     const v = store.verification ?? {};
+    const pendingChangeDocs = ((v as any).change?.status === 'pending' ? ((v as any).change.documents ?? []) : []).map((d: any) => `${d.type} (change request)`);
+    const viewed = [...(evaluation.documents as { type: string; state: string }[]).filter((d) => d.state === 'uploaded').map((d) => d.type), ...pendingChangeDocs];
+    if (meta && viewed.length) {
+      // Audit trail: this admin was handed expiring links to the seller's private ID / tax documents.
+      try {
+        this.log('verification_documents_viewed', `Opened ${viewed.length} private verification document(s) of store "${store.name}"`, meta, storeId, { documentTypes: viewed });
+      } catch { /* an audit failure must never block the review */ }
+    }
     const lastSubmit = [...(v.history ?? [])].reverse().find((h: any) => h.action === 'submitted' || h.action === 'resubmitted');
     let ntnCheck = v.ntnCheck?.result ? { ...v.ntnCheck, checkedByName: null as string | null } : null;
     if (ntnCheck?.checkedBy && isValidObjectId(ntnCheck.checkedBy)) {
@@ -319,14 +348,18 @@ export class AdminSellerTrustService {
           businessAddress: v.businessAddress ?? null,
           idDocumentType: v.idDocumentType ?? null,
           authorizedContact: v.authorizedContact ?? null,
+          director: v.director ?? null,
           businessProfile: this.storeService.shapeBusinessProfile(v.businessProfile),
           ntnCheck,
+          consent: v.consent ? { acceptedAt: v.consent.acceptedAt, version: v.consent.version } : null,
           history: v.history ?? [],
         },
         invoiceTaxId: store.taxId ?? null,
         taxRegistered: store.taxRegistered ?? null,
         hasNtn: storeTrustSnapshot(store, now).hasNtn,
         documents: evaluation.documents,
+        // A verified seller's waiting / decided change request, with expiring links to the new files.
+        change: this.storeService.shapeVerificationChange(v.change, true),
         requirements: evaluation.requirements,
         missingFields: evaluation.missingFields,
         missingDocuments: evaluation.missingDocuments,
@@ -361,6 +394,8 @@ export class AdminSellerTrustService {
   approve(storeId: string, meta: AuditMeta) { this.assertStoreId(storeId); return this.adminMarketplace.approveLead(storeId, meta); }
   reject(storeId: string, reason: string, meta: AuditMeta) { this.assertStoreId(storeId); return this.adminMarketplace.rejectLead(storeId, reason, meta); }
   requestInfo(storeId: string, message: string, meta: AuditMeta) { this.assertStoreId(storeId); return this.adminMarketplace.requestInfo(storeId, message, meta); }
+  approveChange(storeId: string, meta: AuditMeta) { this.assertStoreId(storeId); return this.adminMarketplace.approveChange(storeId, meta); }
+  rejectChange(storeId: string, reason: string, meta: AuditMeta) { this.assertStoreId(storeId); return this.adminMarketplace.rejectChange(storeId, reason, meta); }
 
   async recordNtnCheck(storeId: string, result: NtnCheckResult, meta: AuditMeta) {
     this.assertStoreId(storeId);
@@ -417,8 +452,8 @@ export class AdminSellerTrustService {
       const due = store.verificationDueAt ? new Date(store.verificationDueAt) : null;
       const body = due
         ? (due.getTime() <= now.getTime()
-          ? `"${store.name}" is not verified yet, so it is hidden from the Solvexo marketplace and payouts are on hold. Verify your business to lift these limits.`
-          : `Verify "${store.name}" by ${due.toISOString().slice(0, 10)} to stay listed on the Solvexo marketplace and keep receiving payouts.`)
+          ? `"${store.name}" is not verified yet, so it is hidden from the Solvexo marketplace and payouts of any balance Solvexo holds for you are paused. Verify your business to lift these limits.`
+          : `Verify "${store.name}" by ${due.toISOString().slice(0, 10)} to stay listed on the Solvexo marketplace and keep payouts of any balance Solvexo holds for you running.`)
         : `Verify "${store.name}" to get the Verified business badge on your store.`;
       await this.notificationsService.notify({
         recipientId: store.sellerId, recipientRole: 'seller', storeId: String(store._id),

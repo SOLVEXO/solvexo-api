@@ -75,5 +75,20 @@ export function cleanFilters(input: unknown): FilterSetting[] {
   return out;
 }
 
+/** The sort choices of a product list (same keys the storefront URL / products API use). */
+export const SORT_KEYS = ['newest', 'best_selling', 'trending', 'best_rated', 'price_asc', 'price_desc', 'title_asc', 'title_desc', 'oldest'] as const;
+export type SortKey = (typeof SORT_KEYS)[number];
+export interface SortSetting { key: SortKey; enabled: boolean }
+export const defaultSorts = (): SortSetting[] => SORT_KEYS.map((key) => ({ key, enabled: true }));
+
+/** Seller order + on/off for the sort menu. "newest" (the shop's own order, shown as Featured) can not be switched off: it is what every list opens with. */
+export function cleanSorts(input: unknown): SortSetting[] {
+  if (!Array.isArray(input)) throw new Error('Sort options must be a list');
+  const out: SortSetting[] = [];
+  for (const s of input) { const key = (s as any)?.key; if ((SORT_KEYS as readonly string[]).includes(key) && !out.some((o) => o.key === key)) out.push({ key, enabled: key === 'newest' ? true : (s as any)?.enabled !== false }); }
+  for (const key of SORT_KEYS) if (!out.some((o) => o.key === key)) out.push({ key, enabled: true });
+  return out;
+}
+
 /** A search worth reporting: 2+ characters, not just digits/punctuation noise. */
 export const reportableQuery = (q: unknown): string | null => { const n = norm(q).slice(0, 80); return n.length >= 2 && /[\p{L}\p{N}]/u.test(n) ? n : null; };

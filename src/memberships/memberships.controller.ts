@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { BadRequestException, Body, Controller, Get, Headers, HttpCode, Param, Patch, Post, Query, RawBodyRequest, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import type { Request } from 'express';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
@@ -114,6 +115,7 @@ export class BuyerMembershipsController {
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'staff')
+@AuditStoreWrites('membership', 'customers')
 @Controller('api/memberships/store/:storeId')
 @UsePipes(new ValidationPipe({ whitelist: false, transform: true }))
 export class SellerMembershipsController {

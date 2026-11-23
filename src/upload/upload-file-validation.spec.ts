@@ -1,4 +1,7 @@
-import { assertFileSignature, detectFileKind, publicUploadFileFilter } from './upload-file-validation';
+import {
+  assertFileSignature, detectFileKind, publicUploadFileFilter,
+  assertKycDocument, isOwnKycPublicId, kycFolderForSeller, KYC_DOCUMENT_MAX_BYTES,
+} from './upload-file-validation';
 
 const file = (name: string, bytes: number[] | string, mimetype = 'application/octet-stream') => ({
   originalname: name,
@@ -36,7 +39,7 @@ describe('upload magic-byte validation', () => {
   });
 
   it('rejects oversized images', () => {
-    const big = Buffer.concat([Buffer.from(PNG), Buffer.alloc(11 * 1024 * 1024)]);
+    const big = Buffer.concat([Buffer.from(PNG), Buffer.alloc(21 * 1024 * 1024)]);
     expect(() => assertFileSignature({ originalname: 'a.png', mimetype: 'image/png', buffer: big })).toThrow();
   });
 
@@ -44,5 +47,47 @@ describe('upload magic-byte validation', () => {
     const cb = jest.fn();
     publicUploadFileFilter({}, { originalname: 'x.svg', mimetype: 'image/svg+xml' } as any, cb);
     expect(cb.mock.calls[0][1]).toBe(false);
+  });
+});
+
+describe('seller verification (KYC) document upload', () => {
+  const PDF = '%PDF-1.7 hello';
+  const JPEG = [0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0];
+
+  it('accepts a real PDF, JPG, PNG and WebP', () => {
+    expect(() => assertKycDocument(file('id.pdf', PDF, 'application/pdf'))).not.toThrow();
+    expect(() => assertKycDocument(file('id.jpg', JPEG, 'image/jpeg'))).not.toThrow();
+    expect(() => assertKycDocument(file('id.png', PNG, 'image/png'))).not.toThrow();
+    expect(() => assertKycDocument(file('id.webp', 'RIFF\0\0\0\0WEBPVP8 ', 'image/webp'))).not.toThrow();
+  });
+
+  it('rejects types the generic private route allows (zip, mp4, mp3, xlsx, txt, gif)', () => {
+    for (const name of ['a.zip', 'a.mp4', 'a.mp3', 'a.xlsx', 'a.txt', 'a.gif', 'a.docx', 'noext']) {
+      expect(() => assertKycDocument(file(name, PDF))).toThrow('PDF or a clear photo');
+    }
+  });
+
+  it('rejects a file whose bytes do not match its extension, and an empty file', () => {
+    expect(() => assertKycDocument(file('id.pdf', PNG))).toThrow();
+    expect(() => assertKycDocument(file('id.png', '<html><script>x</script>', 'image/png'))).toThrow();
+    expect(() => assertKycDocument(file('id.pdf', []))).toThrow();
+  });
+
+  it('rejects a file over 10 MB', () => {
+    const big = { originalname: 'id.pdf', mimetype: 'application/pdf', buffer: Buffer.concat([Buffer.from('%PDF-1.7'), Buffer.alloc(KYC_DOCUMENT_MAX_BYTES)]) };
+    expect(() => assertKycDocument(big)).toThrow('too large');
+  });
+
+  it('keeps each seller\'s files in their own folder and only accepts the owner\'s publicId', () => {
+    expect(kycFolderForSeller('u1')).toBe('private/kyc-documents/u1');
+    expect(isOwnKycPublicId('private/kyc-documents/u1/abc', 'u1')).toBe(true);
+    expect(isOwnKycPublicId('private/kyc-documents/u2/abc', 'u1')).toBe(false);
+    expect(isOwnKycPublicId('private/kyc-documents/u10/abc', 'u1')).toBe(false);
+    expect(isOwnKycPublicId('private/kyc-documents/u1/../u2/abc', 'u1')).toBe(false);
+    expect(isOwnKycPublicId('private/digital-products/abc', 'u1')).toBe(false);
+    expect(isOwnKycPublicId('private/kyc-documents/abc', 'u1')).toBe(false);
+    expect(isOwnKycPublicId('private/kyc-documents/u1/', 'u1')).toBe(false);
+    expect(isOwnKycPublicId(undefined, 'u1')).toBe(false);
+    expect(isOwnKycPublicId('private/kyc-documents/u1/abc', '')).toBe(false);
   });
 });

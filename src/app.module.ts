@@ -1,5 +1,7 @@
 import { MerchandisingModule } from './merchandising/merchandising.module';
 import { CustomerSegmentsModule } from './customer-segments/customer-segments.module';
+import { MarketingCampaignsModule } from './marketing-campaigns/marketing-campaigns.module';
+import { SignupFormsModule } from './signup-forms/signup-forms.module';
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
@@ -82,6 +84,7 @@ import { AdminConfigModule } from './admin-config/admin-config.module';
 import { AdminAnnouncementsModule } from './admin-announcements/admin-announcements.module';
 import { AdminMarketplaceModule } from './admin-marketplace/admin-marketplace.module';
 import { AdminSellerTrustModule } from './admin-seller-trust/admin-seller-trust.module';
+import { SecurityModule } from './security/security.module';
 import { AdminModerationModule } from './admin-moderation/admin-moderation.module';
 import { AdminUsersModule } from './admin-users/admin-users.module';
 import { AdminClientsModule } from './admin-clients/admin-clients.module';
@@ -109,13 +112,17 @@ import { CheckoutRulesModule } from './checkout-rules/checkout-rules.module';
 import { ExperimentsModule } from './experiments/experiments.module';
 import { AppPlatformModule } from './app-platform/app-platform.module';
 import { KhataModule } from './khata/khata.module';
+import { AccountingModule } from './accounting/accounting.module';
 import { ProductFeedsModule } from './product-feeds/product-feeds.module';
 import { MerchantApiModule } from './merchant-api/merchant-api.module';
 import { SearchDiscoveryModule } from './search-discovery/search-discovery.module';
+import { ProductQuestionsModule } from './product-questions/product-questions.module';
 import { CodProtectionModule } from './cod-protection/cod-protection.module';
 import { MessagingChannelsModule } from './messaging-channels/messaging-channels.module';
 import { CoursesModule } from './courses/courses.module';
 import { DashboardLayoutsModule } from './dashboard-layouts/dashboard-layouts.module';
+import { SavedSectionsModule } from './saved-sections/saved-sections.module';
+import { StoreSectionDefsModule } from './store-section-defs/store-section-defs.module';
 import { StoreContactModule } from './store-contact/store-contact.module';
 import { CollectionTemplateModule } from './collection-template/collection-template.module';
 import { MetafieldsModule } from './metafields/metafields.module';
@@ -144,6 +151,8 @@ import { AppI18nModule } from './i18n/i18n.module';
   imports: [
     MerchandisingModule,
     CustomerSegmentsModule,
+    MarketingCampaignsModule,
+    SignupFormsModule,
     ConfigModule.forRoot({ isGlobal: true }),
     EventEmitterModule.forRoot(),
     ThrottlerModule.forRootAsync({
@@ -233,6 +242,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     AdminAnnouncementsModule,
     AdminMarketplaceModule,
     AdminSellerTrustModule,
+    SecurityModule,
     AdminModerationModule,
     AdminUsersModule,
     AdminClientsModule,
@@ -260,13 +270,17 @@ import { AppI18nModule } from './i18n/i18n.module';
     ExperimentsModule,
     AppPlatformModule,
     KhataModule,
+    AccountingModule,
     ProductFeedsModule,
     MerchantApiModule,
     SearchDiscoveryModule,
+    ProductQuestionsModule,
     CodProtectionModule,
     MessagingChannelsModule,
     CoursesModule,
     DashboardLayoutsModule,
+    SavedSectionsModule,
+    StoreSectionDefsModule,
     StoreContactModule,
     CollectionTemplateModule,
     MetafieldsModule,

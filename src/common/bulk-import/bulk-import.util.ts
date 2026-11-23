@@ -27,6 +27,8 @@ export interface BulkColumn {
   description: string;
   /** Value placed in the template's example row. */
   example: string;
+  /** Other header names accepted for this column (an older template, another platform's export). Not in the template. */
+  aliases?: string[];
 }
 
 export type BulkRowOutcome = 'created' | 'updated' | 'skipped';
@@ -63,6 +65,8 @@ export interface BulkImportData {
   skippedRows: BulkSkippedRow[];
   /** Header order for rebuilding the failed-rows file. */
   columns: string[];
+  /** Optional lines for the result screen (e.g. "Tax Exempt is not used yet"). */
+  notices?: string[];
 }
 
 export const MAX_REPORTED_FAILURES = 1000;
@@ -156,6 +160,7 @@ export async function runBulkImport(opts: RunBulkImportOptions) {
   // Map the file's header names onto the module's canonical column keys.
   const fileHeaders = Object.keys(rows[0]);
   const keyByNormalised = new Map(columns.map((c) => [normaliseHeader(c.key), c.key]));
+  for (const c of columns) for (const a of c.aliases ?? []) if (!keyByNormalised.has(normaliseHeader(a))) keyByNormalised.set(normaliseHeader(a), c.key);
   const headerToKey = new Map<string, string>();
   for (const h of fileHeaders) {
     const key = keyByNormalised.get(normaliseHeader(h));

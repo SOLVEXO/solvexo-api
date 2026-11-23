@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { IsArray, IsString } from 'class-validator';
 import { Controller, Get, Post, Patch, Put, Delete, Param, Body, Req, UseGuards, UsePipes, ValidationPipe, UseInterceptors, UploadedFile } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -52,6 +53,7 @@ export class CollectionsController {
   @UseGuards(PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('collections.manage')
+  @AuditStoreWrites('collection', 'marketing')
   @Post(':storeId/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   importCollections(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {

@@ -27,7 +27,10 @@ function setup() {
     if (a?.sourceOrderId && ['refunded', 'cancelled'].includes(k.orderModel.rows[0].sellerOrders[0].items[0].status)) { a.status = 'revoked'; return { allowed: false }; }
     return { allowed: !!a };
   } };
-  const upload: any = { generateSignedUrl: (id: string, _t: string, secs: number) => `https://signed/${id}?exp=${secs}` };
+  const upload: any = {
+    generateSignedUrl: (id: string, _t: string, secs: number) => `https://signed/${id}?exp=${secs}`,
+    generateExpiringPrivateUrl: (id: string, _t: string, secs: number) => `https://signed-expiring/${id}?exp=${secs}`,
+  };
   const memberships: any = { hasPlanAccess: async () => false };
   const svc = new CoursesService(k.db, upload, access, memberships, courses as any, enrolls as any);
   return { ...k, accessModel, courses, enrolls, svc, clean };
@@ -118,4 +121,63 @@ describe('CoursesService', () => {
     await expect(s.svc.manualEnroll('s1', 'c1', 'cx', 'seller')).rejects.toThrow('Customer not found');
     await expect(s.svc.manualEnroll('s2', 'c1', 'c5', 'seller')).rejects.toThrow('Course not found');
   });
+});
+
+describe('proxied course video (COURSE_VIDEO_PROXY)', () => {
+  const realFetch = (global as any).fetch;
+  const calls: any[] = [];
+  const upstream = (status = 206) => ({ ok: true, status, body: {}, headers: new Map([['content-type', 'video/mp4']]) });
+  // No hooks (the repo mini runner has none): every test runs inside withProxy, which sets and restores the env/fetch.
+  const withProxy = async (run: () => Promise<void>) => {
+    process.env.JWT_SECRET = 'test-secret-test-secret';
+    process.env.COURSE_VIDEO_PROXY = 'true';
+    process.env.API_PUBLIC_URL = 'https://api.example.com';
+    calls.length = 0;
+    (global as any).fetch = async (url: string, init: any) => { calls.push({ url, init }); return upstream(); };
+    try { await run(); } finally {
+      delete process.env.COURSE_VIDEO_PROXY; delete process.env.API_PUBLIC_URL;
+      (global as any).fetch = realFetch;
+    }
+  };
+
+  async function openLesson() {
+    const s = setup();
+    const o: any = await s.svc.outline('s1', 'c1', 'c1');
+    const watch = o.modules[0].lessons[1];
+    s.enrolls.rows[0].enrolledAt = new Date(Date.now() - 4 * DAY);
+    return { s, watch };
+  }
+  const tokenOf = (url: string) => url.split('/api/courses/stream/')[1];
+
+  it('hands out a stream link instead of a storage link, and the stream forwards a valid Range', () => withProxy(async () => {
+    const { s, watch } = await openLesson();
+    const m: any = await s.svc.mediaUrl('s1', 'c1', 'c1', watch.id);
+    expect(m.url.startsWith('https://api.example.com/api/courses/stream/')).toBe(true);
+    expect(m.url.includes('private/digital-products')).toBe(false); // the storage id never reaches the browser
+    const res: any = await s.svc.openVideoStream(tokenOf(m.url), 'bytes=100-199');
+    expect(res.status).toBe(206);
+    expect(calls[0].init.headers.range).toBe('bytes=100-199');
+    expect(calls[0].url.includes('private/digital-products/v1')).toBe(true);
+    await s.svc.openVideoStream(tokenOf(m.url), 'bytes=abc; rm -rf'); // junk Range is dropped, never forwarded
+    expect(calls[1].init.headers.range).toBe(undefined);
+  }));
+
+  it('a refund stops the same link at the next request; forged or foreign tokens never open', () => withProxy(async () => {
+    const { s, watch } = await openLesson();
+    const m: any = await s.svc.mediaUrl('s1', 'c1', 'c1', watch.id);
+    const t = tokenOf(m.url);
+    await s.svc.openVideoStream(t);
+    s.orderModel.rows[0].sellerOrders[0].items[0].status = 'refunded';
+    await expect(s.svc.openVideoStream(t)).rejects.toThrow('do not have access');
+    await expect(s.svc.openVideoStream(t + 'x')).rejects.toThrow('not valid');
+    await expect(s.svc.openVideoStream('garbage')).rejects.toThrow('not valid');
+    expect(calls.length).toBe(1); // nothing was fetched for the refused requests
+  }));
+
+  it('without the flag the old short-lived storage link is used', () => withProxy(async () => {
+    delete process.env.COURSE_VIDEO_PROXY;
+    const { s, watch } = await openLesson();
+    const m: any = await s.svc.mediaUrl('s1', 'c1', 'c1', watch.id);
+    expect(m.url.startsWith('https://signed/')).toBe(true);
+  }));
 });

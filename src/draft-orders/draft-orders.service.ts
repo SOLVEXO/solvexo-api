@@ -1,8 +1,9 @@
 /* eslint-disable prettier/prettier */
 import { searchStoreCustomers } from '../common/store-customer-search.util';
 import { emailUiStrings, isRtlLocale } from '../notifications/customer-email-locales';
-import { buildInvoiceItemsHtml, buildInvoicePdf, invoiceNumber } from './draft-order-invoice.util';
-import { Injectable, BadRequestException, NotFoundException, ForbiddenException, Optional } from '@nestjs/common';
+import { resolveStoreAccent } from '../common/store-brand-accent.util';
+import { buildInvoiceItemsHtml, buildInvoicePdf, fetchInvoiceLogo, invoiceNumber, type InvoiceStore } from './draft-order-invoice.util';
+import { Injectable, BadRequestException, NotFoundException, Optional } from '@nestjs/common';
 import { B2BContextService, type BuyerContext } from '../b2b/b2b-context.service';
 import { buildOrderB2B } from '../b2b/b2b-order.util';
 import { toStripeAmount } from '@/common/stripe-amount.util';
@@ -23,6 +24,8 @@ import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
 import { FinanceService } from '../finance/finance.service';
 import { CreateDraftOrderDto } from './dto/create-draft-order.dto';
 import { UpdateDraftOrderDto } from './dto/update-draft-order.dto';
+
+const EMAIL_RX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 function round(n: number) {
   return Math.round(n * 100) / 100;
@@ -307,10 +310,12 @@ export class DraftOrdersService {
   async sendInvoice(storeId: string, sellerId: string, id: string) {
     const draft = await this.getOwned(storeId, sellerId, id);
     if (draft.status !== 'open') throw new BadRequestException('Only an open draft order can be invoiced.');
-    if (!draft.customerId) {
-      throw new ForbiddenException('Attach a registered customer account to this draft order before sending an invoice.');
-    }
-    if (!draft.customerEmail) throw new BadRequestException('This customer has no email address to send the invoice to.');
+    // An invoice asks for payment. A draft already marked as paid has nothing to ask for: turn it into an order instead.
+    if (draft.isPaid) throw new BadRequestException('This draft order is already marked as paid, so there is nothing to invoice. Use Complete Order to turn it into an order.');
+    // Like Shopify: an invoice can go to a typed-in (guest) email too — the customer account is created
+    // when they actually pay (see ensureCustomerForDraft), not before.
+    if (!draft.customerEmail) throw new BadRequestException("Add the customer's email address to send the invoice to.");
+    if (!draft.customerId && !EMAIL_RX.test(String(draft.customerEmail).trim())) throw new BadRequestException('Enter a valid email address to send the invoice to.');
     if (draft.items.length === 0) throw new BadRequestException('This draft order has no items.');
 
     const store = await this.repos.storeModel.findOne({ _id: storeId, isDelete: false }).lean();
@@ -340,9 +345,11 @@ export class DraftOrdersService {
       items: draft.items.map((i: any) => ({ name: i.name, options: i.options ?? [], sku: i.sku ?? null, quantity: i.quantity, unitPrice: i.unitPrice })),
       subtotal: draft.subtotal, discountAmount: draft.discountAmount, shippingAmount: draft.shippingAmount, taxAmount: draft.taxAmount, total: draft.total,
       notes: draft.notes, dueText,
+      paid: !!draft.isPaid, paidAt: (draft as any).paidAt ?? null, customerPhone: draft.customerPhone ?? null,
+      address: ((a: any) => (a ? [a.recipientName, a.addressLine1, a.addressLine2, [a.city, a.state, a.zipCode].filter(Boolean).join(', '), a.phoneNumber] : []))((draft as any).shippingAddress),
     };
     let invoicePdf: Buffer | null = null;
-    try { invoicePdf = await buildInvoicePdf(invoiceDraft, { name: (store as any).name }, symbol, invoiceUrl); } catch { /* the mail still goes out without the PDF */ }
+    try { invoicePdf = await buildInvoicePdf(invoiceDraft, await this.invoiceBranding(storeId, store), symbol, invoiceUrl); } catch { /* the mail still goes out without the PDF */ }
     // The store's Customer-notification settings decide on/off, text, sender and reply-to (see NotificationsService).
     const sent = await this.notificationsService.sendCustomerEmail({
       to: draft.customerEmail, storeId, event: 'draft_order_invoice',
@@ -365,6 +372,19 @@ export class DraftOrdersService {
     });
 
     return { success: true, message: 'Invoice sent', data: { invoiceUrl } };
+  }
+
+  /** The store's brand for the invoice PDF: the same logo / accent colour the seller set for their customer emails
+   *  (Settings > Notifications), else the active theme's main colour. Anything that fails just leaves that part out. */
+  private async invoiceBranding(storeId: string, store: any): Promise<InvoiceStore> {
+    const out: InvoiceStore = { name: store.name, contactEmail: store.contactEmail ?? null, contactPhone: store.contactPhone ?? null };
+    try {
+      const r: any = this.repos;
+      const settings: any = await r.storeNotificationSettingsModel?.findOne({ storeId, isDelete: false }).select('showLogo accentColor').lean();
+      out.accent = await resolveStoreAccent(r, storeId, settings?.accentColor);
+      if (settings?.showLogo !== false) out.logo = await fetchInvoiceLogo(store.logo);
+    } catch { /* the PDF is branded as far as it can be */ }
+    return out;
   }
 
   /** Called once daily by SchedulerService (`runLocked`) — real automated
@@ -419,6 +439,16 @@ export class DraftOrdersService {
         });
       }
 
+      if (!draft.customerId && draft.customerEmail) {
+        // Guest invoice: no account to notify, so the customer gets the plain email.
+        await this.notificationsService.sendCustomerEmail({
+          to: draft.customerEmail, storeId: draft.storeId, event: 'draft_order_overdue',
+          vars: { customerName: draft.customerName, invoiceTotal: `${symbol} ${draft.total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, dueDate: new Date(draft.dueDate!).toLocaleDateString(), invoiceUrl },
+          cta: { label: 'Pay invoice', url: invoiceUrl },
+          force: true,
+        });
+      }
+
       await this.notificationsService.notify({
         recipientId: draft.sellerId, recipientRole: 'seller', storeId: draft.storeId,
         type: NOTIFICATION_TYPES.DRAFT_ORDER_INVOICE_OVERDUE,
@@ -440,8 +470,15 @@ export class DraftOrdersService {
     if (draft.status !== 'open') throw new BadRequestException('This invoice is no longer open for payment.');
 
     const store = await this.repos.storeModel.findOne({ _id: draft.storeId, isDelete: false }).select('name logo').lean();
+    // the store's brand colour for the pay page (same rule as its customer emails and the PDF)
+    let accentColor: string | null = null;
+    try {
+      const s: any = await (this.repos as any).storeNotificationSettingsModel?.findOne({ storeId: draft.storeId, isDelete: false }).select('accentColor').lean();
+      accentColor = await resolveStoreAccent(this.repos as any, draft.storeId, s?.accentColor);
+    } catch { /* the page then uses the default colour */ }
 
     return {
+      accentColor,
       customerName: draft.customerName,
       storeName: (store as any)?.name ?? 'Store',
       storeLogo: (store as any)?.logo ?? null,
@@ -512,11 +549,37 @@ export class DraftOrdersService {
     return { clientSecret: paymentIntent.client_secret, amount: draft.total, currency: draft.currency };
   }
 
+  /** A guest draft (name + email typed in, no account) needs a real customer before it can become an order.
+   *  Same identity rules as StoreService.createStoreCustomer: reuse this store's account with that email,
+   *  else create one scoped to this store (no password), and make sure the customer shows in the store's list. */
+  async ensureCustomerForDraft(draft: any): Promise<string> {
+    if (draft.customerId) return String(draft.customerId);
+    const email = String(draft.customerEmail ?? '').trim().toLowerCase();
+    if (!EMAIL_RX.test(email) || email.length > 254) throw new BadRequestException('This draft has no valid customer email.');
+    const { userModel, storeCustomerMetaModel, draftOrderModel } = this.repos;
+    let user: any = await userModel.findOne({ storeId: draft.storeId, email, isDelete: { $ne: true } });
+    if (!user) {
+      user = await userModel.create({
+        name: String(draft.customerName ?? '').trim().slice(0, 200) || email, email,
+        phone: String(draft.customerPhone ?? '').trim() || undefined,
+        storeId: draft.storeId, role: 'user', isVerified: false, status: 'active',
+      });
+    }
+    const userId = String(user._id);
+    await storeCustomerMetaModel.updateOne(
+      { storeId: draft.storeId, userId },
+      { $setOnInsert: { storeId: draft.storeId, userId, tags: [], notes: '', isArchived: false, marketingOptIn: false } },
+      { upsert: true },
+    );
+    await draftOrderModel.updateOne({ _id: draft._id }, { $set: { customerId: userId } });
+    draft.customerId = userId;
+    return userId;
+  }
+
   /** Called from PaymentService.stripeWebhook's `payment_intent.succeeded`
    *  dispatch (metadata.purpose === 'draft_order_invoice') — marks the
    *  invoice paid and auto-completes the draft into a real Order (safe to
-   *  do unconditionally here since `sendInvoice()` already hard-requires a
-   *  registered `customerId` before an invoice can even be sent). */
+   *  do unconditionally here: a guest invoice gets its customer account created first). */
   async finalizeInvoicePayment(paymentIntent: { id: string; metadata: Record<string, string> }) {
     const draftOrderId = paymentIntent.metadata?.draftOrderId;
     if (!draftOrderId) return;
@@ -533,6 +596,7 @@ export class DraftOrdersService {
       settledViaConnect: paymentIntent.metadata?.settledViaConnect === 'true',
       connectedAccountId: paymentIntent.metadata?.connectedAccountId || null,
     };
+    await this.ensureCustomerForDraft(draft);
     await this.complete(draft.storeId, draft.sellerId, draftOrderId, connectInfo);
 
     await this.activityLogService.log({
@@ -564,7 +628,7 @@ export class DraftOrdersService {
     return searchStoreCustomers(this.repos as any, storeId, q);
   }
 
-  /** Converts an `open` draft with a registered customer attached into a
+  /** Converts an `open` draft (a registered customer, or a guest with an email — the account is created here) into a
    *  real `Order` + `SellerOrder` — real stock decrement (same atomic
    *  guarded pattern PaymentService uses for a normal checkout), real
    *  purchaseCount increment, real ActivityLog entry. Deliberately does NOT
@@ -581,10 +645,14 @@ export class DraftOrdersService {
   ) {
     const draft = await this.getOwned(storeId, sellerId, id);
     if (draft.status !== 'open') throw new BadRequestException('This draft order was already completed or cancelled.');
-    if (!draft.customerId) {
-      throw new ForbiddenException('Attach a registered customer account to this draft order before completing it.');
-    }
     if (draft.items.length === 0) throw new BadRequestException('This draft order has no items.');
+    // A guest draft (typed name + email, no account) gets its customer account now, so the order has an owner.
+    if (!(draft as any).customerId) {
+      if (!EMAIL_RX.test(String(draft.customerEmail ?? '').trim())) {
+        throw new BadRequestException("Add the customer's email address (or pick a registered customer) before completing this order.");
+      }
+      await this.ensureCustomerForDraft(draft);
+    }
 
     const physicalItems = draft.items.filter((i: any) => i.type === 'physical');
     const digitalItems = draft.items.filter((i: any) => i.type !== 'physical');
@@ -688,7 +756,7 @@ export class DraftOrdersService {
     const orderNumber = `ORD-${Date.now()}-${Math.floor(Math.random() * 9000 + 1000)}`;
     const order = await this.repos.orderModel.create({
       orderNumber,
-      userId: draft.customerId,
+      userId: String((draft as any).customerId), // set above: the draft's own customer, or the one just created for a guest
       // No real Checkout doc backs a manually-created draft order — this is
       // a stable, clearly-prefixed reference back to the draft it came from,
       // never confused with a real Checkout ObjectId.

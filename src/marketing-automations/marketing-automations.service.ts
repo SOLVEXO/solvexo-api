@@ -7,7 +7,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { EmailService } from '@/otp/services/email.service';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { newsletterUnsubscribeUrl, normalizeEmail } from '@/newsletter/newsletter-consent.util';
-import {
+import { renderDesignedEmail, withAddress,
   discountCodeHtml, escapeHtml, formatMoney, productCardHtml, renderMarketingEmail,
   renderMergeTags, storePublicUrl, textToHtml, unsubscribeHeaders,
 } from '@/newsletter/marketing-email.util';
@@ -15,8 +15,9 @@ import { AutomationType } from './schemas/automation-send-log.schema';
 import { AutomationSettingsShape, resolveAutomationSettings } from './schemas/marketing-automation-settings.schema';
 
 const BATCH = 500;
+const MAX_VARIANTS_PER_RUN = 5000;
 
-type StoreLite = { _id: any; name: string; slug?: string; customDomain?: string | null; customDomainStatus?: string; contactEmail?: string | null; baseCurrency?: string | null };
+type StoreLite = { _id: any; name: string; slug?: string; customDomain?: string | null; customDomainStatus?: string; contactEmail?: string | null; baseCurrency?: string | null; mailingAddress?: string | null };
 
 /**
  * Shopify-style marketing automations for one store:
@@ -71,7 +72,7 @@ export class MarketingAutomationsService {
 
   private async loadStore(storeId: string): Promise<StoreLite | null> {
     return (await this.r.storeModel.findOne({ _id: storeId, isDelete: false })
-      .select('name slug customDomain customDomainStatus contactEmail baseCurrency').lean().catch(() => null)) as any;
+      .select('name slug customDomain customDomainStatus contactEmail baseCurrency mailingAddress').lean().catch(() => null)) as any;
   }
 
   async getSettings(storeId: string): Promise<AutomationSettingsShape> {
@@ -98,6 +99,12 @@ export class MarketingAutomationsService {
       backInStock: { enabled: bool, subject: (v) => str(v, 200), message: (v) => str(v, 5000) },
       priceDrop: { enabled: bool, minDropPercent: (v) => int(v, 1, 90), subject: (v) => str(v, 200), message: (v) => str(v, 5000) },
       winBack: { enabled: bool, afterDays: (v) => int(v, 14, 365), subject: (v) => str(v, 200), message: (v) => str(v, 5000), discountCode: (v) => v },
+      postPurchase: { enabled: bool, afterDays: (v) => int(v, 1, 30), subject: (v) => str(v, 200), message: (v) => str(v, 5000), discountCode: (v) => v },
+      customerAppreciation: {
+        enabled: bool, minOrders: (v) => int(v, 2, 50),
+        minSpent: (v) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(10_000_000, Math.max(0, Math.round(v * 100) / 100)) : undefined),
+        subject: (v) => str(v, 200), message: (v) => str(v, 5000), discountCode: (v) => v,
+      },
     };
 
     for (const [section, fields] of Object.entries(sections)) {
@@ -197,11 +204,11 @@ export class MarketingAutomationsService {
   /** "[Test]" copy of one automation's current email, filled with sample
    *  data (the store's first active product for product emails). */
   async sendTest(storeId: string, section: string, email: string | null) {
-    if (!['welcome', 'backInStock', 'priceDrop', 'winBack'].includes(section)) throw new BadRequestException('Unknown automation');
+    if (!['welcome', 'backInStock', 'priceDrop', 'winBack', 'postPurchase', 'customerAppreciation'].includes(section)) throw new BadRequestException('Unknown automation');
     if (!email) throw new BadRequestException('No email address to send the test to');
     const [settings, store] = await Promise.all([this.getSettings(storeId), this.loadStore(storeId)]);
     if (!store) throw new NotFoundException('Store not found');
-    const cfg = settings[section as 'welcome' | 'backInStock' | 'priceDrop' | 'winBack'];
+    const cfg = settings[section as 'welcome' | 'backInStock' | 'priceDrop' | 'winBack' | 'postPurchase' | 'customerAppreciation'];
 
     const product = await this.r.productModel.findOne({ storeId, isDelete: false, status: 'active' }).select('name slug images').lean() as any;
     const variant = product ? await this.r.productVariantModel.findOne({ productId: String(product._id) }).select('price currency images').lean() as any : null;
@@ -222,12 +229,13 @@ export class MarketingAutomationsService {
       oldPrice: formatMoney(oldPrice, currency),
       newPrice: formatMoney(newPrice, currency),
       discountCode: (cfg as any).discountCode ?? '',
+      orderNumber: '#1001',
     };
     const priceLine = section === 'priceDrop'
       ? `<span style="text-decoration:line-through;color:#8b8985">${escapeHtml(text.oldPrice)}</span> &nbsp;<strong>${escapeHtml(text.newPrice)}</strong>`
       : escapeHtml(text.productPrice);
     const subject = renderMergeTags(cfg.subject, text);
-    const reason = 'This is a test of one of your automated emails.';
+    const reason = withAddress('This is a test of one of your automated emails.', store.mailingAddress);
     const html = this.renderDesigned(cfg.html, text, { productImage: this.productImageFragment(imageUrl), priceLine }, reason, '#')
       ?? renderMarketingEmail({
         senderName: store.name,
@@ -275,7 +283,7 @@ export class MarketingAutomationsService {
     const vars = { customerName: customerName || 'there', storeName: store.name };
     const unsubscribeUrl = newsletterUnsubscribeUrl(unsubscribeToken);
     const shopUrl = storePublicUrl(store);
-    const reason = `You're receiving this because you subscribed to emails from ${store.name}.`;
+    const reason = withAddress(`You're receiving this because you subscribed to emails from ${store.name}.`, store.mailingAddress);
     const html = this.renderDesigned(
       settings.welcome.html,
       { ...vars, shopUrl: shopUrl ?? '', discountCode: settings.welcome.discountCode ?? '' },
@@ -308,12 +316,7 @@ export class MarketingAutomationsService {
     reason: string,
     unsubscribeUrl?: string | null,
   ): string | null {
-    if (!html) return null;
-    let out = html;
-    for (const [k, v] of Object.entries(raw)) out = out.split(`{{${k}}}`).join(v);
-    for (const [k, v] of Object.entries(text)) out = out.split(`{{${k}}}`).join(escapeHtml(v));
-    const footer = `<p style="margin:0 auto;max-width:600px;padding:16px 12px;color:#888;font-size:12px;text-align:center;font-family:sans-serif">${escapeHtml(reason)}${unsubscribeUrl ? `<br /><a href="${unsubscribeUrl}" style="color:#888">Unsubscribe</a>` : ''}</p>`;
-    return out + footer;
+    return renderDesignedEmail(html, text, raw, reason, unsubscribeUrl);
   }
 
   /** The dynamic-product section's image fragment ({{productImage}}). */
@@ -385,10 +388,15 @@ export class MarketingAutomationsService {
 
   async processBackInStock(): Promise<{ notified: number }> {
     this.startRun();
-    const variantIds: string[] = (await this.r.backInStockRequestModel.distinct('variantId', { status: 'pending' })).slice(0, BATCH).map(String);
-    if (variantIds.length === 0) return { notified: 0 };
-
-    const variants = await this.r.productVariantModel.find({ _id: { $in: variantIds } }).lean();
+    // Every pending variant is looked at (in chunks), not just the first BATCH — otherwise a few variants that stay out of stock
+    // (or belong to a store with the automation off) would sit at the front forever and starve everyone after them.
+    const pendingIds: string[] = (await this.r.backInStockRequestModel.distinct('variantId', { status: 'pending' })).map(String);
+    if (pendingIds.length === 0) return { notified: 0 };
+    const variants: any[] = [];
+    for (let i = 0; i < pendingIds.length && variants.length < MAX_VARIANTS_PER_RUN; i += BATCH) {
+      const chunk = await this.r.productVariantModel.find({ _id: { $in: pendingIds.slice(i, i + BATCH) } }).lean();
+      for (const v of chunk as any[]) if (this.isSellable(v)) variants.push(v);
+    }
     let notified = 0;
     const storeCache = new Map<string, { store: StoreLite | null; settings: AutomationSettingsShape }>();
 
@@ -421,7 +429,7 @@ export class MarketingAutomationsService {
         const subject = renderMergeTags(settings.backInStock.subject, vars);
         const imageUrl = v.images?.[0] ?? product.images?.[0] ?? null;
         const price = typeof v.price === 'number' ? formatMoney(v.price, v.currency ?? store.baseCurrency) : '';
-        const reason = `You're receiving this because you asked ${store.name} to tell you when this item was back in stock.`;
+        const reason = withAddress(`You're receiving this because you asked ${store.name} to tell you when this item was back in stock.`, store.mailingAddress);
         const html = this.renderDesigned(
           settings.backInStock.html,
           { ...vars, productUrl: productUrl ?? '', shopUrl: base ?? '', productPrice: price },
@@ -488,14 +496,17 @@ export class MarketingAutomationsService {
 
     // A malformed id would make the whole $in query throw a CastError.
     const variantIds: string[] = (await this.r.wishListModel.distinct('productVariantId', { storeId }))
-      .map(String).filter((id) => isValidObjectId(id)).slice(0, BATCH);
+      .map(String).filter((id) => isValidObjectId(id));
     if (variantIds.length === 0) return 0;
+    let notified = 0;
+    // Worked through in chunks so a store with more than BATCH wishlisted variants is not stuck on the first BATCH.
+    for (let offset = 0; offset < variantIds.length; offset += BATCH) {
+    const chunkIds = variantIds.slice(offset, offset + BATCH);
     const [variants, snapshots] = await Promise.all([
-      this.r.productVariantModel.find({ _id: { $in: variantIds }, isDelete: { $ne: true } }).lean(),
-      this.r.priceSnapshotModel.find({ variantId: { $in: variantIds } }).lean(),
+      this.r.productVariantModel.find({ _id: { $in: chunkIds }, isDelete: { $ne: true } }).lean(),
+      this.r.priceSnapshotModel.find({ variantId: { $in: chunkIds } }).lean(),
     ]);
     const snapshotByVariant = new Map(snapshots.map((s: any) => [s.variantId, s.price as number]));
-    let notified = 0;
 
     for (const v of variants as any[]) {
       const variantId = String(v._id);
@@ -520,6 +531,7 @@ export class MarketingAutomationsService {
       // Not everyone was reached because the month's allowance ran out: keep the old price as the baseline, so the next run
       // (when there is room again) finishes the job. People who already got it are skipped by the dedupe log.
       if (!ranOutOfRoom) await this.r.priceSnapshotModel.updateOne({ variantId }, { $set: { price } });
+    }
     }
     return notified;
   }
@@ -552,7 +564,7 @@ export class MarketingAutomationsService {
       const subject = renderMergeTags(settings.priceDrop.subject, personal);
       const imageUrl = v.images?.[0] ?? product.images?.[0] ?? null;
       const priceLine = `<span style="text-decoration:line-through;color:#8b8985">${escapeHtml(vars.oldPrice)}</span> &nbsp;<strong>${escapeHtml(vars.newPrice)}</strong>`;
-      const reason = `You're receiving this because this item is on your wishlist at ${store.name} and you subscribed to its emails.`;
+      const reason = withAddress(`You're receiving this because this item is on your wishlist at ${store.name} and you subscribed to its emails.`, store.mailingAddress);
       const html = this.renderDesigned(
         settings.priceDrop.html,
         { ...personal, productUrl: productUrl ?? '', shopUrl: base ?? '', productPrice: vars.newPrice },
@@ -644,7 +656,7 @@ export class MarketingAutomationsService {
       const vars = { customerName: u.name || 'there', storeName: store.name };
       const unsubscribeUrl = newsletterUnsubscribeUrl(token);
       const subject = renderMergeTags(settings.winBack.subject, vars);
-      const reason = `You're receiving this because you subscribed to emails from ${store.name}.`;
+      const reason = withAddress(`You're receiving this because you subscribed to emails from ${store.name}.`, store.mailingAddress);
       const html = this.renderDesigned(
         settings.winBack.html,
         { ...vars, shopUrl: shopUrl ?? '', discountCode: settings.winBack.discountCode ?? '' },
@@ -665,5 +677,155 @@ export class MarketingAutomationsService {
       if (ok) sent++; else this.giveRoomBack(storeId);
     }
     return { sent, scanned: lapsed.length, outOfRoom };
+  }
+
+  // ── Post-purchase ────────────────────────────────────────────────────────
+
+  async processPostPurchase(): Promise<{ notified: number }> {
+    this.startRun();
+    const enabled = await this.r.marketingAutomationSettingsModel.find({ 'postPurchase.enabled': true }).select('storeId').lean();
+    let notified = 0;
+    for (const row of enabled as any[]) {
+      const storeId = String(row.storeId);
+      try {
+        if (!(await this.marketingAllowed(storeId))) continue;
+        notified += await this.processPostPurchaseForStore(storeId);
+      } catch (e: any) {
+        this.logger.error(`post-purchase for store ${storeId} failed: ${e?.message}`);
+      }
+    }
+    return { notified };
+  }
+
+  /** Orders placed about `afterDays` ago (a 3 day window, so a missed run is caught up) get one thank-you each, to customers who
+   *  subscribed to this store's emails. The dedupe log is keyed on the order, so nobody is mailed twice for the same order. */
+  private async processPostPurchaseForStore(storeId: string): Promise<number> {
+    const [settings, store] = await Promise.all([this.getSettings(storeId), this.loadStore(storeId)]);
+    if (!store || !settings.postPurchase.enabled) return 0;
+    const to = new Date(Date.now() - settings.postPurchase.afterDays * 86_400_000);
+    const from = new Date(to.getTime() - 3 * 86_400_000);
+    const orders: any[] = await this.r.orderModel
+      .find({ isDelete: false, createdAt: { $gte: from, $lte: to }, sellerOrders: { $elemMatch: { storeId, status: { $ne: 'cancelled' } } } })
+      .select('userId orderNumber createdAt')
+      .sort({ createdAt: 1 })
+      .limit(BATCH)
+      .lean();
+    if (orders.length === 0) return 0;
+
+    const userIds = [...new Set(orders.map((o) => String(o.userId)))].filter((id) => isValidObjectId(id));
+    const users = await this.r.userModel.find({ _id: { $in: userIds }, isDelete: { $ne: true } }).select('name email').lean();
+    const userById = new Map(users.map((u: any) => [String(u._id), u]));
+    const subs = await this.activeSubscribers(storeId, users.map((u: any) => normalizeEmail(u.email)));
+    let sent = 0;
+    for (const o of orders) {
+      const u: any = userById.get(String(o.userId));
+      if (!u) continue;
+      const email = normalizeEmail(u.email);
+      const token = subs.get(email);
+      if (!token) continue;
+      if (!(await this.takeRoom(storeId))) break; // plan allowance used up for this month
+      const logId = await this.claim(storeId, 'post_purchase', email, `order:${o._id}`);
+      if (!logId) { this.giveRoomBack(storeId); continue; }
+      const ok = await this.sendCustomerEmail(store, settings.postPurchase, u.name, email, token, { orderNumber: o.orderNumber ? `#${o.orderNumber}` : '' }, 'Shop now');
+      await this.markDelivered(logId, ok);
+      if (ok) sent++; else this.giveRoomBack(storeId);
+    }
+    return sent;
+  }
+
+  // ── Customer appreciation (VIP) ──────────────────────────────────────────
+
+  async processCustomerAppreciation(): Promise<{ notified: number }> {
+    this.startRun();
+    const enabled = await this.r.marketingAutomationSettingsModel.find({ 'customerAppreciation.enabled': true }).select('storeId').lean();
+    let notified = 0;
+    for (const row of enabled as any[]) {
+      const storeId = String(row.storeId);
+      try {
+        if (!(await this.marketingAllowed(storeId))) continue;
+        notified += await this.processCustomerAppreciationForStore(storeId);
+      } catch (e: any) {
+        this.logger.error(`customer appreciation for store ${storeId} failed: ${e?.message}`);
+      }
+    }
+    return { notified };
+  }
+
+  /** Customers who reached the order count (and, when set, the spend) get ONE appreciation email, ever. Spend is counted in the
+   *  store's own currency (orders placed in another currency count towards the order total only). */
+  private async processCustomerAppreciationForStore(storeId: string): Promise<number> {
+    const [settings, store] = await Promise.all([this.getSettings(storeId), this.loadStore(storeId)]);
+    if (!store || !settings.customerAppreciation.enabled) return 0;
+    const { minOrders, minSpent } = settings.customerAppreciation;
+    let sent = 0;
+    let skip = 0;
+    for (let page = 0; page < 20 && sent < BATCH; page++) {
+      const vips: { _id: string }[] = await this.r.orderModel.aggregate([
+        { $match: { isDelete: false, 'sellerOrders.storeId': storeId } },
+        { $unwind: '$sellerOrders' },
+        { $match: { 'sellerOrders.storeId': storeId, 'sellerOrders.status': { $ne: 'cancelled' } } },
+        { $group: { _id: '$userId', orderIds: { $addToSet: '$_id' }, spent: { $sum: { $cond: [{ $eq: ['$currency', store.baseCurrency ?? 'USD'] }, { $ifNull: ['$sellerOrders.subtotal', 0] }, 0] } } } },
+        { $project: { orderCount: { $size: '$orderIds' }, spent: 1 } },
+        { $match: { orderCount: { $gte: minOrders }, spent: { $gte: minSpent } } },
+        { $sort: { _id: 1 } },
+        { $skip: skip },
+        { $limit: BATCH },
+      ]);
+      if (vips.length === 0) break;
+      skip += vips.length;
+      const ids = vips.map((v) => String(v._id)).filter((id) => isValidObjectId(id));
+      const users = await this.r.userModel.find({ _id: { $in: ids }, isDelete: { $ne: true } }).select('name email').lean();
+      const userById = new Map(users.map((u: any) => [String(u._id), u]));
+      const subs = await this.activeSubscribers(storeId, users.map((u: any) => normalizeEmail(u.email)));
+      let outOfRoom = false;
+      for (const v of vips) {
+        const u: any = userById.get(String(v._id));
+        if (!u) continue;
+        const email = normalizeEmail(u.email);
+        const token = subs.get(email);
+        if (!token) continue;
+        if (!(await this.takeRoom(storeId))) { outOfRoom = true; break; }
+        const logId = await this.claim(storeId, 'customer_appreciation', email, 'vip');
+        if (!logId) { this.giveRoomBack(storeId); continue; }
+        const ok = await this.sendCustomerEmail(store, settings.customerAppreciation, u.name, email, token, {}, 'Shop now');
+        await this.markDelivered(logId, ok);
+        if (ok) sent++; else this.giveRoomBack(storeId);
+      }
+      if (outOfRoom || vips.length < BATCH) break;
+    }
+    return sent;
+  }
+
+  /** One marketing email to one subscribed customer (designed or plain text), with unsubscribe link and the store address. */
+  private async sendCustomerEmail(
+    store: StoreLite,
+    cfg: { subject: string; message: string; html: string | null; discountCode?: string | null },
+    customerName: string | undefined,
+    email: string,
+    unsubscribeToken: string,
+    extraVars: Record<string, string>,
+    ctaLabel: string,
+  ): Promise<boolean> {
+    const shopUrl = storePublicUrl(store);
+    const vars = { customerName: customerName || 'there', storeName: store.name, ...extraVars };
+    const unsubscribeUrl = newsletterUnsubscribeUrl(unsubscribeToken);
+    const subject = renderMergeTags(cfg.subject, vars);
+    const reason = withAddress(`You're receiving this because you subscribed to emails from ${store.name}.`, store.mailingAddress);
+    const html = this.renderDesigned(
+      cfg.html,
+      { ...vars, shopUrl: shopUrl ?? '', discountCode: cfg.discountCode ?? '' },
+      {},
+      reason,
+      unsubscribeUrl,
+    ) ?? renderMarketingEmail({
+      senderName: store.name,
+      heading: subject,
+      bodyHtml: textToHtml(renderMergeTags(cfg.message, vars)),
+      extraHtml: cfg.discountCode ? discountCodeHtml(cfg.discountCode) : '',
+      cta: shopUrl ? { url: shopUrl, label: ctaLabel } : null,
+      reason,
+      unsubscribeUrl,
+    });
+    return this.emailService.sendMail(email, subject, html, store.contactEmail ?? null, unsubscribeHeaders(unsubscribeUrl), undefined, store.name);
   }
 }

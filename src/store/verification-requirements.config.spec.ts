@@ -56,3 +56,62 @@ describe('getVerificationRequirements', () => {
     expect(both.optionalDocuments).not.toContain('product_licence');
   });
 });
+
+describe('Pakistan STRN rule', () => {
+  it('is optional by default and when the seller says they are not sales-tax registered', () => {
+    for (const profile of [undefined, null, {}, { salesTaxRegistered: null }, { salesTaxRegistered: false }]) {
+      const r = getVerificationRequirements('PK', 'individual', 'basic', profile as any);
+      expect(r.requiredFields).not.toContain('strn');
+      expect(r.optionalFields).toEqual(['strn']);
+    }
+  });
+
+  it('becomes required when the seller says they are sales-tax registered', () => {
+    const r = getVerificationRequirements('PK', 'individual', 'basic', { salesTaxRegistered: true });
+    expect(r.requiredFields).toContain('strn');
+    expect(r.optionalFields).not.toContain('strn');
+    expect(r.requiredFields.filter((f) => f === 'strn')).toHaveLength(1);
+  });
+
+  it('becomes required for every Pakistani seller when the admin switch is on', () => {
+    for (const bt of ['individual', 'company', 'partnership'] as const) {
+      const r = getVerificationRequirements('PK', bt, bt === 'individual' ? 'basic' : 'business', { salesTaxRegistered: false }, { requireStrnForPk: true });
+      expect(r.requiredFields).toContain('strn');
+      expect(r.optionalFields).not.toContain('strn');
+    }
+    expect(getVerificationRequirements('PK', 'individual', 'basic', null, { requireStrnForPk: false }).requiredFields).not.toContain('strn');
+  });
+
+  it('never changes the documents or any other country', () => {
+    const base = getVerificationRequirements('PK', 'individual', 'basic');
+    const on = getVerificationRequirements('PK', 'individual', 'basic', { salesTaxRegistered: true }, { requireStrnForPk: true });
+    expect(on.requiredDocuments).toEqual(base.requiredDocuments);
+    for (const country of ['AE', 'US', 'GB']) {
+      const a = getVerificationRequirements(country, 'individual', 'basic');
+      const b = getVerificationRequirements(country, 'individual', 'basic', { salesTaxRegistered: true }, { requireStrnForPk: true });
+      expect(b.requiredFields).toEqual(a.requiredFields);
+      expect(b.requiredFields).not.toContain('strn');
+    }
+  });
+});
+
+describe('Director / partner of a company', () => {
+  it('a company or partnership must name the person behind it, in every country', () => {
+    for (const country of ['PK', 'AE', 'US']) {
+      for (const bt of ['company', 'partnership'] as const) {
+        const r = getVerificationRequirements(country, bt, 'business');
+        expect(r.requiredFields).toEqual(expect.arrayContaining(['director.name', 'director.idNumber']));
+        expect(r.requiredFields.filter((f) => f === 'director.name')).toHaveLength(1);
+      }
+    }
+  });
+
+  it('an individual seller is never asked for one', () => {
+    for (const country of ['PK', 'AE', 'US']) {
+      const r = getVerificationRequirements(country, 'individual', 'basic');
+      expect(r.requiredFields).not.toContain('director.name');
+      expect(r.requiredFields).not.toContain('director.idNumber');
+    }
+    expect(getVerificationRequirements('PK', null, 'basic').requiredFields).not.toContain('director.name');
+  });
+});

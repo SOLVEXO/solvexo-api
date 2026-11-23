@@ -10,6 +10,7 @@ export const NEWSLETTER_SOURCES = [
   'platform_footer', // Solvexo's own marketing site (merchant-facing list)
   'store_footer', // a store's themed footer form
   'store_section', // a store's "Newsletter" homepage section
+  'store_popup', // a store's email signup popup (Forms)
   'checkout', // "Email me with news and offers" at checkout
   'seller', // set by the seller on the customer's behalf
   'import', // seller CSV import (seller attests to having consent)

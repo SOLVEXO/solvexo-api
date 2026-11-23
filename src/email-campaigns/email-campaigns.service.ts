@@ -13,8 +13,12 @@ import { EmailCampaignAudience, EmailCampaignSegment } from './schemas/email-cam
 import { newsletterUnsubscribeUrl } from '@/newsletter/newsletter-consent.util';
 import { storePublicUrl } from '@/newsletter/marketing-email.util';
 import { EmailService } from '@/otp/services/email.service';
-import { campaignLinkTargets, renderCampaignEmail } from './campaign-email.util';
+import { campaignLinkTargets, renderCampaignEmail, withEmailUtm } from './campaign-email.util';
+import { slugifyCampaignName } from '../marketing-campaigns/marketing-campaigns.service';
 import { SUB_ORDER_SPEND_EXPR } from '../store/customer-spend.util';
+import { pickFields } from '@/common/pick-fields.util';
+
+const CAMPAIGN_FIELDS = ['name', 'subject', 'message', 'audience', 'segment', 'segmentId', 'design'] as const;
 
 const PLATFORM_ORIGIN = 'https://solvexo.store';
 
@@ -58,7 +62,7 @@ export class EmailCampaignsService {
   async create(sellerId: string, storeId: string, dto: CreateEmailCampaignDto) {
     await this.verifyStoreOwnership(storeId, sellerId);
     await this.entitlementsService.assertFeatureAllowed(storeId, 'emailCampaignsAllowed', 'Email Campaigns');
-    const campaign = await this.r.emailCampaignModel.create({ storeId, ...dto, status: 'draft' });
+    const campaign = await this.r.emailCampaignModel.create({ ...pickFields(dto, CAMPAIGN_FIELDS), storeId, status: 'draft' });
     return { success: true, message: 'Campaign created', data: campaign };
   }
 
@@ -81,10 +85,42 @@ export class EmailCampaignsService {
     return { success: true, message: 'Campaign', data: campaign };
   }
 
+  /** The campaign's report: delivery, opens, clicks and the links people clicked. Sales come from Growth (the campaign's UTM tag). */
+  async getReport(sellerId: string, storeId: string, campaignId: string) {
+    const campaign: any = await this.getOwnedCampaign(storeId, sellerId, campaignId);
+    const links: { _id: string; clicks: number }[] = await this.r.emailCampaignSendModel.aggregate([
+      { $match: { campaignId: String(campaign._id), clickedUrl: { $ne: null } } },
+      { $group: { _id: '$clickedUrl', clicks: { $sum: 1 } } },
+      { $sort: { clicks: -1 } },
+      { $limit: 10 },
+    ]);
+    const sent = campaign.sentCount ?? 0;
+    const rate = (n: number) => (sent > 0 ? Math.round((n / sent) * 10000) / 100 : 0);
+    return {
+      success: true,
+      data: {
+        _id: String(campaign._id),
+        name: campaign.name,
+        subject: campaign.subject,
+        status: campaign.status,
+        sentAt: campaign.sentAt ?? null,
+        recipients: campaign.recipientCount ?? 0,
+        sent,
+        failed: campaign.failedCount ?? 0,
+        opens: campaign.openCount ?? 0,
+        clicks: campaign.clickCount ?? 0,
+        openRate: rate(campaign.openCount ?? 0),
+        clickRate: rate(campaign.clickCount ?? 0),
+        utmCampaign: slugifyCampaignName(campaign.name),
+        topLinks: links.map((l) => ({ url: l._id, clicks: l.clicks })),
+      },
+    };
+  }
+
   async update(sellerId: string, storeId: string, campaignId: string, dto: UpdateEmailCampaignDto) {
     const campaign = await this.getOwnedCampaign(storeId, sellerId, campaignId);
     if (campaign.status !== 'draft') throw new BadRequestException('Only a draft campaign can be edited');
-    Object.assign(campaign, dto);
+    Object.assign(campaign, pickFields(dto, CAMPAIGN_FIELDS));
     await campaign.save();
     return { success: true, message: 'Campaign updated', data: campaign };
   }
@@ -245,7 +281,7 @@ export class EmailCampaignsService {
     const campaign = await this.getOwnedCampaign(storeId, sellerId, campaignId);
     await this.entitlementsService.assertFeatureAllowed(storeId, 'emailCampaignsAllowed', 'Email Campaigns');
     if (!email) throw new BadRequestException('No email address to send the test to');
-    const store = await this.r.storeModel.findById(storeId).select('name slug customDomain customDomainStatus contactEmail').lean();
+    const store = await this.r.storeModel.findById(storeId).select('name slug customDomain customDomainStatus contactEmail mailingAddress').lean();
     const rendered = renderCampaignEmail({
       subject: campaign.subject,
       message: campaign.message,
@@ -254,6 +290,7 @@ export class EmailCampaignsService {
       designed: !!campaign.design,
       ctaUrl: storePublicUrl(store as any),
       unsubscribeUrl: '#',
+      storeAddress: (store as any)?.mailingAddress ?? null,
     });
     const sent = await this.emailService.sendMail(email, `[Test] ${rendered.subject}`, rendered.html, (store as any)?.contactEmail ?? null);
     if (!sent) throw new BadRequestException('The test email could not be sent. Check the email settings and try again.');
@@ -277,7 +314,7 @@ export class EmailCampaignsService {
     // blocks it (processScheduledCampaigns already catches and marks a
     // thrown campaign 'failed', so this needs no extra error handling here).
     await this.entitlementsService.assertFeatureAllowed(campaign.storeId, 'emailCampaignsAllowed', 'Email Campaigns');
-    const store = await this.r.storeModel.findById(campaign.storeId).select('name contactEmail').lean();
+    const store = await this.r.storeModel.findById(campaign.storeId).select('name contactEmail mailingAddress').lean();
     const recipients = await this.resolveAudience(campaign.storeId, campaign.audience, campaign.segment, campaign.segmentId);
 
     if (recipients.length === 0) {
@@ -317,27 +354,30 @@ export class EmailCampaignsService {
       throw e;
     }
 
-    for (let i = 0; i < createdSends.length; i++) {
-      const send = createdSends[i] as any;
+    // The whole audience goes to the queue in ONE call (addBulk) instead of one Redis call per recipient — a crash part-way
+    // through a long loop used to leave send rows with no job and the campaign stuck in 'sending'.
+    const jobs = createdSends.map((send: any, i: number) => {
       const rcpt = recipients[i];
-      await this.queue.add(EMAIL_CAMPAIGN_SEND_JOB, {
+      return { name: EMAIL_CAMPAIGN_SEND_JOB, data: {
         sendId: send._id.toString(),
         campaignId: campaign._id.toString(),
         email: rcpt.email,
         customerName: rcpt.name,
         storeName: (store as any)?.name ?? 'the store',
         storeContactEmail: (store as any)?.contactEmail ?? null,
+        storeAddress: (store as any)?.mailingAddress ?? null,
         designed: !!campaign.design,
         unsubscribeUrl: newsletterUnsubscribeUrl(rcpt.unsubscribeToken),
         subject: campaign.subject,
         message: campaign.message,
-      }, {
+      }, opts: {
         // Shopify-Email-style retry of transient SMTP failures: 4 tries total,
         // waiting 2 / 4 / 8 minutes in between.
         attempts: 4,
-        backoff: { type: 'exponential', delay: 120_000 },
-      });
-    }
+        backoff: { type: 'exponential' as const, delay: 120_000 },
+      } };
+    });
+    await this.queue.addBulk(jobs);
 
     this.activityLogService.log({
       storeId: campaign.storeId, category: 'marketing', action: 'email_campaign_sent',
@@ -474,15 +514,21 @@ export class EmailCampaignsService {
       // malformed/unknown id — fall through to the platform default below
     }
 
-    if (send && target) {
-      const campaign = await this.r.emailCampaignModel.findById(send.campaignId).select('message').lean().catch(() => null);
-      if (campaign && campaignLinkTargets((campaign as any).message).has(target)) return target;
-    }
-
     const storeId = send?.storeId;
     // The store's own storefront (custom domain or subdomain) — there is no
     // `/store/:slug` route on the platform site.
     const store = storeId ? await this.r.storeModel.findById(storeId).select('slug customDomain customDomainStatus').lean().catch(() => null) : null;
-    return storePublicUrl(store as any) ?? PLATFORM_ORIGIN;
+    const storeUrl = storePublicUrl(store as any);
+
+    const campaign: any = send ? await this.r.emailCampaignModel.findById(send.campaignId).select('message name').lean().catch(() => null) : null;
+    // Visits that come from an email are tagged (utm_source / medium / campaign) so Growth can credit the sales to it.
+    const tag = slugifyCampaignName(campaign?.name ?? '');
+    if (send && target && campaign && campaignLinkTargets(campaign.message).has(target)) {
+      // Remember the first link each recipient clicked (never an arbitrary URL — only one that is in the campaign).
+      await this.r.emailCampaignSendModel.updateOne({ _id: send._id, clickedUrl: null }, { $set: { clickedUrl: target.slice(0, 500) } }).catch(() => undefined);
+      return withEmailUtm(target, storeUrl, tag);
+    }
+
+    return storeUrl ? withEmailUtm(storeUrl, storeUrl, tag) : PLATFORM_ORIGIN;
   }
 }

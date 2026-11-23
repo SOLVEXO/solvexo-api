@@ -16,7 +16,7 @@ import {
 } from './newsletter-consent.util';
 import { API_PUBLIC_ORIGIN } from '../common/api-origin';
 import { NewsletterSource } from './schemas/newsletter-subscriber.schema';
-import {
+import { unsubscribeConfirmPageHtml,
   escapeHtml,
   renderMarketingEmail,
   unsubscribeHeaders,
@@ -311,6 +311,18 @@ export class NewsletterService implements OnModuleInit {
     const email = buyerEmail(user as any);
     if (!email) throw new BadRequestException(user?.isGuest ? 'Enter your email address first' : 'Account email not found');
     return this.subscribe(email, { storeId, source, userId });
+  }
+
+  /** What the unsubscribe LINK shows — a confirm page; nothing changes until the person presses the button (POST). */
+  async previewUnsubscribe(token: string): Promise<string> {
+    const subscriber: any = token ? await this.r.newsletterSubscriberModel.findOne({ unsubscribeToken: token }).lean() : null;
+    if (!subscriber) return unsubscribePageHtml(APP_NAME, 'This unsubscribe link is invalid or has already been used.');
+    let listName = APP_NAME;
+    if (subscriber.storeId) {
+      const store = await this.r.storeModel.findById(subscriber.storeId).select('name').lean().catch(() => null);
+      if (store?.name) listName = store.name as string;
+    }
+    return unsubscribeConfirmPageHtml(listName);
   }
 
   async unsubscribeByToken(token: string): Promise<string> {

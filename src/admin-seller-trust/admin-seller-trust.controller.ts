@@ -63,8 +63,8 @@ export class AdminSellerTrustController {
 
   @RequirePermission('clients.view')
   @Get('stores/:storeId')
-  getStore(@Param('storeId') storeId: string) {
-    return this.service.getStoreDetail(storeId);
+  getStore(@Param('storeId') storeId: string, @Req() req: any) {
+    return this.service.getStoreDetail(storeId, new Date(), this.meta(req));
   }
 
   @RequirePermission('marketplace.manage')
@@ -89,6 +89,19 @@ export class AdminSellerTrustController {
   @Post('stores/:storeId/request-info')
   requestInfo(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: RequestInfoDto) {
     return this.service.requestInfo(storeId, dto.message, this.meta(req));
+  }
+
+  // A verified seller's change request: approve applies it, reject keeps the live details as they were.
+  @RequirePermission('marketplace.manage')
+  @Post('stores/:storeId/change/approve')
+  approveChange(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.service.approveChange(storeId, this.meta(req));
+  }
+
+  @RequirePermission('marketplace.manage')
+  @Post('stores/:storeId/change/reject')
+  rejectChange(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: RejectLeadDto) {
+    return this.service.rejectChange(storeId, dto.reason, this.meta(req));
   }
 
   @RequirePermission('marketplace.manage')

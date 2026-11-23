@@ -30,6 +30,13 @@ export class SellerSeoAiController {
     private readonly db: DatabaseService,
   ) {}
 
+  /** Whether AI is switched on for this server. Needs no plan or credits: the UI uses it to show or hide the AI tab. */
+  @RequirePermission('seo.view', 'seo.manage')
+  @Get('status')
+  async status() {
+    return { available: this.seoAi.isAvailable() };
+  }
+
   @RequirePermission('seo.manage')
   @Post('generate')
   @UseInterceptors(IdempotencyInterceptor)

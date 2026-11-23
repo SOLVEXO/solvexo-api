@@ -33,6 +33,14 @@ export class PlatformPlanInvoice {
   @Prop({ type: String, default: null }) hostedInvoiceUrl: string | null;
   @Prop({ type: String, default: null }) invoicePdfUrl: string | null;
   @Prop({ type: String, default: null }) paymentMethodType: string | null;
+  // Card the payment was made with (best-effort, from the provider) — shown in the seller's billing timeline.
+  @Prop({ type: String, default: null }) cardBrand: string | null;
+  @Prop({ type: String, default: null }) cardLast4: string | null;
+  // Line-by-line breakdown: plan price, credit for the unused part of the old plan, account credit, intro discount, tax.
+  // Amounts are signed (credits/discounts negative) and sum to `amountUSD`. Absent on invoices created before this field.
+  @Prop({ type: [{ _id: false, kind: String, label: String, amountUSD: Number }], default: [] })
+  lineItems: Array<{ kind: 'plan' | 'credit' | 'discount' | 'tax' | 'other'; label: string; amountUSD: number }>;
+  @Prop({ type: String, default: null }) refundReason: string | null;
 
   @Prop({ default: false }) isDelete: boolean;
 }

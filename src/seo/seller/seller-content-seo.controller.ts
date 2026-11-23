@@ -19,10 +19,15 @@ class UpdatePageSeoDto {
   noindex?: boolean;
 }
 
+class UpdateCollectionSeoDto {
+  metaTitle?: string | null;
+  metaDescription?: string | null;
+}
+
 // Categories are platform-owned/admin-curated (see master doc §5.2) — sellers
 // only ever *view* category meta here, never edit it (editing is
-// api/admin/seo/categories/:id). Page-builder page meta, by contrast, is
-// fully store-owned and editable.
+// api/admin/seo/categories/:id). Collections and page-builder pages, by
+// contrast, are fully store-owned and editable.
 @ApiTags('Seller SEO — Categories & Pages')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
@@ -40,6 +45,20 @@ export class SellerContentSeoController {
   async listCategories(@Req() req: any, @Param('storeId') storeId: string) {
     await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, actingSellerId(req.user));
     return this.seoContent.listStoreCategoriesSeo(storeId);
+  }
+
+  @RequirePermission('seo.view', 'seo.manage')
+  @Get('collections')
+  async listCollections(@Req() req: any, @Param('storeId') storeId: string) {
+    await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, actingSellerId(req.user));
+    return this.seoContent.listStoreCollectionsSeo(storeId);
+  }
+
+  @RequirePermission('seo.manage')
+  @Patch('collections/:collectionId')
+  async updateCollection(@Req() req: any, @Param('storeId') storeId: string, @Param('collectionId') collectionId: string, @Body() dto: UpdateCollectionSeoDto) {
+    await verifyStoreOwnershipStrict(this.db.repositories.storeModel, storeId, actingSellerId(req.user));
+    return this.seoContent.updateCollectionSeo(storeId, collectionId, dto, { id: req.user.userId, role: req.user.role });
   }
 
   @RequirePermission('seo.view', 'seo.manage')

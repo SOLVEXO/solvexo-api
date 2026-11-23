@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Patch, Body, Req, Res, Param, Query, UseGuards, UseInterceptors, UploadedFile, ForbiddenException } from '@nestjs/common';
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
+import { Controller, Post, Get, Patch, Delete, Body, Req, Res, Param, Query, UseGuards, UseInterceptors, UploadedFile, ForbiddenException } from '@nestjs/common';
 import { PublicCache, PublicCacheInterceptor } from '@/storefront/public-cache.interceptor';
 import { PUBLIC_BROWSE_LIMIT } from '@/storefront/public-throttle';
 import { resolveCountryFromIp } from '@/common/geo-locate.util';
@@ -25,6 +26,7 @@ import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { BulkTagCustomersDto } from './dto/bulk-tag-customers.dto';
 import { BulkArchiveCustomersDto } from './dto/bulk-archive-customers.dto';
 import { BulkCustomerMarketingDto } from './dto/bulk-customer-marketing.dto';
+import { UpdateVerificationDto, AttachVerificationDocumentDto, SubmitVerificationDto, RequestVerificationChangeDto } from './dto/update-verification.dto';
 import { resolveBuyerStoreScope } from '../common/store-scope.util';
 
 @Controller('api/store')
@@ -67,6 +69,22 @@ export class StoreController {
     return this.storeService.getSuggestedLocation(req.ip);
   }
 
+  // Seller-type defaults ("What you sell" pre-selection) + the honest capability list — used by Onboarding before a store exists.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Get('seller-profiles')
+  async getSellerProfiles() {
+    return this.storeService.getSellerProfiles();
+  }
+
+  // Dashboard guidance for one store (owner or staff acting for the owner).
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller', 'staff')
+  @Get(':storeId/personalization')
+  async getSellerPersonalization(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeService.getSellerPersonalization(actingSellerId(req.user), storeId);
+  }
+
   // seller ke saare stores
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
@@ -103,14 +121,6 @@ export class StoreController {
   @Patch(':storeId/robots-txt')
   async updateStoreRobotsTxt(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { robotsTxtOverride: string | null }) {
     return this.storeService.updateStoreRobotsTxt(actingSellerId(req.user), storeId, body?.robotsTxtOverride ?? null);
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
-  @Roles('seller', 'staff')
-  @RequirePermission('settings.general.manage')
-  @Patch(':storeId/white-label')
-  async setWhiteLabel(@Req() req: any, @Param('storeId') storeId: string, @Body() body: { enabled: boolean }) {
-    return this.storeService.setWhiteLabel(actingSellerId(req.user), storeId, !!body.enabled);
   }
 
   // Solvexo POS is a single, already-published, PAID Google Play listing —
@@ -165,18 +175,20 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @AuditStoreWrites('verification', 'settings')
   @Patch(':storeId/verification')
-  async updateVerification(@Req() req: any, @Param('storeId') storeId: string, @Body() body: any) {
+  async updateVerification(@Req() req: any, @Param('storeId') storeId: string, @Body() body: UpdateVerificationDto) {
     return this.storeService.updateVerification(req.user.userId, storeId, body);
   }
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @AuditStoreWrites('verification_document', 'settings')
   @Post(':storeId/verification/documents')
   async attachVerificationDocument(
     @Req() req: any,
     @Param('storeId') storeId: string,
-    @Body() body: { type: string; publicId: string; resourceType: string; fileName: string },
+    @Body() body: AttachVerificationDocumentDto,
   ) {
     return this.storeService.attachVerificationDocument(req.user.userId, storeId, body.type, {
       publicId: body.publicId,
@@ -187,9 +199,29 @@ export class StoreController {
 
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('seller')
+  @AuditStoreWrites('verification', 'settings')
   @Post(':storeId/verification/submit')
-  async submitVerification(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.storeService.submitVerification(req.user.userId, storeId);
+  async submitVerification(@Req() req: any, @Param('storeId') storeId: string, @Body() body: SubmitVerificationDto) {
+    return this.storeService.submitVerification(req.user.userId, storeId, {
+      accepted: body?.declarationAccepted === true, ip: req.ip, userAgent: req.headers?.['user-agent'],
+    });
+  }
+
+  // A VERIFIED seller asks to change their details / files (they are locked in place); an admin approves or rejects.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Post(':storeId/verification/change')
+  async requestVerificationChange(@Req() req: any, @Param('storeId') storeId: string, @Body() body: RequestVerificationChangeDto) {
+    return this.storeService.requestVerificationChange(req.user.userId, storeId, body, {
+      accepted: body?.declarationAccepted === true, ip: req.ip, userAgent: req.headers?.['user-agent'],
+    });
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('seller')
+  @Delete(':storeId/verification/change')
+  async cancelVerificationChange(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.storeService.cancelVerificationChange(req.user.userId, storeId);
   }
 
   // Real "Manage general store settings" — previously seller-only with no
@@ -217,7 +249,7 @@ export class StoreController {
     if (req.user.role === 'staff' && updateData.country !== undefined) {
       throw new ForbiddenException('Only the store owner can change the store country.');
     }
-    return this.storeService.updateStore(actingSellerId(req.user), storeId, updateData);
+    return this.storeService.updateStore(actingSellerId(req.user), storeId, updateData, { id: String(req.user.userId ?? req.user.sub), role: req.user.role });
   }
 
   // ── Builder APIs ──────────────────────────────────────────────────────────
@@ -225,6 +257,7 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('onlinestore.themes.manage')
+  @AuditStoreWrites('builder_config', 'settings')
   @Post('save-builder-config')
   async saveBuilderConfig(@Req() req: any, @Body() body: any) {
     const userId = actingSellerId(req.user);
@@ -333,6 +366,7 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('settings.general.manage')
+  @AuditStoreWrites('privacy_request', 'customers')
   @Patch(':storeId/privacy-requests/:requestId/complete')
   async completePrivacyRequest(@Req() req: any, @Param('storeId') storeId: string, @Param('requestId') requestId: string) {
     return this.storeService.completePrivacyRequest(actingSellerId(req.user), storeId, requestId);
@@ -421,6 +455,7 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('customers.edit')
+  @AuditStoreWrites('customer', 'customers')
   @Post(':storeId/customers/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async importStoreCustomers(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any, @Body() body: any) {
@@ -455,6 +490,7 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('customers.edit')
+  @AuditStoreWrites('customers', 'customers')
   @Post(':storeId/customers/bulk-marketing')
   async bulkCustomerMarketing(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: BulkCustomerMarketingDto) {
     return this.storeService.bulkSetCustomerMarketing(actingSellerId(req.user), storeId, dto, req.ip, req.headers['user-agent']);
@@ -463,6 +499,7 @@ export class StoreController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('customers.edit')
+  @AuditStoreWrites('customers', 'customers')
   @Patch(':storeId/customers/bulk-archive')
   async bulkArchiveCustomers(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: BulkArchiveCustomersDto) {
     return this.storeService.bulkArchiveCustomers(actingSellerId(req.user), storeId, dto, req.ip, req.headers['user-agent']);

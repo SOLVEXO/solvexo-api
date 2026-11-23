@@ -4,6 +4,7 @@ import { Types } from 'mongoose';
 import { randomBytes } from 'crypto';
 import { DatabaseService } from '../database/databaseservice';
 import { verifyStoreOwnershipStrict } from '../common/store-ownership.util';
+import { sanitizeChromeItems } from '../common/chrome-items.util';
 import { assertLinkTarget, validateBlockSettings, HEADER_ALLOWED_BLOCK_TYPES, FOOTER_ALLOWED_BLOCK_TYPES } from '../common/store-content/section-settings.validator';
 import { ContentVersioningService } from '../common/content-versioning/content-versioning.service';
 import { StoreThemeDraft } from './schemas/store-theme.schema';
@@ -837,7 +838,8 @@ export class StoreThemeService {
     const headerKeys = ['logoPosition', 'menuPosition', 'logoWidth', 'mobileLogoWidth', 'sticky', 'showSearch', 'showAccount', 'showWishlist', 'showShopMenu',
       'shopMenuLabel', 'includePagesInNav', 'showDefaultBlogLink', 'blogLinkLabel', 'bgColor', 'textColor', 'paddingY', 'showDivider', 'stickyMode', 'transparentOnHome', 'transparentTextColor',
       'navFontSize', 'navUppercase', 'navHoverStyle', 'searchStyle', 'searchPosition', 'ctaLabel', 'ctaLink', 'topBarEnabled', 'topBarText', 'topBarPhone',
-      'topBarEmail', 'topBarBg', 'topBarTextColor', 'preset'] as const;
+      'topBarEmail', 'topBarBg', 'topBarTextColor', 'topBarSize', 'preset'] as const;
+    if (dto.topBarItems !== undefined) set['draft.header.topBarItems'] = sanitizeChromeItems(dto.topBarItems, 'topBarItems');
     const trimmed = new Set(['shopMenuLabel', 'blogLinkLabel', 'ctaLabel', 'ctaLink', 'topBarText', 'topBarPhone', 'topBarEmail', 'preset']);
     for (const key of headerKeys) {
       if (dto[key] !== undefined) set[`draft.header.${key}`] = trimmed.has(key) ? (dto[key] as string | null)?.toString().trim() || null : dto[key];
@@ -868,7 +870,7 @@ export class StoreThemeService {
     }
     const footerKeys = ['logoSource', 'logoUrl', 'logoWidth', 'showNewsletter', 'newsletterHeading', 'newsletterText',
       'showDefaultColumns', 'shopColumnHeading', 'accountColumnHeading', 'blogLinkLabel', 'bgColor', 'textColor', 'blockLayout', 'paddingY', 'bgImageUrl', 'bgOverlay', 'align', 'headingUppercase', 'socialStyle', 'socialColor', 'socialCustomColor', 'socialFilled', 'socialSize',
-      'newsletterTop', 'mobileAccordion', 'showPolicyLinks', 'showCurrency', 'showBackToTop', 'footerShape', 'wordmarkSource', 'wordmarkUrl', 'wordmarkWidth', 'bottomLayout', 'preset'] as const;
+      'newsletterTop', 'mobileAccordion', 'showPolicyLinks', 'showCurrency', 'showBackToTop', 'showPoweredBy', 'poweredByText', 'poweredByUrl', 'footerShape', 'wordmarkSource', 'wordmarkUrl', 'wordmarkWidth', 'bottomLayout', 'preset'] as const;
     for (const key of footerKeys) {
       if (dto[key] === undefined) continue;
       const v = dto[key];

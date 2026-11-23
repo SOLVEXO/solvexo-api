@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { checkAccountTitle } from './account-title-match.util';
 import {
   Injectable, NotFoundException, ForbiddenException,
   BadRequestException, ConflictException, OnModuleInit, Optional,
@@ -1069,20 +1070,20 @@ export class FinanceService implements OnModuleInit {
    * declared account holder doesn't reasonably match the seller's registered
    * name, so an admin can review it before the first payout goes out.
    */
-  private async checkAccountTitleMismatch(sellerId: string, accountHolder?: string | null) {
+  private async checkAccountTitleMismatch(sellerId: string, storeId: string, accountHolder?: string | null) {
     if (!accountHolder) return { flagged: false, note: null as string | null };
-    const seller = await this.sellerModel.findById(sellerId).select('name').lean();
-    const sellerName = (seller as any)?.name?.trim().toLowerCase();
-    const holderName = accountHolder.trim().toLowerCase();
-    if (!sellerName || !holderName) return { flagged: false, note: null };
-
-    const matches = sellerName === holderName || holderName.includes(sellerName) || sellerName.includes(holderName);
-    if (matches) return { flagged: false, note: null };
-
-    return {
-      flagged: true,
-      note: `Account holder "${accountHolder}" does not closely match the seller's registered name "${(seller as any).name}" — flagged for admin review, not blocked.`,
-    };
+    // Every name we know for this store: the account owner, the verified legal business name and the authorized contact.
+    const names: (string | null | undefined)[] = [];
+    try {
+      const seller: any = await this.sellerModel.findById(sellerId).select('name').lean();
+      names.push(seller?.name);
+    } catch { /* a lookup failure only means one less name to compare with */ }
+    try {
+      const store: any = await this.storeModel.findById(storeId).select('+verification').lean();
+      names.push(store?.verification?.legalBusinessName, store?.verification?.authorizedContact?.name);
+    } catch { /* same */ }
+    const { flagged, note } = checkAccountTitle(accountHolder, names);
+    return { flagged, note };
   }
 
   async addPayoutMethod(sellerId: string, storeId: string, dto: AddPayoutMethodDto) {
@@ -1094,7 +1095,7 @@ export class FinanceService implements OnModuleInit {
     // adding a store's first-ever PKR method (say) must not touch whichever
     // method is already the USD default.
     const isFirstForCurrency = !(await this.methodModel.exists({ storeId, currency }));
-    const { flagged, note } = await this.checkAccountTitleMismatch(sellerId, dto.accountHolder);
+    const { flagged, note } = await this.checkAccountTitleMismatch(sellerId, storeId, dto.accountHolder);
 
     const method = await this.methodModel.create({
       storeId,
@@ -1187,7 +1188,7 @@ export class FinanceService implements OnModuleInit {
     }
 
     if (dto.accountHolder !== undefined) {
-      const { flagged, note } = await this.checkAccountTitleMismatch(sellerId, dto.accountHolder);
+      const { flagged, note } = await this.checkAccountTitleMismatch(sellerId, storeId, dto.accountHolder);
       method.accountTitleMismatchFlagged = flagged;
       method.accountTitleMismatchNote = note;
     }

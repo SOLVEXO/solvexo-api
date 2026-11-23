@@ -1,3 +1,4 @@
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Controller, Get, Post, Body, Param, UseGuards, Query } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -10,6 +11,7 @@ import { MarketDomainService } from './market-domain.service';
 
 @ApiTags('Market Domains')
 @ApiBearerAuth()
+@AuditStoreWrites('market_domain', 'settings')
 @Controller('api/stores/:storeId/market-domains')
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, StoreAccessGuard)
 @RequirePermission('settings.general.manage')

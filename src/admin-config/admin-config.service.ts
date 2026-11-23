@@ -91,20 +91,26 @@ export class AdminConfigService {
   }
 
   /** Seller trust enforcement settings (SellerTrustService). */
-  async getSellerTrustSettings(): Promise<{ enforcementStartedAt: Date | null; graceDays: number }> {
+  async getSellerTrustSettings(): Promise<{ enforcementStartedAt: Date | null; graceDays: number; requireStrnForPk: boolean; kycRetentionYears: number; kycDraftRetentionDays: number }> {
     const config = await this.getRawConfig();
     const st = config?.sellerTrust ?? {};
     return {
       enforcementStartedAt: st.enforcementStartedAt ? new Date(st.enforcementStartedAt) : null,
       graceDays: typeof st.graceDays === 'number' ? st.graceDays : 30,
+      requireStrnForPk: st.requireStrnForPk === true,
+      kycRetentionYears: typeof st.kycRetentionYears === 'number' && st.kycRetentionYears >= 1 ? st.kycRetentionYears : 6,
+      kycDraftRetentionDays: typeof st.kycDraftRetentionDays === 'number' && st.kycDraftRetentionDays >= 1 ? st.kycDraftRetentionDays : 90,
     };
   }
 
   /** Writes the seller trust settings (only the keys given). Audit-logged. */
-  async updateSellerTrustSettings(patch: { enforcementStartedAt?: Date | null; graceDays?: number }, meta: AuditMeta) {
+  async updateSellerTrustSettings(patch: { enforcementStartedAt?: Date | null; graceDays?: number; requireStrnForPk?: boolean; kycRetentionYears?: number; kycDraftRetentionDays?: number }, meta: AuditMeta) {
     const set: Record<string, unknown> = {};
     if (patch.enforcementStartedAt !== undefined) set['sellerTrust.enforcementStartedAt'] = patch.enforcementStartedAt;
     if (patch.graceDays !== undefined) set['sellerTrust.graceDays'] = patch.graceDays;
+    if (patch.requireStrnForPk !== undefined) set['sellerTrust.requireStrnForPk'] = patch.requireStrnForPk;
+    if (patch.kycRetentionYears !== undefined) set['sellerTrust.kycRetentionYears'] = patch.kycRetentionYears;
+    if (patch.kycDraftRetentionDays !== undefined) set['sellerTrust.kycDraftRetentionDays'] = patch.kycDraftRetentionDays;
     if (Object.keys(set).length) {
       await this.model.findOneAndUpdate({}, { $set: set }, { upsert: true, new: true, setDefaultsOnInsert: true });
       this.invalidateCache();

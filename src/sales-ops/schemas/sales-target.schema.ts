@@ -14,6 +14,8 @@ export class SalesTarget {
   @Prop({ type: Number, default: null }) wonValuePKR: number | null;
   /** Calls, WhatsApps, meetings and emails logged. */
   @Prop({ type: Number, default: null }) activities: number | null;
+  /** Field visits made. */
+  @Prop({ type: Number, default: null }) visits: number | null;
   @Prop({ type: String, default: null }) updatedByAdminId: string | null;
 }
 

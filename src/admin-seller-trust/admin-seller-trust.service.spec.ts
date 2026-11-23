@@ -75,7 +75,8 @@ describe('AdminSellerTrustService', () => {
         totalStores: 10, withNtn: 4, withoutNtn: 6,
         byStatus: { not_started: 3, pending: 3, under_review: 1, needs_info: 1, verified: 2, rejected: 0 },
         highRisk: 2, mediumRisk: 5, waitingReview: 4, deadlinePassed: 6,
-        enforcement: { startedAt: start, graceDays: 30, firstDueAt: new Date('2026-12-01T00:00:00Z') },
+        enforcement: { startedAt: start, graceDays: 30, firstDueAt: new Date('2026-12-01T00:00:00Z'), requireStrnForPk: false, kycRetentionYears: 6, kycDraftRetentionDays: 90 },
+        changeRequests: 0,
       });
     });
 
@@ -105,6 +106,40 @@ describe('AdminSellerTrustService', () => {
       const { service, sellerTrust } = build({ settings: { enforcementStartedAt: new Date('2026-11-01'), graceDays: 30 } });
       await service.updateSettings({ enforcementStartedAt: 'now' }, meta);
       expect(sellerTrust.syncDeadlines).toHaveBeenCalledTimes(1);
+    });
+
+    it('the STRN switch is saved and audit-logged on its own, without touching deadlines', async () => {
+      const { service, adminConfig, sellerTrust, activityLog } = build({ settings: { enforcementStartedAt: new Date('2026-11-01'), graceDays: 30, requireStrnForPk: false } });
+      const res = await service.updateSettings({ requireStrnForPk: true }, meta);
+      expect(adminConfig.updateSellerTrustSettings.mock.calls[0][0]).toEqual({ requireStrnForPk: true });
+      expect(sellerTrust.syncDeadlines).not.toHaveBeenCalled();
+      expect(sellerTrust.recomputeAll).not.toHaveBeenCalled();
+      expect(res.data.requireStrnForPk).toBe(true);
+      expect(activityLog.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'seller_trust_strn_rule_on', metadata: { requireStrnForPk: true } }));
+    });
+
+    it('document retention is saved and audit-logged on its own, without touching deadlines', async () => {
+      const { service, adminConfig, sellerTrust, activityLog } = build({ settings: { enforcementStartedAt: null, graceDays: 30, kycRetentionYears: 6, kycDraftRetentionDays: 90 } });
+      const res = await service.updateSettings({ kycRetentionYears: 7, kycDraftRetentionDays: 60 }, meta);
+      expect(adminConfig.updateSellerTrustSettings.mock.calls[0][0]).toEqual({ kycRetentionYears: 7, kycDraftRetentionDays: 60 });
+      expect(sellerTrust.syncDeadlines).not.toHaveBeenCalled();
+      expect(res.data).toMatchObject({ kycRetentionYears: 7, kycDraftRetentionDays: 60 });
+      expect(activityLog.log).toHaveBeenCalledWith(expect.objectContaining({ action: 'seller_trust_retention_changed', metadata: { kycRetentionYears: 7, kycDraftRetentionDays: 60 } }));
+    });
+
+    it('retention defaults to 6 years / 90 days and an unchanged value is not saved or logged', async () => {
+      const { service, adminConfig, activityLog } = build();
+      const res = await service.updateSettings({ kycRetentionYears: 6, kycDraftRetentionDays: 90 }, meta);
+      expect(res.data).toMatchObject({ kycRetentionYears: 6, kycDraftRetentionDays: 90 });
+      expect(adminConfig.updateSellerTrustSettings.mock.calls[0][0]).toEqual({});
+      expect(activityLog.log).not.toHaveBeenCalled();
+    });
+
+    it('sending the same STRN value again changes and logs nothing', async () => {
+      const { service, adminConfig, activityLog } = build({ settings: { enforcementStartedAt: null, graceDays: 30, requireStrnForPk: true } });
+      await service.updateSettings({ requireStrnForPk: true }, meta);
+      expect(adminConfig.updateSellerTrustSettings.mock.calls[0][0]).toEqual({});
+      expect(activityLog.log).not.toHaveBeenCalled();
     });
 
     it('null stops enforcement', async () => {

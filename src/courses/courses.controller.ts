@@ -1,9 +1,11 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Get, Param, Patch, Post, Query, Req, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsArray, IsNotEmpty, IsString } from 'class-validator';
 import type { Response } from 'express';
+import { Readable } from 'stream';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -27,6 +29,32 @@ export class PublicCertificateController {
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get(':id')
   verify(@Param('id') id: string) { return this.svc.verify(id); }
+}
+
+/**
+ * Proxied course video (only used when COURSE_VIDEO_PROXY=true). Public on purpose: a `<video>` tag cannot send a bearer
+ * token, so the signed token in the URL is the capability — and the course gate is re-checked on every request.
+ * Range requests (seeking) are forwarded, so players behave normally; the limit is per IP and generous for that reason.
+ */
+@ApiTags('Courses (video stream)')
+@Controller('api/courses/stream')
+export class CourseStreamController {
+  constructor(private readonly svc: CoursesService) {}
+  @Throttle({ default: { limit: 600, ttl: 60_000 } })
+  @Get(':token')
+  async stream(@Param('token') token: string, @Req() req: any, @Res() res: Response) {
+    const upstream = await this.svc.openVideoStream(token, req.headers?.range);
+    res.status(upstream.status);
+    for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+      const v = upstream.headers.get(h);
+      if (v) res.setHeader(h, v);
+    }
+    res.setHeader('Cache-Control', 'private, no-store');
+    const body = Readable.fromWeb(upstream.body as any);
+    req.on('close', () => body.destroy()); // the viewer left or seeked: stop pulling bytes
+    body.on('error', () => res.end());
+    body.pipe(res);
+  }
 }
 
 @ApiTags('Courses (learner)')
@@ -66,6 +94,7 @@ export class LearnerCoursesController {
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
 @Roles('seller', 'staff')
 @RequirePermission('courses.manage')
+@AuditStoreWrites('course', 'products')
 @Controller('api/courses/store/:storeId')
 export class SellerCoursesController {
   constructor(private readonly svc: CoursesService, private readonly db: DatabaseService, private readonly entitlements: EntitlementsService) {}

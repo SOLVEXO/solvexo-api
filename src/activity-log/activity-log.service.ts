@@ -1,10 +1,12 @@
 /* eslint-disable prettier/prettier */
 import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { DatabaseService } from '../database/databaseservice';
-import { ActivityLogCategory } from './schemas/activity-log.schema';
+import { ACTIVITY_LOG_CATEGORIES, ACTIVITY_LOG_KEEP_FOREVER, ActivityLogCategory } from './schemas/activity-log.schema';
 import { ActivityLogGateway } from './activity-log.gateway';
 import { resolveLocationFromIp } from '../common/geo-locate.util';
 import { describeUserAgent } from '../common/user-agent.util';
+import { requestActor, resolveActor } from './activity-actor.context';
+import { actionTitle, categoryTitle, cleanDescription, describeChanges, formatInTimezone, orderIdsIn, safeTimezone, toCsv } from './activity-log-format.util';
 
 export interface LogActivityInput {
   /** Omit for a platform-level action with no single store (e.g. admin managing a PlatformPlan) — stored as the 'platform' sentinel. */
@@ -20,8 +22,19 @@ export interface LogActivityInput {
   ip?: string | null;
   userAgent?: string | null;
   isSecurityAlert?: boolean;
+  /** Write even inside a bulk import (used for the import's own summary entry). */
+  force?: boolean;
+  /** Free-form extras. `metadata.changes` = [{ field, from, to }] is rendered as a before → after diff in the UI and the export. */
   metadata?: object | null;
 }
+
+/** Most rows one export may contain. Beyond this the response is flagged `truncated` instead of silently cut. */
+export const EXPORT_MAX_ROWS = 50000;
+
+/** Days a routine entry is kept (env ACTIVITY_LOG_RETENTION_DAYS, default 730 = 2 years; 0 = keep everything). */
+const retentionDays = () => { const n = Number(process.env.ACTIVITY_LOG_RETENTION_DAYS ?? 730); return Number.isFinite(n) && n >= 0 ? n : 730; };
+
+const escapeRegex = (s: string) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 @Injectable()
 export class ActivityLogService {
@@ -33,14 +46,25 @@ export class ActivityLogService {
   ) {}
 
   /** Fire-and-forget write — never let logging break the caller's main flow. */
-  async log(data: LogActivityInput): Promise<void> {
+  async log(input: LogActivityInput): Promise<void> {
+    // A bulk import writes ONE summary entry; the per-row entries its row handlers would add are dropped.
+    if (requestActor.getStore()?.bulkImport && !input.force) return;
+    const data = resolveActor(input); // staff acting for an owner is recorded as the staff member, not the owner
     try {
+      // An unknown category used to make the schema enum reject the row, so the event vanished. Keep it under 'settings' and remember the original.
+      let category = data.category;
+      let metadata = data.metadata ?? null;
+      if (!(ACTIVITY_LOG_CATEGORIES as readonly string[]).includes(category)) {
+        this.logger.warn(`Unknown activity category '${category}' for action '${data.action}' — stored under 'settings'. Add it to ACTIVITY_LOG_CATEGORIES.`);
+        metadata = { ...(metadata ?? {}), originalCategory: category };
+        category = 'settings';
+      }
       const entry = await this.databaseService.repositories.activityLogModel.create({
         storeId: data.storeId ?? 'platform',
         actorId: data.actorId ?? null,
         actorName: data.actorName ?? null,
         actorRole: data.actorRole ?? null,
-        category: data.category,
+        category,
         action: data.action,
         description: data.description ?? null,
         targetId: data.targetId ?? null,
@@ -48,10 +72,11 @@ export class ActivityLogService {
         ip: data.ip ?? null,
         userAgent: data.userAgent ?? null,
         isSecurityAlert: data.isSecurityAlert ?? false,
-        metadata: data.metadata ?? null,
+        metadata,
+        expireAt: !data.isSecurityAlert && !ACTIVITY_LOG_KEEP_FOREVER.includes(category) && retentionDays() > 0 ? new Date(Date.now() + retentionDays() * 86400000) : undefined,
       });
 
-      this.gateway.emitNewActivity(data.storeId ?? 'platform', entry.toObject());
+      this.gateway.emitNewActivity(data.storeId ?? 'platform', (await this.enrich([entry.toObject() as any]))[0]);
     } catch (err) {
       // logging must never break the operation that triggered it — but we
       // still want visibility that an entry was lost, so it's not silent.
@@ -60,17 +85,59 @@ export class ActivityLogService {
   }
 
   /**
-   * Read-time enrichment — never persisted. `ip`/`userAgent` are stored raw
-   * (see `log()` above); this just makes them human-readable for whoever's
-   * viewing the log, computed fresh on every read instead of at write time
-   * (so an already-written entry benefits from library updates too).
+   * Read-time enrichment — never persisted, so old rows benefit too: readable IP/device, the actor's real name (callers mostly store only the id),
+   * "System" for automated events, a human title, and customer-facing order numbers instead of internal ids.
    */
-  private enrich<T extends { ip?: string | null; userAgent?: string | null }>(logs: T[]): (T & { location: { city: string | null; country: string | null } | null; device: string | null })[] {
-    return logs.map((l) => ({
-      ...l,
-      location: resolveLocationFromIp(l.ip),
-      device: describeUserAgent(l.userAgent),
-    }));
+  private async enrich<T extends { ip?: string | null; userAgent?: string | null; actorId?: string | null; actorName?: string | null; actorRole?: string | null; action?: string; description?: string | null }>(logs: T[]) {
+    const { userModel, staffMemberModel, orderModel, storeModel } = this.databaseService.repositories as any;
+    const isId = (v: any) => typeof v === 'string' && /^[a-f0-9]{24}$/i.test(v);
+    const actorIds = [...new Set(logs.filter((l) => !l.actorName && isId(l.actorId)).map((l) => String(l.actorId)))];
+    const names = new Map<string, string>();
+    try {
+      if (actorIds.length) {
+        const [users, staff] = await Promise.all([
+          userModel.find({ _id: { $in: actorIds } }).select('name').lean(),
+          staffMemberModel.find({ _id: { $in: actorIds } }).select('name').lean(),
+        ]);
+        for (const u of [...users, ...staff]) if (u?.name) names.set(String(u._id), u.name);
+      }
+    } catch (e: any) { this.logger.warn(`Actor name lookup failed: ${e?.message}`); }
+
+    const orderIds = [...new Set(logs.flatMap((l) => orderIdsIn(l.description)))];
+    const orderNumbers = new Map<string, string>();
+    try {
+      if (orderIds.length) {
+        const orders = await orderModel.find({ _id: { $in: orderIds } }).select('orderNumber').lean();
+        for (const o of orders) if (o?.orderNumber) orderNumbers.set(String(o._id), o.orderNumber);
+      }
+    } catch (e: any) { this.logger.warn(`Order number lookup failed: ${e?.message}`); }
+
+    // The store's own currency / timezone, so a value in the log (a price, an amount) and its time read in that store's terms — even in the admin view.
+    const storeIds = [...new Set(logs.map((l: any) => l.storeId).filter(isId).map(String))];
+    const stores = new Map<string, { currency: string | null; timezone: string | null }>();
+    try {
+      if (storeIds.length) {
+        const rows = await storeModel.find({ _id: { $in: storeIds } }).select('baseCurrency timezone').lean();
+        for (const st of rows) stores.set(String(st._id), { currency: st.baseCurrency ?? null, timezone: st.timezone ?? null });
+      }
+    } catch (e: any) { this.logger.warn(`Store lookup failed: ${e?.message}`); }
+
+    return logs.map((l) => {
+      const system = !l.actorId && !l.actorName;
+      const st = stores.get(String((l as any).storeId));
+      return {
+        ...l,
+        actorName: l.actorName ?? (system ? 'System' : names.get(String(l.actorId)) ?? null),
+        actorRole: l.actorRole || (system ? 'system' : null),
+        isSystem: system,
+        storeCurrency: st?.currency ?? null,
+        storeTimezone: st?.timezone ?? null,
+        title: actionTitle(l.action ?? ''),
+        description: cleanDescription(l.description, orderNumbers),
+        location: resolveLocationFromIp(l.ip),
+        device: describeUserAgent(l.userAgent),
+      };
+    });
   }
 
   /** Chronological audit trail for one entity (e.g. a StoreBanner or PromotionRequest) — no separate timeline schema, this just reads ActivityLog.
@@ -80,7 +147,7 @@ export class ActivityLogService {
       .find({ targetId, ...(storeId ? { storeId } : {}) })
       .sort({ createdAt: 1 })
       .lean();
-    return { success: true, data: this.enrich(logs) };
+    return { success: true, data: await this.enrich(logs as any[]) };
   }
 
   /** Seller-facing wrapper — same ownership check every other seller-facing method here does before touching this store's data. */
@@ -95,48 +162,61 @@ export class ActivityLogService {
     return store;
   }
 
+  /**
+   * ONE filter builder for the list, the export and both the seller and admin views — the export used to honour only category + date,
+   * so what you downloaded differed from what you saw. `storeId` is forced for sellers and optional for admin.
+   */
+  private buildFilter(query: any, forcedStoreId?: string): Record<string, any> {
+    const filter: Record<string, any> = {};
+    if (forcedStoreId) filter.storeId = forcedStoreId;
+    else if (query.storeId) filter.storeId = String(query.storeId);
+    if (query.category) filter.category = String(query.category);
+    if (query.actorId) filter.actorId = String(query.actorId);
+    if (query.actorRole) filter.actorRole = String(query.actorRole);
+    if (query.action) filter.action = String(query.action);
+    if (query.targetType) filter.targetType = String(query.targetType);
+    if (query.targetId) filter.targetId = String(query.targetId);
+    if (query.isSecurityAlert !== undefined && query.isSecurityAlert !== '') filter.isSecurityAlert = query.isSecurityAlert === 'true' || query.isSecurityAlert === true;
+    // Hide automated noise (daily SEO audit, recovery emails…) — everything with no human actor.
+    if (query.excludeSystem === 'true' || query.excludeSystem === true) filter.actorId = filter.actorId ?? { $ne: null };
+    if (query.search) {
+      const rx = { $regex: escapeRegex(String(query.search).slice(0, 100)), $options: 'i' };
+      filter.$or = [{ action: rx }, { description: rx }, { actorName: rx }];
+    }
+    if (query.from || query.to) {
+      const range: Record<string, Date> = {};
+      const from = query.from ? new Date(query.from) : null;
+      const to = query.to ? new Date(query.to) : null;
+      if (from && !Number.isNaN(from.getTime())) range.$gte = from;
+      if (to && !Number.isNaN(to.getTime())) {
+        // A bare date ("2026-11-20") means the whole day; a full timestamp is taken as given.
+        if (/^\d{4}-\d{2}-\d{2}$/.test(String(query.to))) to.setUTCHours(23, 59, 59, 999);
+        range.$lte = to;
+      }
+      if (Object.keys(range).length) filter.createdAt = range;
+    }
+    return filter;
+  }
+
   async findAll(sellerId: string, storeId: string, query: any) {
     await this.verifyStoreOwnership(storeId, sellerId);
 
-    const page = parseInt(query.page) || 1;
-    const limit = parseInt(query.limit) || 20;
+    const page = Math.max(1, parseInt(query.page) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(query.limit) || 20));
     const skip = (page - 1) * limit;
-
-    const filter: any = { storeId };
-    if (query.category) filter.category = query.category;
-    if (query.actorId) filter.actorId = query.actorId;
-    if (query.action) filter.action = query.action;
-    if (query.search) {
-      filter.$or = [
-        { action: { $regex: query.search, $options: 'i' } },
-        { description: { $regex: query.search, $options: 'i' } },
-        { actorName: { $regex: query.search, $options: 'i' } },
-      ];
-    }
-    if (query.from || query.to) {
-      filter.createdAt = {};
-      if (query.from) filter.createdAt.$gte = new Date(query.from);
-      if (query.to) {
-        const t = new Date(query.to);
-        t.setHours(23, 59, 59, 999);
-        filter.createdAt.$lte = t;
-      }
-    }
+    const filter = this.buildFilter(query, storeId);
 
     const { activityLogModel } = this.databaseService.repositories;
-    const total = await activityLogModel.countDocuments(filter);
-    const logs = await activityLogModel
-      .find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean();
+    const [total, logs] = await Promise.all([
+      activityLogModel.countDocuments(filter),
+      activityLogModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+    ]);
 
     return {
       success: true,
       data: {
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-        logs: this.enrich(logs),
+        logs: await this.enrich(logs as any[]),
       },
     };
   }
@@ -173,7 +253,7 @@ export class ActivityLogService {
         lastLogin: lastLogin
           ? {
               at: (lastLogin as any).createdAt,
-              actorName: (lastLogin as any).actorName,
+              actorName: (await this.enrich([lastLogin as any]))[0].actorName,
               ip: (lastLogin as any).ip,
               location: resolveLocationFromIp((lastLogin as any).ip),
               device: describeUserAgent((lastLogin as any).userAgent),
@@ -192,41 +272,13 @@ export class ActivityLogService {
   // that audit trail platform-wide, rather than only per-store as a seller.
   // ═══════════════════════════════════════════════════════════════════════
 
-  private buildAdminFilter(query: any): Record<string, any> {
-    const filter: Record<string, any> = {};
-    if (query.storeId) filter.storeId = query.storeId;
-    if (query.category) filter.category = query.category;
-    if (query.actorId) filter.actorId = query.actorId;
-    if (query.actorRole) filter.actorRole = query.actorRole;
-    if (query.action) filter.action = query.action;
-    if (query.targetType) filter.targetType = query.targetType;
-    if (query.isSecurityAlert !== undefined) filter.isSecurityAlert = query.isSecurityAlert === 'true' || query.isSecurityAlert === true;
-    if (query.search) {
-      filter.$or = [
-        { action: { $regex: query.search, $options: 'i' } },
-        { description: { $regex: query.search, $options: 'i' } },
-        { actorName: { $regex: query.search, $options: 'i' } },
-      ];
-    }
-    if (query.from || query.to) {
-      filter.createdAt = {};
-      if (query.from) filter.createdAt.$gte = new Date(query.from);
-      if (query.to) {
-        const t = new Date(query.to);
-        t.setHours(23, 59, 59, 999);
-        filter.createdAt.$lte = t;
-      }
-    }
-    return filter;
-  }
-
   async adminFindAll(query: any) {
-    const page = parseInt(query.page) || 1;
-    const limit = Math.min(200, parseInt(query.limit) || 50);
+    const page = Math.max(1, parseInt(query.page) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(query.limit) || 50));
     const skip = (page - 1) * limit;
 
     const { activityLogModel } = this.databaseService.repositories;
-    const filter = this.buildAdminFilter(query);
+    const filter = this.buildFilter(query);
 
     const [total, logs] = await Promise.all([
       activityLogModel.countDocuments(filter),
@@ -237,7 +289,7 @@ export class ActivityLogService {
       success: true,
       data: {
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
-        logs: this.enrich(logs),
+        logs: await this.enrich(logs as any[]),
       },
     };
   }
@@ -273,7 +325,7 @@ export class ActivityLogService {
         lastLogin: lastLogin
           ? {
               at: (lastLogin as any).createdAt,
-              actorName: (lastLogin as any).actorName,
+              actorName: (await this.enrich([lastLogin as any]))[0].actorName,
               ip: (lastLogin as any).ip,
               location: resolveLocationFromIp((lastLogin as any).ip),
               device: describeUserAgent((lastLogin as any).userAgent),
@@ -283,55 +335,58 @@ export class ActivityLogService {
     };
   }
 
-  async adminExportCsv(query: any): Promise<string> {
+  // ── CSV export ─────────────────────────────────────────────────────────
+
+  private async buildCsv(filter: Record<string, any>, opts: { withStore: boolean; timeZone?: string | null }) {
     const { activityLogModel } = this.databaseService.repositories;
-    const filter = this.buildAdminFilter(query);
-    const logs = await activityLogModel.find(filter).sort({ createdAt: -1 }).limit(5000).lean();
+    const tz = safeTimezone(opts.timeZone);
 
-    const header = ['Date', 'Store', 'Category', 'Action', 'Actor', 'Role', 'Description', 'Security Alert', 'IP'];
-    const rows = logs.map((l: any) => [
-      new Date(l.createdAt).toISOString(),
-      l.storeId,
-      l.category,
-      l.action,
-      l.actorName ?? l.actorId ?? '',
-      l.actorRole ?? '',
-      (l.description ?? '').replace(/"/g, "'"),
-      l.isSecurityAlert ? 'yes' : 'no',
+    // Read in chunks (keeps memory flat) and fetch one extra row to know whether the cap cut anything off.
+    const raw: any[] = [];
+    let lastId: any = null;
+    while (raw.length < EXPORT_MAX_ROWS + 1) {
+      const chunk: any[] = await activityLogModel
+        .find(lastId ? { ...filter, _id: { $lt: lastId } } : filter)
+        .sort({ _id: -1 })
+        .limit(Math.min(2000, EXPORT_MAX_ROWS + 1 - raw.length))
+        .lean();
+      if (!chunk.length) break;
+      raw.push(...chunk);
+      lastId = chunk[chunk.length - 1]._id;
+    }
+    const truncated = raw.length > EXPORT_MAX_ROWS;
+    const logs = (truncated ? raw.slice(0, EXPORT_MAX_ROWS) : raw).sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
+    const rows = await this.enrich(logs);
+
+    const header = [
+      `Date & time (${tz})`, ...(opts.withStore ? ['Store'] : []), 'Category', 'Event', 'Actor', 'Role', 'Description', 'Changes (before → after)',
+      'Target type', 'Target ID', 'IP', 'Location', 'Device', 'Security alert',
+    ];
+    const body = rows.map((l: any) => [
+      formatInTimezone(l.createdAt, tz),
+      ...(opts.withStore ? [l.storeId] : []),
+      categoryTitle(l.category),
+      l.title,
+      l.actorName ?? '',
+      l.actorRole ? categoryTitle(l.actorRole) : '',
+      l.description ?? '',
+      describeChanges(l.metadata?.changes),
+      l.targetType ?? '',
+      l.targetId ?? '',
       l.ip ?? '',
+      [l.location?.city, l.location?.country].filter(Boolean).join(', '),
+      l.device ?? '',
+      l.isSecurityAlert ? 'Yes' : 'No',
     ]);
-
-    const escape = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
-    return [header, ...rows].map((r) => r.map(escape).join(',')).join('\n');
+    return { csv: toCsv(header, body), count: rows.length, truncated };
   }
 
-  async exportCsv(sellerId: string, storeId: string, query: any): Promise<string> {
-    await this.verifyStoreOwnership(storeId, sellerId);
+  async adminExportCsv(query: any) {
+    return this.buildCsv(this.buildFilter(query), { withStore: true, timeZone: 'UTC' });
+  }
 
-    const { activityLogModel } = this.databaseService.repositories;
-
-    const filter: any = { storeId };
-    if (query.category) filter.category = query.category;
-    if (query.from || query.to) {
-      filter.createdAt = {};
-      if (query.from) filter.createdAt.$gte = new Date(query.from);
-      if (query.to) filter.createdAt.$lte = new Date(query.to);
-    }
-
-    const logs = await activityLogModel.find(filter).sort({ createdAt: -1 }).limit(5000).lean();
-
-    const header = ['Date', 'Category', 'Action', 'Actor', 'Role', 'Description', 'IP'];
-    const rows = logs.map((l: any) => [
-      new Date(l.createdAt).toISOString(),
-      l.category,
-      l.action,
-      l.actorName ?? l.actorId ?? '',
-      l.actorRole ?? '',
-      (l.description ?? '').replace(/"/g, "'"),
-      l.ip ?? '',
-    ]);
-
-    const escape = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
-    return [header, ...rows].map((r) => r.map(escape).join(',')).join('\n');
+  async exportCsv(sellerId: string, storeId: string, query: any) {
+    const store: any = await this.verifyStoreOwnership(storeId, sellerId);
+    return this.buildCsv(this.buildFilter(query, storeId), { withStore: false, timeZone: store.timezone });
   }
 }

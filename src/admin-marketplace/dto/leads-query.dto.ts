@@ -1,7 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
-import { VERIFICATION_STATUSES } from '../../store/schemas/store.schema';
+import { VERIFICATION_STATUSES, SellerType, ProductType } from '../../store/schemas/store.schema';
 
 export class LeadsQueryDto {
   @ApiProperty({ required: false })
@@ -13,6 +13,16 @@ export class LeadsQueryDto {
   @IsOptional()
   @IsIn([...VERIFICATION_STATUSES, 'all'])
   verificationStatus?: string;
+
+  @ApiProperty({ required: false, enum: Object.values(SellerType), description: 'Only stores whose seller chose this type in onboarding / Settings.' })
+  @IsOptional()
+  @IsIn(Object.values(SellerType))
+  sellerType?: string;
+
+  @ApiProperty({ required: false, enum: Object.values(ProductType), description: 'Only stores that sell this category (productTypes contains it).' })
+  @IsOptional()
+  @IsIn(Object.values(ProductType))
+  productType?: string;
 
   @ApiProperty({ required: false, default: 1 })
   @IsOptional()

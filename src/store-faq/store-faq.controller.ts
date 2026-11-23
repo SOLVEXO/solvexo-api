@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -22,6 +23,7 @@ import { STORE_FAQ_IMPORT_COLUMNS } from './store-faq-bulk-import';
 @Roles('seller', 'staff')
 @RequirePermission('onlinestore.content.manage')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+@AuditStoreWrites('faq', 'marketing')
 @Controller('api/store-faq')
 export class StoreFaqController {
   constructor(private readonly storeFaqService: StoreFaqService) {}

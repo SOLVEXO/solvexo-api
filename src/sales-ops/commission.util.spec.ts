@@ -184,3 +184,35 @@ describe('commission rules', () => {
     });
   });
 });
+
+describe('programme commission rules (phase 4)', () => {
+  const base = (over: Partial<Parameters<typeof plannedRows>[0]> = {}) => plannedRows({
+    plan: plan({ bountyPKR: null }), invoices: [inv('1', '2026-03-01'), inv('2', '2026-04-01'), inv('3', '2026-05-01')], existing: [],
+    effectiveFrom: new Date('2026-01-01'), payingNow: 1, rateFor: () => 280, existingRate: () => null, ...over,
+  });
+
+  it('takes the card fee out of the base, only for card payments made after the rate was set (B4.1, B4.10)', () => {
+    const fee = { percent: 3, fixedUSD: 0.3, from: new Date('2026-04-15') };
+    const rows = base({ plan: plan({ bountyPKR: null, cardFee: fee }), invoices: [inv('1', '2026-03-01', { paymentMethodType: 'card' }), inv('2', '2026-05-01', { paymentMethodType: 'card' }), inv('3', '2026-05-02', { paymentMethodType: 'bank_transfer' })] });
+    expect(rows.find((r) => r.invoiceId === '1')!.basisUSD).toBe(10); // before the rate was set: untouched
+    expect(rows.find((r) => r.invoiceId === '2')!.basisUSD).toBe(9.35); // 10 − (11.80 × 3% + 0.30)
+    expect(rows.find((r) => r.invoiceId === '3')!.basisUSD).toBe(10); // not a card payment
+  });
+
+  it('stops commission on payments after the support notice ends (B4.4)', () => {
+    const rows = base({ commissionEndsAt: new Date('2026-04-15') });
+    expect(rows.map((r) => r.invoiceId)).toEqual(['1', '2']);
+  });
+
+  it('pays the activation bonus once, 2 full months after the first payment, only if the seller still pays', () => {
+    const now = new Date('2026-05-10');
+    const paying = base({ activation: { amountPKR: 1500, sellerPayingNow: true, now } });
+    const bonus = paying.find((r) => r.type === 'activation')!;
+    expect(bonus).toMatchObject({ key: 'activation:s1', amountPKR: 1500 });
+    expect(bonus.earnedAt.toISOString().slice(0, 10)).toBe('2026-05-01');
+    expect(base({ activation: { amountPKR: 1500, sellerPayingNow: false, now } }).some((r) => r.type === 'activation')).toBe(false);
+    expect(base({ activation: { amountPKR: 1500, sellerPayingNow: true, now: new Date('2026-04-20') } }).some((r) => r.type === 'activation')).toBe(false);
+    const again = base({ activation: { amountPKR: 1500, sellerPayingNow: true, now }, existing: [{ key: 'activation:s1', type: 'activation', invoiceId: '1', amountPKR: 1500 }] });
+    expect(again.some((r) => r.type === 'activation')).toBe(false);
+  });
+});

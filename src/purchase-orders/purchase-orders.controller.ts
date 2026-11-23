@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import {
   Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res,
   UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe,
@@ -74,6 +75,7 @@ export class PurchaseOrdersController {
     return buildTemplatePayload('suppliers-import-template.csv', SUPPLIER_IMPORT_COLUMNS);
   }
 
+  @AuditStoreWrites('supplier', 'inventory')
   @Post(':storeId/suppliers/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async importSuppliers(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {

@@ -65,8 +65,8 @@ export class AdminMarketplaceController {
 
   @RequirePermission('marketplace.manage')
   @Get('leads/:id')
-  getLeadDetail(@Param('id') id: string) {
-    return this.adminMarketplaceService.getLeadDetail(id);
+  getLeadDetail(@Param('id') id: string, @Req() req: any) {
+    return this.adminMarketplaceService.getLeadDetail(id, this.meta(req));
   }
 
   @RequirePermission('marketplace.manage')

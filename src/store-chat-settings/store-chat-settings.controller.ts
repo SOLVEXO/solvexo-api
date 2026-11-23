@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Get, Param, Patch, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -16,6 +17,7 @@ import { UpdateStoreChatSettingsDto } from './dto/update-store-chat-settings.dto
 @Roles('seller', 'staff')
 @RequirePermission('settings.general.manage')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+@AuditStoreWrites('chat_settings', 'settings')
 @Controller('api/store-chat-settings')
 export class StoreChatSettingsController {
   constructor(private readonly service: StoreChatSettingsService) {}

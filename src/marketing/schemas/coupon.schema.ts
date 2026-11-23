@@ -55,6 +55,14 @@ export class Coupon {
   @Prop({ type: Number, default: 0 })
   usageCount: number;
 
+  // Shopify "Minimum purchase requirements: minimum quantity of items" — counted on the items this coupon can discount.
+  @Prop({ type: Number, default: null })
+  minQuantity: number | null;
+
+  // Shopify "Limit to one use per customer".
+  @Prop({ type: Boolean, default: false })
+  oncePerCustomer: boolean;
+
   // Was previously 100%-missing — a coupon was either active from the
   // moment it was created or not at all, with no way to schedule a future
   // sale's code ahead of time (e.g. creating a Black Friday code in

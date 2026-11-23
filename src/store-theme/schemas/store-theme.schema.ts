@@ -59,6 +59,10 @@ export class StorefrontColors {
   @Prop({ type: String, enum: ['pill', 'square'], default: 'pill' }) badgeStyle: string;
   @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) cardRating: string;
   @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) cardTag: string;
+  @Prop({ type: String, enum: ['vendor', 'category', 'subcategory', 'subcategory_category', 'category_subcategory'], default: 'vendor' }) cardInfoLine: string;
+  @Prop({ type: String, enum: ['top-left', 'top-right', 'bottom-left', 'bottom-right'], default: 'top-left' }) cardBadgePosition: string;
+  @Prop({ type: String, enum: ['off', '7', '14', '30'], default: 'off' }) autoBadgeNew: string;
+  @Prop({ type: String, enum: ['off', '10', '25', '50', '100'], default: 'off' }) autoBadgeBest: string;
   @Prop({ type: String, enum: ['show', 'hide'], default: 'show' }) cardButton: string;
   @Prop({ type: String, enum: ['small', 'medium', 'large', 'xlarge'], default: 'medium' }) headingScale: string;
   @Prop({ type: String, enum: ['small', 'medium', 'large'], default: 'medium' }) bodyScale: string;
@@ -256,6 +260,9 @@ export class StorefrontHeader {
   @Prop({ type: String, default: null }) topBarEmail: string | null;
   @Prop({ type: String, default: null }) topBarBg: string | null;
   @Prop({ type: String, default: null }) topBarTextColor: string | null;
+  // Seller-built strip items (text / links / icons / popups with a designed QR) — validated by sanitizeChromeItems.
+  @Prop({ type: [Object], default: [] }) topBarItems: Record<string, unknown>[];
+  @Prop({ type: String, enum: ['sm', 'md', 'lg'], default: 'md' }) topBarSize: 'sm' | 'md' | 'lg';
   @Prop({ type: String, default: null }) preset: string | null;
 }
 export const StorefrontHeaderSchema = SchemaFactory.createForClass(StorefrontHeader);
@@ -317,6 +324,9 @@ export class StorefrontFooter {
   @Prop({ type: Boolean, default: true }) showPolicyLinks: boolean;
   @Prop({ type: Boolean, default: false }) showCurrency: boolean;
   @Prop({ type: Boolean, default: false }) showBackToTop: boolean;
+  @Prop({ type: Boolean, default: true }) showPoweredBy: boolean;
+  @Prop({ type: String, default: null }) poweredByText: string | null;  // own wording; null = 'Powered by Solvexo'
+  @Prop({ type: String, default: null }) poweredByUrl: string | null;   // own https link; null = the Solvexo site
   // Footer shape: 'panel' = the theme's rounded panel inside the page width; 'full' = edge to edge, no rounded corners. null = theme default.
   @Prop({ type: String, enum: ['panel', 'full'], default: null }) footerShape: 'panel' | 'full' | null;
   // A big logo/wordmark across the very bottom of the footer. 'store' = the store logo, 'custom' = wordmarkUrl.

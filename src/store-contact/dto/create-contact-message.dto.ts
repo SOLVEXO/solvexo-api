@@ -21,12 +21,19 @@ export class CreateContactMessageDto {
   sectionId?: string;
 
   /** One answer per field: `{ fieldId, value }` (value is text, or a list of choices for a multiple-choice field). */
-  @ApiProperty({ required: false }) @IsOptional() @IsArray() @ArrayMaxSize(31)
+  @ApiProperty({ required: false }) @IsOptional() @IsArray() @ArrayMaxSize(100)
   answers?: { fieldId: string; value: unknown }[];
 
   /** The Cloudflare Turnstile answer, when the form is protected by a CAPTCHA. */
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(2048)
   captchaToken?: string;
+
+  /** The visitor's analytics session (links the message to where the visitor came from). */
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(80)
+  analyticsSessionId?: string;
+
+  @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(500)
+  pageUrl?: string;
 
   /** Honeypot — real visitors never see or fill this; bots do. */
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(200)

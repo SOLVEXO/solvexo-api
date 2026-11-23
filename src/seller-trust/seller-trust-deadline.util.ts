@@ -7,6 +7,11 @@
 export interface SellerTrustSettings {
   enforcementStartedAt: Date | null;
   graceDays: number;
+  /** PK: every seller must give an STRN (admin switch). Optional so older callers/specs need not set it. */
+  requireStrnForPk?: boolean;
+  /** Years a closed store's verification files are kept (default 6) and days an unsubmitted / rejected draft's files are kept (default 90). */
+  kycRetentionYears?: number;
+  kycDraftRetentionDays?: number;
 }
 
 export const DEFAULT_GRACE_DAYS = 30;

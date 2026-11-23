@@ -165,7 +165,7 @@ export class PlatformTaxService {
     return { ...pickPlatformTaxRate(settings.rates as PlatformTaxRate[], country, at), country };
   }
 
-  /** Tax on a net amount charged to this store's seller (add-ons, fees...), or none. Never throws. */
+  /** Tax on a net amount charged to this store's seller (fees...), or none. Never throws. */
   async quoteForStore(storeId: string, netUSD: number): Promise<{ netUSD: number; taxUSD: number; totalUSD: number; ratePercent: number; label: string | null; country: string | null }> {
     try {
       const picked = await this.resolveForStore(storeId);

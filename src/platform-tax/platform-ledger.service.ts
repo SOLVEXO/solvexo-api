@@ -5,13 +5,12 @@ import { Model } from 'mongoose';
 import { DatabaseService } from '../database/databaseservice';
 import { resolveStoreCountry } from '../integrations/payment-availability.util';
 import { PlatformPlanInvoice, PlatformPlanInvoiceDocument } from '../platform-plans/schemas/platform-plan-invoice.schema';
-import { PlatformAddonPurchase } from '../platform-plans/schemas/platform-addon-purchase.schema';
 import { TransactionFeeBill, TransactionFeeBillDocument } from '../platform-plans/schemas/transaction-fee-bill.schema';
 import { PlatformTaxRecord, PlatformTaxRecordDocument } from './schemas/platform-tax-record.schema';
 import { PlatformInvoice, PlatformInvoiceDocument } from './schemas/platform-invoice.schema';
 import { PlatformEntityService, PLAN_SUPPLY_TYPE } from './platform-entity.service';
 import { determine } from './platform-tax-determination.service';
-import { addonChargeFacts, feeBillFacts, LedgerFacts, planInvoiceFacts, taxRecordFacts } from './platform-ledger.util';
+import { feeBillFacts, LedgerFacts, planInvoiceFacts, taxRecordFacts } from './platform-ledger.util';
 import type { LedgerSourceType } from '../tax-core/legal-invoice.types';
 
 export interface LedgerSyncStats {
@@ -33,7 +32,7 @@ const MAX_BATCHES_PER_SOURCE = 200; // 100k documents per source per run; the ne
 export const isPlatformLedgerEnabled = () => String(process.env.PLATFORM_LEDGER_ENABLED ?? '').trim().toLowerCase() === 'true';
 
 /**
- * READ-ONLY SHADOW LEDGER. It only READS billing data (plan invoices, add-on purchases, fee bills, one-off tax records, stores, the tax
+ * READ-ONLY SHADOW LEDGER. It only READS billing data (plan invoices, fee bills, one-off tax records, stores, the tax
  * settings) and WRITES only `platform_invoices`. It does not touch billing, Stripe, subscriptions or any tax authority, and it has no
  * dependency on the FBR module (so it cannot file anything).
  */
@@ -46,7 +45,6 @@ export class PlatformLedgerService {
     private readonly entities: PlatformEntityService,
     @InjectModel(PlatformInvoice.name) private readonly ledger: Model<PlatformInvoiceDocument>,
     @InjectModel(PlatformPlanInvoice.name) private readonly planInvoices: Model<PlatformPlanInvoiceDocument>,
-    @InjectModel(PlatformAddonPurchase.name) private readonly addons: Model<any>,
     @InjectModel(TransactionFeeBill.name) private readonly feeBills: Model<TransactionFeeBillDocument>,
     @InjectModel(PlatformTaxRecord.name) private readonly taxRecords: Model<PlatformTaxRecordDocument>,
   ) {}
@@ -79,7 +77,6 @@ export class PlatformLedgerService {
     };
 
     await this.eachBatch(this.planInvoices, { isDelete: false, paidAt: { $ne: null } }, async (docs) => flush(docs.map(planInvoiceFacts).filter((f): f is LedgerFacts => !!f)));
-    await this.eachBatch(this.addons, { 'charges.0': { $exists: true } }, async (docs) => flush(docs.flatMap(addonChargeFacts)));
     await this.eachBatch(this.feeBills, { isDelete: false, status: 'paid' }, async (docs) => flush(docs.map(feeBillFacts).filter((f): f is LedgerFacts => !!f)));
     await this.eachBatch(this.taxRecords, {}, async (docs) => flush(docs.map(taxRecordFacts).filter((f): f is LedgerFacts => !!f)));
 

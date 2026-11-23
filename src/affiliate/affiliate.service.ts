@@ -8,6 +8,10 @@ import { storePublicUrl } from '@/newsletter/marketing-email.util';
 import { CreateAffiliateDto } from './dto/create-affiliate.dto';
 import { UpdateAffiliateDto } from './dto/update-affiliate.dto';
 import { UpdateAffiliateProgramDto } from './dto/update-affiliate-program.dto';
+import { pickFields } from '@/common/pick-fields.util';
+
+const AFFILIATE_PROGRAM_FIELDS = ['enabled', 'commissionType', 'commissionValue', 'cookieWindowDays'] as const;
+const AFFILIATE_FIELDS = ['name', 'isActive', 'commissionType', 'commissionValue'] as const;
 
 const PLATFORM_ORIGIN = 'https://solvexo.store';
 const DEFAULT_PROGRAM = { enabled: false, commissionType: 'percentage' as const, commissionValue: 10, cookieWindowDays: 30 };
@@ -72,7 +76,7 @@ export class AffiliateService {
     await this.verifyStoreOwnership(storeId, sellerId);
     const program = await this.r.affiliateProgramModel.findOneAndUpdate(
       { storeId },
-      { $set: { storeId, ...dto }, $setOnInsert: DEFAULT_PROGRAM },
+      { $set: { ...pickFields(dto, AFFILIATE_PROGRAM_FIELDS), storeId }, $setOnInsert: DEFAULT_PROGRAM },
       { new: true, upsert: true },
     );
     return { success: true, message: 'Affiliate program updated', data: program };
@@ -132,7 +136,7 @@ export class AffiliateService {
 
   async updateAffiliate(sellerId: string, storeId: string, affiliateId: string, dto: UpdateAffiliateDto) {
     const affiliate = await this.getOwnedAffiliate(storeId, sellerId, affiliateId);
-    Object.assign(affiliate, dto);
+    Object.assign(affiliate, pickFields(dto, AFFILIATE_FIELDS));
     await affiliate.save();
     return { success: true, message: 'Affiliate updated', data: this.toApiShape(affiliate) };
   }

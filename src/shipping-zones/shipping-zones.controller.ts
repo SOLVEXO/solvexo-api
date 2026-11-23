@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -39,6 +40,7 @@ export class StoreShippingZonesController {
     return buildTemplatePayload('shipping-zones-import-template.csv', SHIPPING_ZONE_IMPORT_COLUMNS);
   }
 
+  @AuditStoreWrites('shipping_zone', 'settings')
   @Post('import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   importCsv(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {

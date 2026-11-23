@@ -30,10 +30,10 @@ describe('SellerPlatformSubscriptionsService — lockOverduePastDue', () => {
   const NOW = new Date('2026-11-11T00:00:00Z');
   const base = { sellerId: 's1', storeId: 'st1', platformPlanId: 'p1', status: 'past_due', failedPaymentAttempts: 1 };
 
-  it('queries only past_due, live, non-legacy-free subscriptions', async () => {
+  it('queries ALL past_due, live subscriptions (legacy ones are downgraded, not skipped)', async () => {
     const { service, subModel } = make([]);
     await service.lockOverduePastDue(NOW);
-    expect(subModel.find).toHaveBeenCalledWith({ status: 'past_due', isDelete: false, legacyFreeEligible: { $ne: true } });
+    expect(subModel.find).toHaveBeenCalledWith({ status: 'past_due', isDelete: false });
   });
 
   it('locks a store unpaid longer than the limit, sets the grace countdown and notifies', async () => {

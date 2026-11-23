@@ -1,9 +1,11 @@
 /* eslint-disable prettier/prettier */
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
 import { SeoResolutionService } from './seo-resolution.service';
-import { UpdateSeoMetaDto } from '../dto/update-seo-meta.dto';
+import { UpdateStoreSeoDto } from '../dto/update-store-seo.dto';
+import { parseGoogleSiteVerification } from './google-site-verification.util';
 import { UpdateStoreChecklistItemDto } from '../dto/update-store-checklist.dto';
 import { assertSafeSeoDestination } from './seo-url-safety.util';
 import { computeSeoCompleteness } from './seo-content.service';
@@ -57,14 +59,17 @@ export class StoreSeoService {
     return (store as any).seo ?? {};
   }
 
-  async updateStoreSeo(storeId: string, dto: UpdateSeoMetaDto, actor: { id: string; name?: string; role?: string }) {
+  async updateStoreSeo(storeId: string, dto: UpdateStoreSeoDto, actor: { id: string; name?: string; role?: string }) {
     if (dto.canonicalUrlOverride) assertSafeSeoDestination(dto.canonicalUrlOverride);
 
     const store = await this.db.repositories.storeModel.findById(storeId);
     if (!store) throw new NotFoundException('Store not found.');
 
     const current = (store as any).seo?.toObject?.() ?? (store as any).seo ?? {};
-    (store as any).seo = { ...current, ...dto, aiGenerated: false, updatedAt: new Date() };
+    const patch: Record<string, unknown> = { ...dto };
+    // Only touched when the request carries it, so saving other SEO fields never wipes a stored code.
+    if (dto.googleSiteVerification !== undefined) patch.googleSiteVerification = parseGoogleSiteVerification(dto.googleSiteVerification);
+    (store as any).seo = { ...current, ...patch, aiGenerated: false, updatedAt: new Date() };
     await store.save();
 
     await this.resolution.invalidate('store', storeId);
@@ -72,6 +77,7 @@ export class StoreSeoService {
     await this.activityLog.log({
       storeId, category: 'seo', action: 'store_seo_updated',
       description: 'Store SEO meta updated',
+      metadata: (() => { const changes = diffFields(current, patch, Object.keys(patch)); return changes.length ? { changes } : null; })(),
       actorId: actor.id, actorName: actor.name ?? null, actorRole: actor.role ?? null,
       targetId: storeId, targetType: 'store_seo',
     });

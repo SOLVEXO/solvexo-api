@@ -17,6 +17,8 @@ export { ShippingZone, ShippingZoneDocument, ShippingZoneSchema, ShippingProfile
 export { Checkout, CheckoutDocument, CheckoutSchema } from '../checkout/checkout.schema';
 export { Order, OrderDocument, OrderSchema } from '../orders/schemas/order.schema';
 export { CustomerSegment, CustomerSegmentDocument, CustomerSegmentSchema } from '../customer-segments/schemas/customer-segment.schema';
+export { MarketingCampaign, MarketingCampaignDocument, MarketingCampaignSchema } from '../marketing-campaigns/schemas/marketing-campaign.schema';
+export { SignupForm, SignupFormDocument, SignupFormSchema } from '../signup-forms/schemas/signup-form.schema';
 export { CourierBooking, CourierBookingDocument, CourierBookingSchema } from '../integrations/couriers/schemas/courier-booking.schema';
 export { OrderPaymentRecord, OrderPaymentRecordDocument, OrderPaymentRecordSchema } from '../orders/schemas/order-payment-record.schema';
 export { SavedReport, SavedReportDocument, SavedReportSchema } from '../analytics/schemas/saved-report.schema';
@@ -82,7 +84,6 @@ export { PlatformPlanInvoice, PlatformPlanInvoiceDocument, PlatformPlanInvoiceSc
 export { TransactionFeeBill, TransactionFeeBillDocument, TransactionFeeBillSchema } from '../platform-plans/schemas/transaction-fee-bill.schema';
 export { PlatformPlanPaymentAttempt, PlatformPlanPaymentAttemptDocument, PlatformPlanPaymentAttemptSchema } from '../platform-plans/schemas/platform-plan-payment-attempt.schema';
 export { AiCreditsWallet, AiCreditsWalletDocument, AiCreditsWalletSchema } from '../platform-plans/schemas/ai-credits-wallet.schema';
-export { PlatformAddonPurchase, PlatformAddonPurchaseDocument, PlatformAddonPurchaseSchema } from '../platform-plans/schemas/platform-addon-purchase.schema';
 export { PlatformTrialSettings, PlatformTrialSettingsDocument, PlatformTrialSettingsSchema } from '../platform-plans/schemas/platform-trial-settings.schema';
 export { StoreLocation, StoreLocationDocument, StoreLocationSchema } from '../pos/schemas/store-location.schema';
 export { BookableService, BookableServiceDocument, BookableServiceSchema } from '../bookings/schemas/bookable-service.schema';

@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsBoolean, IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 import { METAFIELD_OWNER_RESOURCES, METAFIELD_TYPES, type MetafieldOwnerResource, type MetafieldType } from '../schemas/metafield-definition.schema';
 
 export class CreateDefinitionDto {
@@ -31,4 +31,7 @@ export class CreateDefinitionDto {
 
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean()
   storefrontAccess?: boolean;
+
+  @ApiProperty({ required: false, type: [String] }) @IsOptional() @IsArray() @ArrayMaxSize(100) @IsString({ each: true }) @MaxLength(60, { each: true })
+  categoryIds?: string[];
 }

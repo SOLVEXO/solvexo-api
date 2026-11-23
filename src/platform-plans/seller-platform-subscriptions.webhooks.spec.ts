@@ -40,8 +40,9 @@ describe('SellerPlatformSubscriptionsService — Stripe invoice webhooks (both A
       findOne: jest.fn().mockImplementation((filter: any) =>
         Promise.resolve(filter.providerSubscriptionId === PROVIDER_SUB_ID ? sub : null)),
     };
-    invoiceModel = { exists: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue([{}]) };
-    const planModel = { findById: jest.fn().mockReturnValue({ lean: () => Promise.resolve({ _id: 'plan-1' }) }) };
+    invoiceModel = { exists: jest.fn().mockResolvedValue(null), create: jest.fn().mockResolvedValue([{}]), deleteOne: jest.fn().mockResolvedValue({}) };
+    const planQuery = (doc: any) => { const q: any = { select: () => q, lean: () => Promise.resolve(doc) }; return q; };
+    const planModel = { findById: jest.fn().mockImplementation((id: string) => planQuery({ _id: id, name: id === 'plan-2' ? 'Grow' : 'Basic' })) };
 
     const db = { repositories: { sellerPlatformSubscriptionModel: subModel, platformPlanInvoiceModel: invoiceModel, platformPlanModel: planModel } } as any;
     service = new SellerPlatformSubscriptionsService(
@@ -112,7 +113,8 @@ describe('SellerPlatformSubscriptionsService — Stripe invoice webhooks (both A
 
       await service.handleInvoicePaymentFailed(make());
 
-      expect(dunning).toHaveBeenCalledWith(sub, 29);
+      // The third argument is Stripe's own next retry time (none in these fixtures).
+      expect(dunning).toHaveBeenCalledWith(sub, 29, null);
       expect(sub.lastFailedStripeInvoiceId).toBe('in_1');
       expect(sub.save).toHaveBeenCalled();
     });
@@ -124,6 +126,74 @@ describe('SellerPlatformSubscriptionsService — Stripe invoice webhooks (both A
       await service.handleInvoicePaymentFailed(make());
 
       expect(dunning).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a paid first purchase whose webhook did not apply it', () => {
+    const GROW = 'plan-2';
+    let gateway: any;
+    let created: string[];
+
+    beforeEach(() => {
+      sub.status = 'trial_ended';
+      sub.providerSubscriptionId = PROVIDER_SUB_ID;
+      sub.pendingPlanChange = { kind: 'first_purchase', planId: GROW, interval: 'monthly', amountUSD: 28.66, stripeSubscriptionId: PROVIDER_SUB_ID, createdAt: new Date(Date.now() - 5 * 60_000) };
+      created = [];
+      invoiceModel.exists.mockImplementation((f: any) => Promise.resolve(created.includes(f.stripeInvoiceId) ? { _id: 'x' } : null));
+      invoiceModel.create.mockImplementation(async ([doc]: any[]) => { await new Promise((r) => setTimeout(r, 5)); created.push(doc.stripeInvoiceId); return [doc]; });
+      subModel.findOne = jest.fn().mockImplementation((f: any) => Promise.resolve(f.providerSubscriptionId === PROVIDER_SUB_ID || f.storeId === 'store-1' ? sub : null));
+      subModel.findById = jest.fn().mockImplementation(() => { const p: any = Promise.resolve(sub); p.lean = () => Promise.resolve(sub); return p; });
+      gateway = { getLatestSubscriptionInvoice: jest.fn().mockResolvedValue(legacyInvoice({ status: 'paid', billing_reason: 'subscription_create', amount_paid: 100 })) };
+      (service as any).gateway = gateway;
+      jest.spyOn(service, 'verifyStoreOwnership').mockResolvedValue(undefined as any);
+    });
+
+    it('confirming checks Stripe and applies the paid plan at once, without waiting for the webhook', async () => {
+      const r: any = await service.confirmPendingPlanChange('seller-1', 'store-1');
+      expect(gateway.getLatestSubscriptionInvoice).toHaveBeenCalledWith(PROVIDER_SUB_ID, 'local-sub-1');
+      expect(r.data).toMatchObject({ pending: false, applied: true });
+      expect(sub.platformPlanId).toBe(GROW);
+      expect(sub.pendingPlanChange).toBeNull();
+      expect(sub.status).toBe('active');
+      expect(invoiceModel.create).toHaveBeenCalledTimes(1);
+      expect(invoiceModel.create.mock.calls[0][0][0]).toMatchObject({ type: 'initial', status: 'paid', stripeInvoiceId: 'in_1', platformPlanId: GROW });
+    });
+
+    it('applies nothing while Stripe has not been paid', async () => {
+      gateway.getLatestSubscriptionInvoice.mockResolvedValue(legacyInvoice({ status: 'open', amount_paid: 0 }));
+      const r: any = await service.confirmPendingPlanChange('seller-1', 'store-1');
+      expect(r.data).toMatchObject({ pending: true, applied: false });
+      expect(sub.platformPlanId).toBe('plan-1');
+      expect(invoiceModel.create).not.toHaveBeenCalled();
+    });
+
+    it('records the payment once when the webhook and the direct check arrive together', async () => {
+      const inv = legacyInvoice({ status: 'paid', billing_reason: 'subscription_create', amount_paid: 100 });
+      await Promise.all([service.handleInvoicePaymentSucceeded(inv), service.confirmPendingPlanChange('seller-1', 'store-1')]);
+      expect(invoiceModel.create).toHaveBeenCalledTimes(1);
+      expect(sub.platformPlanId).toBe(GROW);
+    });
+
+    it('the safety-net job applies paid purchases still pending after two minutes', async () => {
+      subModel.find = jest.fn().mockReturnValue({ limit: () => Promise.resolve([sub]) });
+      const r = await service.reconcilePendingPurchases();
+      expect(subModel.find).toHaveBeenCalledWith(expect.objectContaining({ 'pendingPlanChange.kind': { $in: ['first_purchase', 'trial_conversion'] } }));
+      expect(r).toEqual({ checked: 1, applied: 1 });
+      expect(sub.platformPlanId).toBe(GROW);
+    });
+
+    it('never treats a trial commitment as paid before the trial-end charge', async () => {
+      sub.pendingPlanChange = { ...sub.pendingPlanChange, kind: 'trial_conversion' };
+      gateway.getLatestSubscriptionInvoice.mockResolvedValue(legacyInvoice({ status: 'paid', amount_paid: 0 }));
+      const r: any = await service.confirmPendingPlanChange('seller-1', 'store-1');
+      expect(r.data.applied).toBe(false);
+      expect(invoiceModel.create).not.toHaveBeenCalled();
+    });
+
+    it('ignores a Stripe subscription that is not ours (metadata mismatch returns no invoice)', async () => {
+      gateway.getLatestSubscriptionInvoice.mockResolvedValue(null);
+      const r: any = await service.confirmPendingPlanChange('seller-1', 'store-1');
+      expect(r.data.applied).toBe(false);
     });
   });
 });

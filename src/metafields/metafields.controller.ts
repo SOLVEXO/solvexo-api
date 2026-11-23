@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -11,6 +12,7 @@ import { MetafieldsService } from './metafields.service';
 import { CreateDefinitionDto } from './dto/create-definition.dto';
 import { UpdateDefinitionDto } from './dto/update-definition.dto';
 import { SetValuesDto } from './dto/set-values.dto';
+import { ReorderDefinitionsDto } from './dto/reorder-definitions.dto';
 import type { MetafieldOwnerResource } from './schemas/metafield-definition.schema';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -26,6 +28,7 @@ import { METAFIELD_DEFINITION_IMPORT_COLUMNS } from './metafield-definitions-bul
 @Roles('seller', 'staff')
 @RequirePermission('content.metaobjects.manage')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+@AuditStoreWrites('metafield', 'settings')
 @Controller('api/metafields')
 export class MetafieldsController {
   constructor(private readonly metafieldsService: MetafieldsService) {}
@@ -40,6 +43,7 @@ export class MetafieldsController {
     return buildTemplatePayload('metafield-definitions-import-template.csv', METAFIELD_DEFINITION_IMPORT_COLUMNS);
   }
 
+  @AuditStoreWrites('metafield_definition', 'settings')
   @Post(':storeId/definitions/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   importDefinitions(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
@@ -51,9 +55,19 @@ export class MetafieldsController {
     return this.metafieldsService.createDefinition(storeId, actingSellerId(req.user), dto);
   }
 
+  @Put(':storeId/definitions/reorder')
+  reorderDefinitions(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: ReorderDefinitionsDto) {
+    return this.metafieldsService.reorderDefinitions(storeId, actingSellerId(req.user), dto);
+  }
+
   @Patch(':storeId/definitions/:definitionId')
   updateDefinition(@Req() req: any, @Param('storeId') storeId: string, @Param('definitionId') definitionId: string, @Body() dto: UpdateDefinitionDto) {
     return this.metafieldsService.updateDefinition(storeId, actingSellerId(req.user), definitionId, dto);
+  }
+
+  @Get(':storeId/definitions/:definitionId/usage')
+  getDefinitionUsage(@Req() req: any, @Param('storeId') storeId: string, @Param('definitionId') definitionId: string) {
+    return this.metafieldsService.getDefinitionUsage(storeId, actingSellerId(req.user), definitionId);
   }
 
   @Delete(':storeId/definitions/:definitionId')

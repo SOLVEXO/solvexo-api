@@ -172,6 +172,14 @@ export const EmailConfigSchema = SchemaFactory.createForClass(EmailConfig);
 export class SellerTrustConfig {
   @Prop({ type: Date, default: null }) enforcementStartedAt: Date | null;
   @Prop({ type: Number, default: 30 }) graceDays: number;
+  // Pakistan: true = every PK seller must give an STRN. Off = STRN is only required from sellers who say they are
+  // sales-tax registered. A switch (not code) because the FBR rule for online sellers is still being confirmed.
+  @Prop({ type: Boolean, default: false }) requireStrnForPk: boolean;
+  // Retention of seller verification documents (see KycRetentionService): files of a CLOSED store that went through
+  // verification are kept this many years after it closed (tax / audit records), then deleted. Confirm the period with a lawyer.
+  @Prop({ type: Number, default: 6 }) kycRetentionYears: number;
+  // Documents that never reached review (or were rejected / sent back and not fixed) are deleted after this many days.
+  @Prop({ type: Number, default: 90 }) kycDraftRetentionDays: number;
 }
 export const SellerTrustConfigSchema = SchemaFactory.createForClass(SellerTrustConfig);
 

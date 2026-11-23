@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Controller, Get, Patch, Param, Body, Req, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { TrackingPixelsService } from './tracking-pixels.service';
@@ -11,6 +12,7 @@ import { actingSellerId } from '../common/acting-seller-id.util';
 import { UpdateTrackingPixelSettingsDto } from './dto/update-tracking-pixel-settings.dto';
 
 @ApiTags('Tracking Pixels')
+@AuditStoreWrites('tracking_pixels', 'integrations')
 @Controller('api/tracking-pixels')
 export class TrackingPixelsController {
   constructor(private readonly trackingPixelsService: TrackingPixelsService) {}

@@ -404,7 +404,7 @@ export class AdminAnalyticsService {
       // separately, never blended into these platform-reporting-currency
       // totals.
       const usdRates = await this.getUsdRates();
-      // What sellers actually pay Solvexo (plans + add-ons + collected 3rd-party transaction fees) — the SAME figure as
+      // What sellers actually pay Solvexo (plans + collected 3rd-party transaction fees) — the SAME figure as
       // Admin Finance → platform-revenue, so the two screens can never disagree. Platform-wide only (not per store/seller).
       const [revenueNow, revenuePrev] = scope ? [null, null] : await Promise.all([
         this.adminFinanceService.getPlatformRevenue({ range: "custom", from: from.toISOString(), to: to.toISOString() }),
@@ -420,7 +420,6 @@ export class AdminAnalyticsService {
         paymentProcessingFees: earningsUSD.processingFees,
         ...(revenueNow ? {
           planRevenue: revenueNow.data.planRevenue.netUSD,
-          addonRevenue: revenueNow.data.addons.grossUSD,
           transactionFeeRevenue: revenueNow.data.transactionFees.collectedUSD,
         } : {}),
         totalPlatformRevenue: revenueNow ? revenueNow.data.totalRevenueUSD : earningsUSD.commission,
@@ -437,7 +436,7 @@ export class AdminAnalyticsService {
           oneTimeOrderRevenue: previousOrderTotals.netRevenue,
           platformCommissionRevenue: previousEarningsUSD.commission,
           paymentProcessingFees: previousEarningsUSD.processingFees,
-          ...(revenuePrev ? { planRevenue: revenuePrev.data.planRevenue.netUSD, addonRevenue: revenuePrev.data.addons.grossUSD, transactionFeeRevenue: revenuePrev.data.transactionFees.collectedUSD } : {}),
+          ...(revenuePrev ? { planRevenue: revenuePrev.data.planRevenue.netUSD, transactionFeeRevenue: revenuePrev.data.transactionFees.collectedUSD } : {}),
           totalPlatformRevenue: revenuePrev ? revenuePrev.data.totalRevenueUSD : previousEarningsUSD.commission,
           totalMarketplaceRevenue: previousOrderTotals.netRevenue,
         };

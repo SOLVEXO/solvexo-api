@@ -24,11 +24,16 @@ export type TrafficSource = 'direct' | 'search' | 'social' | 'email' | 'paid' | 
  * Shopify-style traffic type of a visit from its first page: UTM medium wins (paid/email/social), then the
  * referring site's kind; no external referrer = direct. `ownHosts` are the store's own hosts (internal, not a source).
  */
-export function classifyTrafficSource(input: { referrerHost?: string | null; utmMedium?: string | null; utmSource?: string | null }): TrafficSource {
+export const CLICK_ID_TYPES = ['gclid', 'fbclid', 'ttclid', 'msclkid'] as const;
+export type ClickIdType = (typeof CLICK_ID_TYPES)[number];
+
+export function classifyTrafficSource(input: { referrerHost?: string | null; utmMedium?: string | null; utmSource?: string | null; clickIdType?: string | null }): TrafficSource {
   const medium = (input.utmMedium ?? '').toLowerCase();
   if (/^(cpc|ppc|paid|paidsocial|paid_social|display|ads?|cpm|retargeting)$/.test(medium)) return 'paid';
   if (medium === 'email' || medium === 'newsletter') return 'email';
   if (medium === 'social' || medium === 'social-media') return 'social';
+  // An ad platform's click id (Google / Meta / TikTok / Microsoft) means the visit came from a paid ad, even without UTMs.
+  if (input.clickIdType && (CLICK_ID_TYPES as readonly string[]).includes(input.clickIdType)) return 'paid';
   const host = (input.referrerHost ?? '').toLowerCase();
   if (!host) return input.utmSource ? 'referral' : 'direct';
   if (EMAIL_HOSTS.test(host)) return 'email';

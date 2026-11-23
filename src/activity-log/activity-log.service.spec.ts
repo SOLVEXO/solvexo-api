@@ -46,17 +46,20 @@ describe('ActivityLogService — admin (platform-wide) surface', () => {
       activityLogModel.find.mockReturnValue({
         sort: jest.fn().mockReturnValue({
           limit: jest.fn().mockReturnValue({
-            lean: jest.fn().mockResolvedValue([
-              { createdAt: new Date('2026-01-01'), storeId: 'store-1', category: 'finance', action: 'payout_approved', actorName: 'Admin One', actorRole: 'admin', description: 'ok', isSecurityAlert: false, ip: '1.2.3.4' },
-            ]),
+            lean: jest.fn().mockResolvedValueOnce([
+              { _id: 'a1', createdAt: new Date('2026-01-01'), storeId: 'store-1', category: 'finance', action: 'payout_approved', actorName: 'Admin One', actorRole: 'admin', description: 'ok', isSecurityAlert: false, ip: '1.2.3.4' },
+            ]).mockResolvedValue([]),
           }),
         }),
       });
 
-      const csv = await service.adminExportCsv({});
-      const lines = csv.split('\n');
-      expect(lines[0]).toContain('Security Alert');
-      expect(lines[1]).toContain('payout_approved');
+      const { csv, count, truncated } = await service.adminExportCsv({});
+      const lines = csv.replace(/^﻿/, '').trim().split('\r\n');
+      expect(lines[0]).toContain('Security alert');
+      expect(lines[1]).toContain('Payout approved'); // readable title, not the raw payout_approved
+      expect(lines[1]).toContain('Admin One');
+      expect(count).toBe(1);
+      expect(truncated).toBe(false);
     });
   });
 });

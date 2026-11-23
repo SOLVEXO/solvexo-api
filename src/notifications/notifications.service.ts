@@ -22,6 +22,7 @@ import { buyerEmail } from '@/common/buyer-email.util';
 import { signOrderStatusToken } from '@/common/order-status-token.util';
 import { signGiftCardViewToken } from '@/common/gift-card-view-token.util';
 import { storePublicUrl } from '@/newsletter/marketing-email.util';
+import { resolveStoreAccent } from '@/common/store-brand-accent.util';
 
 export interface BuiltCustomerEmail {
   /** false when the seller switched this email off for the store. */
@@ -328,7 +329,7 @@ export class NotificationsService {
       storeName,
       brand: {
         logoUrl: settings?.showLogo === false ? null : store.logo ?? null,
-        accent: settings?.accentColor ?? null,
+        accent: await resolveStoreAccent(repos, args.storeId, settings?.accentColor),
         footerText: settings?.footerText ?? null,
         locale: text.locale,
       },

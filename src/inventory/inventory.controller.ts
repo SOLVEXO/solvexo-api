@@ -1,3 +1,4 @@
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -42,6 +43,7 @@ export class InventoryController {
   }
 
   @RequirePermission('inventory.adjust')
+  @AuditStoreWrites('stock', 'inventory')
   @Post(':storeId/stock/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async importStockCsv(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: Express.Multer.File) {

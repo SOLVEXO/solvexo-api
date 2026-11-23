@@ -177,6 +177,10 @@ export class Product {
   @Prop({ type: [{ _id: false, title: String, content: String }], default: [] })
   tabs: { title: string; content: string }[];
 
+  /** Seller-chosen swatch colours for option values (Shopify: the colour entry behind a Color value), e.g. { option: 'Color', value: 'Royal Green', color: '#1b5e20' }. */
+  @Prop({ type: [{ _id: false, option: String, value: String, color: String }], default: [] })
+  optionSwatches: { option: string; value: string; color: string }[];
+
   /** Preferred supplier (a Supplier of the same store): reorder suggestions group by it. Never sent to shoppers. */
   @Prop({ type: String, default: null })
   supplierId: string | null;
@@ -236,6 +240,14 @@ export class Product {
   // Selling options: brand label, order quantity rules, pre-order.
   @Prop({ type: String, default: '', trim: true, maxlength: 100 })
   vendor: string;
+
+  // Optional label the seller puts on this product's card ("New", "Grade-3", "Bestseller"). Empty = no badge.
+  @Prop({ type: String, default: '', trim: true, maxlength: 30 })
+  cardBadgeText: string;
+
+  // A preset key (accent | dark | green | red | blue | amber) or a #RRGGBB colour. Empty = the theme's accent.
+  @Prop({ type: String, default: '', trim: true, maxlength: 20 })
+  cardBadgeColor: string;
 
   @Prop({ type: Number, default: 1 })
   orderMinQuantity: number;

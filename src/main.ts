@@ -6,6 +6,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
+import { operatorKeyGuard } from './common/operator-key-guard';
 import { CustomDomainsService } from './store/custom-domains.service';
 import { AdminConfigService } from './admin-config/admin-config.service';
 import { createMaintenanceMiddleware } from './admin-config/maintenance.middleware';
@@ -44,6 +45,8 @@ async function bootstrap() {
   // (editor design JSON + its rendered HTML) or a subscriber CSV chunk.
   // useBodyParser keeps the rawBody capture above working.
   app.useBodyParser('json', { limit: '1mb' });
+  // Browsers send Content-Security-Policy violation reports with their own content types (see SecurityModule).
+  app.useBodyParser('json', { type: ['application/csp-report', 'application/reports+json'], limit: '64kb' });
 
   // Behind Railway/Vercel/any reverse proxy: trust the first hop so req.ip (throttler, login limits, logs)
   // is the real client IP instead of the proxy's.
@@ -58,6 +61,9 @@ async function bootstrap() {
   app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
   app.use(cookieParser());
+
+  // Rejects JSON bodies carrying MongoDB operators (`{"email":{"$ne":null}}`) before any handler can use them as a filter.
+  app.use(operatorKeyGuard);
 
   // Platform maintenance mode (admin switch) — 503 for everything except health, webhooks, auth and the admin API.
   app.use(createMaintenanceMiddleware(app.get(AdminConfigService)));
@@ -142,7 +148,7 @@ async function bootstrap() {
     credentials: true,
     methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
     // `Idempotency-Key` must be listed: the web app sends it on every charge-bearing
-    // mutation (plan change, add-ons, manual payment, stock counts, purchase orders…).
+    // mutation (plan change, manual payment, stock counts, purchase orders…).
     // Without it the browser's CORS preflight is rejected and the call surfaces only as
     // a generic "Network Error" — no request ever reaches the API.
     allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin','Idempotency-Key','X-Storefront-Token','X-CSRF-Token','X-Auth-Mode'],

@@ -14,7 +14,7 @@ describe('verification validators', () => {
     }
   });
 
-  it('normalizes an NTN (7 digits + check digit)', () => {
+  it('normalizes an NTN (7 digits + 1 last digit)', () => {
     expect(normalizeNtn('1234567-8')).toBe('1234567-8');
     expect(normalizeNtn('12345678')).toBe('1234567-8');
     expect(isValidNtn('0712345-6')).toBe(true);

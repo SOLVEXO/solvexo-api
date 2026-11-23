@@ -10,6 +10,10 @@ export class SearchConfig {
   /** For an exact query, these products come first. */
   @Prop({ type: [{ _id: false, query: String, productIds: [String] }], default: [] }) pinned: { query: string; productIds: string[] }[];
   @Prop({ type: [{ _id: false, key: String, enabled: Boolean }], default: [] }) filters: { key: string; enabled: boolean }[];
+  /** Which sort choices shoppers get, and in what order (empty = all, default order). */
+  @Prop({ type: [{ _id: false, key: String, enabled: Boolean }], default: [] }) sorts: { key: string; enabled: boolean }[];
+  /** Show "(12)" product counts next to each filter value. */
+  @Prop({ type: Boolean, default: true }) showCounts: boolean;
 }
 export type SearchConfigDocument = HydratedDocument<SearchConfig>;
 export const SearchConfigSchema = SchemaFactory.createForClass(SearchConfig);

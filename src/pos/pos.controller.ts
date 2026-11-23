@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import {
   Controller, Get, Post, Patch, Delete,
   Body, Param, Query, Req, Res, UseGuards, Headers, UseInterceptors, UploadedFile,
@@ -183,6 +184,7 @@ export class PosController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('settings.locations.manage')
+  @AuditStoreWrites('pos_location', 'settings')
   @Post('locations/:storeId/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   importLocations(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {

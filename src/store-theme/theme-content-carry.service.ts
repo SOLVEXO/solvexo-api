@@ -16,7 +16,7 @@ export const HEADER_CONTENT_KEYS = [
   'logoSource', 'customLogoUrl', 'logoLink', 'blocks', 'sections', 'menuId',
   'shopMenuLabel', 'blogLinkLabel', 'includePagesInNav', 'showDefaultBlogLink', 'showShopMenu',
   'showSearch', 'showAccount', 'showWishlist',
-  'ctaLabel', 'ctaLink', 'topBarEnabled', 'topBarText', 'topBarPhone', 'topBarEmail',
+  'ctaLabel', 'ctaLink', 'topBarEnabled', 'topBarText', 'topBarPhone', 'topBarEmail', 'topBarItems',
 ] as const;
 
 /** Footer fields that hold seller content, not theme design. */
@@ -165,7 +165,7 @@ export class ThemeContentCarryService {
         await this.templateModel.updateOne({ _id: existing._id }, upd);
       } else {
         await this.templateModel.create({
-          ...filter, name: tpl.name, isDefault: tpl.isDefault, sections: live.kept, draft: { ...(tpl.draft ?? {}), sections: draft.kept },
+          ...filter, name: tpl.name, isDefault: tpl.isDefault, sections: live.kept as any[], draft: { ...(tpl.draft ?? {}), sections: draft.kept as any[] },
           lastPublishedAt: tpl.lastPublishedAt ?? null, status: tpl.status, versions: [],
         });
       }

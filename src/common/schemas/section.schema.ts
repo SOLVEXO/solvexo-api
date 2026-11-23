@@ -49,6 +49,7 @@ export const SECTION_TYPES = [
   'gallery_grid',
   // Shopify-parity section library (see `section-settings.types.ts`).
   'multicolumn',
+  'promo_cards',
   'logo_list',
   'marquee',
   'custom_html',
@@ -89,6 +90,9 @@ export const SECTION_TYPES = [
   // Carrier for a section the ACTIVE THEME declares in its own manifest (`settings.sectionKey` picks which one,
   // the rest of `settings` are that section's fields). Lets a theme add sections without a backend change.
   'theme_section',
+  // A reference to one entry of the store's saved-sections library (`saved-sections/`): `settings.savedSectionId` points at it
+  // and the storefront draws that entry's content here, so editing the entry changes every page that uses it.
+  'saved_section',
 ] as const;
 export type SectionType = (typeof SECTION_TYPES)[number];
 
@@ -135,6 +139,10 @@ export class Section {
   // whose referenced scheme no longer exists silently falls back to the
   // theme's own colors (see the frontend resolver), never a crash.
   @Prop({ type: String, default: null }) colorSchemeId: string | null;
+
+  // Seller's own "lock" (an editor safety, not a permission): a locked section cannot be removed, moved, hidden or
+  // edited until it is unlocked again, so a finished section is not changed by accident.
+  @Prop({ type: Boolean, default: false }) locked: boolean;
 }
 
 export const SectionSchema = SchemaFactory.createForClass(Section);

@@ -8,6 +8,7 @@ import { PaymentProviderRegistry } from '../payment-provider.registry';
 import { IntegrationWebhookEventService } from '../integration-webhook-event.service';
 import { toDecryptedPaymentConfig } from '../integration-credentials.helper';
 import { PaymentService } from '../../payment/payment.service';
+import type { StoreIntegrationProvider } from '../schemas/store-integration.schema';
 
 /**
  * Inbound gateway webhooks for the Pakistani payment providers (Safepay,
@@ -48,7 +49,7 @@ export class PaymentWebhooksController {
     }
 
     const integration = await this.databaseService.repositories.storeIntegrationModel.findOne({
-      provider,
+      provider: provider as StoreIntegrationProvider,
       webhookToken,
       type: 'payment',
     });
@@ -157,7 +158,7 @@ export class PaymentWebhooksController {
     @Res() res: Response,
   ) {
     const repos = this.databaseService.repositories;
-    const integration = await repos.storeIntegrationModel.findOne({ provider, webhookToken, type: 'payment' });
+    const integration = await repos.storeIntegrationModel.findOne({ provider: provider as StoreIntegrationProvider, webhookToken, type: 'payment' });
     if (!integration) throw new NotFoundException();
 
     let sessionId: string | undefined;

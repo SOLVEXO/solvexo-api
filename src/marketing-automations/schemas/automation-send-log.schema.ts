@@ -4,7 +4,7 @@ import { HydratedDocument } from 'mongoose';
 
 export type AutomationSendLogDocument = HydratedDocument<AutomationSendLog>;
 
-export const AUTOMATION_TYPES = ['welcome', 'back_in_stock', 'price_drop', 'win_back'] as const;
+export const AUTOMATION_TYPES = ['welcome', 'back_in_stock', 'price_drop', 'win_back', 'post_purchase', 'customer_appreciation'] as const;
 export type AutomationType = (typeof AUTOMATION_TYPES)[number];
 
 /** One row per automated email sent — the seller's per-automation stats, and

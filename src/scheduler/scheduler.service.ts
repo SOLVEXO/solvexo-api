@@ -1,6 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { MerchandisingService } from '@/merchandising/merchandising.service';
 import { SellerTrustService } from '@/seller-trust/seller-trust.service';
+import { SellerTrustReminderService } from '@/seller-trust/seller-trust-reminder.service';
+import { KycRetentionService } from '@/seller-trust/kyc-retention.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { MEMBERSHIP_BILLING_JOB, QUEUE_NAMES } from '../queues/queue.constants';
@@ -20,12 +22,10 @@ import { FbrDiService } from '../fbr-di/fbr-di.service';
 import { PlatformLedgerService } from '../platform-tax/platform-ledger.service';
 import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
 import { AiCreditsService } from '@/platform-plans/ai-credits.service';
-import { PlatformAddonsService } from '@/platform-plans/platform-addons.service';
 import { TransactionFeeBillingService } from '@/platform-plans/transaction-fee-billing.service';
 import { SeoSitemapService } from '@/seo/services/seo-sitemap.service';
 import { SeoMonitoringService } from '@/seo/services/seo-monitoring.service';
 import { SeoAuditService } from '@/seo/services/seo-audit.service';
-import { AdminMarketingService } from '@/admin-marketing/admin-marketing.service';
 import { PromotionsService } from '@/promotions/promotions.service';
 import { ExchangeRateService } from '@/exchange-rate/exchange-rate.service';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
@@ -67,11 +67,9 @@ export class SchedulerService {
     private readonly fbrDiService: FbrDiService,
     private readonly platformLedgerService: PlatformLedgerService,
     private readonly aiCreditsService: AiCreditsService,
-    private readonly platformAddonsService: PlatformAddonsService,
     private readonly seoSitemapService: SeoSitemapService,
     private readonly seoMonitoringService: SeoMonitoringService,
     private readonly seoAuditService: SeoAuditService,
-    private readonly adminMarketingService: AdminMarketingService,
     private readonly promotionsService: PromotionsService,
     private readonly exchangeRateService: ExchangeRateService,
     private readonly activityLogService: ActivityLogService,
@@ -94,6 +92,8 @@ export class SchedulerService {
     private readonly courierTrackingSyncService: CourierTrackingSyncService,
     private readonly merchandisingService: MerchandisingService,
     private readonly sellerTrustService: SellerTrustService,
+    private readonly sellerTrustReminders: SellerTrustReminderService,
+    private readonly kycRetention: KycRetentionService,
   ) {}
 
   // Seller trust — daily: recompute every store's verification deadline,
@@ -104,6 +104,29 @@ export class SchedulerService {
     await this.runLocked('seller-trust-recompute', 60 * 60_000, async () => {
       const r = await this.sellerTrustService.recomputeAll();
       this.logger.log(`Seller trust: ${r.stores} store(s) — ${r.high} high / ${r.medium} medium risk, ${r.hidden} limited`);
+    });
+  }
+
+  // Seller trust — daily 04:30 UTC (09:30 in Pakistan), after the recompute above has refreshed every deadline:
+  // verification reminders 14 / 7 / 3 / 1 days before the deadline and once when it passes (each stage once per store).
+  @Cron('30 4 * * *')
+  async sendSellerTrustReminders() {
+    await this.runLocked('seller-trust-reminders', 30 * 60_000, async () => {
+      const r = await this.sellerTrustReminders.sendDueReminders();
+      this.logger.log(`Seller trust reminders: ${r.sent} sent, ${r.skipped} skipped, ${r.checked} checked`);
+    });
+  }
+
+  // Seller trust — daily 05:20 UTC: deletes verification documents (and the identity data next to them) whose retention period is
+  // over: files that never reached review / were rejected and not fixed (90 days by default) and the files of CLOSED stores
+  // (6 years after closing by default). The periods are admin settings.
+  @Cron('20 5 * * *')
+  async eraseExpiredVerificationDocuments() {
+    await this.runLocked('kyc-retention', 45 * 60_000, async () => {
+      const r = await this.kycRetention.run();
+      if (r.closedErased || r.draftsExpired || r.failed) {
+        this.logger.log(`KYC retention: ${r.closedErased} closed store(s) erased, ${r.draftsExpired} draft(s) expired, ${r.filesDeleted} file(s) deleted, ${r.failed} failed`);
+      }
     });
   }
 
@@ -276,6 +299,22 @@ export class SchedulerService {
     });
   }
 
+  @Cron('40 * * * *')
+  async processPostPurchaseEmails() {
+    await this.runLocked('automation-post-purchase', 50 * 60_000, async () => {
+      const result = await this.marketingAutomationsService.processPostPurchase();
+      if (result.notified > 0) this.logger.log(`Post-purchase: ${result.notified} email(s) sent`);
+    });
+  }
+
+  @Cron('30 10 * * *')
+  async processCustomerAppreciationEmails() {
+    await this.runLocked('automation-customer-appreciation', 60 * 60_000, async () => {
+      const result = await this.marketingAutomationsService.processCustomerAppreciation();
+      if (result.notified > 0) this.logger.log(`Customer appreciation: ${result.notified} email(s) sent`);
+    });
+  }
+
   @Cron('*/5 * * * *')
   async processScheduledEmailCampaigns() {
     await this.runLocked('email-campaigns-scheduled-send', 120_000, async () => {
@@ -417,26 +456,7 @@ export class SchedulerService {
     });
   }
 
-  // Runs every minute (same cadence as activateScheduledProducts above, for
-  // the same reason — a time-based state flip) — moves platform sale
-  // Campaigns whose endDate has passed from 'active' to 'ended' and compacts
-  // the remaining active campaigns' rotation `order` values so there's never
-  // a gap where an expired campaign's slot used to be. This is just the
-  // backstop for when nobody's actively viewing the admin list — the list
-  // read itself (AdminMarketingService.listCampaigns) also self-heals on
-  // every load, which is what actually makes this feel instant rather than
-  // capped at a 1-minute lag.
-  @Cron('* * * * *')
-  async expireCampaigns() {
-    await this.runLocked('campaign-expiry', 50_000, async () => {
-      const result = await this.adminMarketingService.expireCampaigns();
-      if (result.expired > 0) {
-        this.logger.log(`Campaigns expired: ${result.expired} moved to 'ended', rotation order compacted`);
-      }
-    });
-  }
-
-  // Sibling to expireCampaigns() above — activates paid+approved PromotionRequests
+  // Activates paid+approved PromotionRequests
   // whose startAt has arrived, expires ones past endAt, fires the going-live/
   // expiring-soon/expired notifications, and compacts the resulting Banner rows'
   // rotation order for any placement it touched.
@@ -497,6 +517,16 @@ export class SchedulerService {
     });
   }
 
+  // Every 10 minutes: plan purchases a seller already PAID for but whose Stripe webhook never applied them (late, lost
+  // or failed) are checked with Stripe and applied, so nobody is left locked out after being charged.
+  @Cron('*/10 * * * *')
+  async reconcilePlatformPlanPurchases() {
+    await this.runLocked('platform-plan-purchase-reconcile', 9 * 60_000, async () => {
+      const r = await this.sellerPlatformSubscriptionsService.reconcilePendingPurchases();
+      if (r.applied > 0) this.logger.warn(`Platform-plan purchases: ${r.applied} paid but unapplied purchase(s) applied from Stripe (${r.checked} checked)`);
+    });
+  }
+
   // Runs daily — trials that ran out without converting to a paid card move to the free plan.
   @Cron('45 2 * * *')
   async expirePlatformPlanTrials() {
@@ -528,6 +558,16 @@ export class SchedulerService {
       if (result.locked > 0) {
         this.logger.log(`Platform-plan past-due lock: ${result.locked} store(s) locked`);
       }
+    });
+  }
+
+  // Daily at 09:00: reminds the admins about complimentary (admin-given) plans whose review date is within 7 days or has
+  // passed. Never removes anything by itself.
+  @Cron('0 9 * * *')
+  async remindComplimentaryPlanReviews() {
+    await this.runLocked('complimentary-plan-review-reminders', 10 * 60_000, async () => {
+      const r = await this.sellerPlatformSubscriptionsService.sendComplimentaryReviewReminders();
+      if (r.soon || r.overdue) this.logger.log(`Complimentary plan reminders: ${r.soon} upcoming, ${r.overdue} overdue`);
     });
   }
 
@@ -577,19 +617,6 @@ export class SchedulerService {
     await this.runLocked('ai-credits-monthly-reset', 30 * 60_000, async () => {
       const result = await this.aiCreditsService.resetAllMonthlyAllowances();
       this.logger.log(`AI credits reset for ${result.reset} store wallet(s)`);
-    });
-  }
-
-  // Runs hourly (offset from the core platform-plan renewal tick) — charges
-  // every recurring add-on (extra staff seat, priority placement, etc.)
-  // whose monthly billing date has arrived.
-  @Cron('20 * * * *')
-  async runAddonRenewals() {
-    await this.runLocked('platform-addon-renewals', 30 * 60_000, async () => {
-      const result = await this.platformAddonsService.processRecurringAddonRenewals();
-      if (result.processed > 0) {
-        this.logger.log(`Add-on renewals: ${result.processed} processed, ${result.succeeded} succeeded, ${result.failed} failed`);
-      }
     });
   }
 

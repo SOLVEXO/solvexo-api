@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -45,6 +46,7 @@ export class SellerSeoRedirectsController {
   }
 
   @RequirePermission('seo.manage')
+  @AuditStoreWrites('redirect', 'seo')
   @Post('import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async importCsv(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {

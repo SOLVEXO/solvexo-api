@@ -75,3 +75,24 @@ describe('product-input.util', () => {
     });
   });
 });
+
+import { normalizeOptionSwatches } from './product-input.util';
+
+describe('normalizeOptionSwatches', () => {
+  it('keeps seller colours, expands #rgb, lower-cases, drops blank colours and duplicates', () => {
+    expect(normalizeOptionSwatches([
+      { option: 'Color', value: 'Royal Green', color: '#1B5E20' },
+      { option: 'Color', value: 'Red', color: '#F00' },
+      { option: 'Color', value: 'Blue', color: '' },
+      { option: 'color', value: 'red', color: '#00ff00' },
+    ])).toEqual([
+      { option: 'Color', value: 'Royal Green', color: '#1b5e20' },
+      { option: 'Color', value: 'Red', color: '#ff0000' },
+    ]);
+  });
+  it('nothing sent = nothing saved; a non-hex colour is rejected', () => {
+    expect(normalizeOptionSwatches(undefined)).toEqual([]);
+    expect(() => normalizeOptionSwatches([{ option: 'Color', value: 'Red', color: 'red' }])).toThrow(BadRequestException);
+    expect(() => normalizeOptionSwatches('x')).toThrow(BadRequestException);
+  });
+});

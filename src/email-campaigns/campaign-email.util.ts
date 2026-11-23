@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { escapeHtml, renderMergeTags } from '@/newsletter/marketing-email.util';
+import { escapeHtml, footerAddressHtml, renderMergeTags } from '@/newsletter/marketing-email.util';
 
 export interface CampaignEmailInput {
   subject: string;
@@ -15,6 +15,8 @@ export interface CampaignEmailInput {
   trackLink?: ((href: string) => string) | null;
   openPixelUrl?: string | null;
   unsubscribeUrl?: string | null;
+  /** The store's mailing address, printed in the footer. */
+  storeAddress?: string | null;
 }
 
 function decodeEntities(s: string): string {
@@ -25,6 +27,27 @@ function decodeEntities(s: string): string {
  *  mailto: are left alone). */
 export function trackLinks(html: string, track: (href: string) => string): string {
   return html.replace(/href="(https?:\/\/[^"]+)"/gi, (_m, href: string) => `href="${escapeHtml(track(decodeEntities(href)))}"`);
+}
+
+/**
+ * Adds Shopify-style UTM tags (utm_source / utm_medium / utm_campaign) to a link that points at the store's own storefront, so
+ * the visits and sales an email brings in show up in Growth → Attribution. Links to other sites, and links the seller already
+ * tagged themselves, are left exactly as they are.
+ */
+export function withEmailUtm(url: string, storeUrl: string | null, campaignTag: string): string {
+  if (!storeUrl) return url;
+  try {
+    const u = new URL(url);
+    const own = new URL(storeUrl);
+    if (u.hostname.replace(/^www\./, '') !== own.hostname.replace(/^www\./, '')) return url;
+    if ([...u.searchParams.keys()].some((k) => k.toLowerCase().startsWith('utm_'))) return url;
+    u.searchParams.set('utm_source', 'solvexo_email');
+    u.searchParams.set('utm_medium', 'email');
+    if (campaignTag) u.searchParams.set('utm_campaign', campaignTag);
+    return u.toString();
+  } catch {
+    return url;
+  }
 }
 
 /** Every http(s) link target present in a campaign's HTML — the allow-list
@@ -48,7 +71,7 @@ export function renderCampaignEmail(input: CampaignEmailInput): { subject: strin
 
   const footer = input.unsubscribeUrl
     ? `<p style="margin:${input.designed ? '0 auto' : '32px 0 0'};max-width:600px;padding:16px 12px;${input.designed ? '' : 'border-top:1px solid #eee;'}color:#888;font-size:12px;text-align:center;font-family:sans-serif">
-          You're receiving this because you subscribed to emails from ${storeName}.<br />
+          You're receiving this because you subscribed to emails from ${storeName}.${footerAddressHtml(input.storeAddress)}<br />
           <a href="${input.unsubscribeUrl}" style="color:#888">Unsubscribe</a>
         </p>` : '';
   const pixel = input.openPixelUrl ? `<img src="${input.openPixelUrl}" width="1" height="1" alt="" style="display:none" />` : '';

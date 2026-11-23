@@ -16,6 +16,14 @@ import {
   SalesChatSessionSchema,
 } from './schemas/sales-chat-session.schema';
 import { SalesPartnersService } from './sales-partners.service';
+import { PartnerOnboardingService } from './partner-onboarding.service';
+import { PartnerApplyController, PartnerPortalDealsController, PartnerPortalScorecardController, PartnerPortalOnboardingController, PartnerProgrammeController } from './partner-programme.controller';
+import { PartnerDealsService } from './partner-deals.service';
+import { PartnerScorecardService } from './partner-scorecard.service';
+import { PartnerLog, PartnerLogSchema } from './schemas/partner-log.schema';
+import { PartnerDeal, PartnerDealSchema } from './schemas/partner-deal.schema';
+import { PartnerProgrammeSettings, PartnerProgrammeSettingsSchema } from './schemas/partner-programme-settings.schema';
+import { AdminTeamModule } from '../admin-team/admin-team.module';
 import {
   SalesPartner,
   SalesPartnerSchema,
@@ -61,6 +69,9 @@ import {
 } from '../contact/schemas/contact-submission.schema';
 import { SalesOpsService } from './sales-ops.service';
 import { SalesLead, SalesLeadSchema } from './schemas/sales-lead.schema';
+import { SalesVisit, SalesVisitSchema } from './schemas/sales-visit.schema';
+import { SalesVisitsService } from './sales-visits.service';
+import { UploadModule } from '../upload/upload.module';
 import {
   SalesActivity,
   SalesActivitySchema,
@@ -79,6 +90,8 @@ import {
     AdminAnalyticsModule,
     ExchangeRateModule,
     AiTextModule,
+    UploadModule,
+    AdminTeamModule,
     MongooseModule.forFeature([
       { name: SalesLead.name, schema: SalesLeadSchema },
       { name: SalesActivity.name, schema: SalesActivitySchema },
@@ -93,23 +106,36 @@ import {
       { name: SalesPartnerReferral.name, schema: SalesPartnerReferralSchema },
       { name: SalesCommission.name, schema: SalesCommissionSchema },
       { name: SalesPayout.name, schema: SalesPayoutSchema },
+      { name: PartnerProgrammeSettings.name, schema: PartnerProgrammeSettingsSchema },
+      { name: PartnerDeal.name, schema: PartnerDealSchema },
+      { name: PartnerLog.name, schema: PartnerLogSchema },
       { name: SalesChatSession.name, schema: SalesChatSessionSchema },
       { name: SalesWaConversation.name, schema: SalesWaConversationSchema },
       { name: SalesWaMessage.name, schema: SalesWaMessageSchema },
+      { name: SalesVisit.name, schema: SalesVisitSchema },
     ]),
   ],
   controllers: [
     SalesOpsController,
     SalesPublicController,
     PartnerPortalController,
+    PartnerApplyController,
+    PartnerProgrammeController,
+    PartnerPortalOnboardingController,
+    PartnerPortalDealsController,
+    PartnerPortalScorecardController,
   ],
   providers: [
     SalesOpsService,
     SalesCaptureService,
     SalesGrowthService,
     SalesPartnersService,
+    PartnerOnboardingService,
+    PartnerDealsService,
+    PartnerScorecardService,
     SalesAgentService,
     SalesWhatsAppService,
+    SalesVisitsService,
     EmailService,
   ],
   exports: [SalesOpsService, SalesCaptureService],

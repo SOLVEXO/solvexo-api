@@ -11,7 +11,6 @@ import { PlatformTaxSettings, PlatformTaxSettingsSchema } from './schemas/platfo
 import { PlatformTaxRecord, PlatformTaxRecordSchema } from './schemas/platform-tax-record.schema';
 import { ExchangeRateModule } from '../exchange-rate/exchange-rate.module';
 import { PlatformPlanInvoice, PlatformPlanInvoiceSchema } from '../platform-plans/schemas/platform-plan-invoice.schema';
-import { PlatformAddonPurchase, PlatformAddonPurchaseSchema } from '../platform-plans/schemas/platform-addon-purchase.schema';
 import { TransactionFeeBill, TransactionFeeBillSchema } from '../platform-plans/schemas/transaction-fee-bill.schema';
 import { PlatformLegalEntity, PlatformLegalEntitySchema } from './schemas/platform-legal-entity.schema';
 import { PlatformTaxRegistration, PlatformTaxRegistrationSchema } from './schemas/platform-tax-registration.schema';
@@ -33,7 +32,6 @@ import { PlatformComplianceController } from './platform-compliance.controller';
       { name: PlatformTaxRecord.name, schema: PlatformTaxRecordSchema },
       // Phase 1 shadow ledger: the first three are only READ here (registered a second time for injection), the last four are its own.
       { name: PlatformPlanInvoice.name, schema: PlatformPlanInvoiceSchema },
-      { name: PlatformAddonPurchase.name, schema: PlatformAddonPurchaseSchema },
       { name: TransactionFeeBill.name, schema: TransactionFeeBillSchema },
       { name: PlatformLegalEntity.name, schema: PlatformLegalEntitySchema },
       { name: PlatformTaxRegistration.name, schema: PlatformTaxRegistrationSchema },

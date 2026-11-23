@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '@/database/databaseservice';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
@@ -223,6 +224,42 @@ export class SeoContentService {
     return this.db.repositories.categoryModel.find({ _id: { $in: [...categoryIds] } }).select('name seo').lean();
   }
 
+  // ── Seller-facing: Collections SEO (Shopify parity: collections are the seller's own landing pages) ──
+
+  async listStoreCollectionsSeo(storeId: string) {
+    return this.db.repositories.collectionModel
+      .find({ storeId, isDelete: false })
+      .select('name slug status seo.metaTitle seo.metaDescription')
+      .sort({ name: 1 })
+      .lean();
+  }
+
+  async updateCollectionSeo(storeId: string, collectionId: string, dto: { metaTitle?: string | null; metaDescription?: string | null }, actor: { id: string; name?: string; role?: string }) {
+    if (!/^[a-f0-9]{24}$/i.test(String(collectionId))) throw new NotFoundException('Collection not found.');
+    const set: Record<string, unknown> = {};
+    if (dto.metaTitle !== undefined) set['seo.metaTitle'] = String(dto.metaTitle ?? '').trim().slice(0, 200) || null;
+    if (dto.metaDescription !== undefined) set['seo.metaDescription'] = String(dto.metaDescription ?? '').trim().slice(0, 500) || null;
+    set['seo.updatedAt'] = new Date();
+    const colBefore: any = await this.db.repositories.collectionModel.findOne({ _id: collectionId, storeId, isDelete: false }).select('seo.metaTitle seo.metaDescription').lean();
+    const updated = await this.db.repositories.collectionModel
+      .findOneAndUpdate({ _id: collectionId, storeId, isDelete: false }, { $set: set }, { new: true })
+      .select('name slug status seo.metaTitle seo.metaDescription')
+      .lean();
+    if (!updated) throw new NotFoundException('Collection not found.');
+
+    await this.activityLog.log({
+      storeId, category: 'seo', action: 'collection_seo_updated',
+      description: `SEO meta updated for collection "${(updated as any).name}"`,
+      actorId: actor.id, actorName: actor.name ?? null, actorRole: actor.role ?? null,
+      targetId: collectionId, targetType: 'collection_seo',
+      metadata: (() => {
+        const changes = diffFields(colBefore?.seo ?? {}, { metaTitle: set['seo.metaTitle'], metaDescription: set['seo.metaDescription'] }, ['metaTitle', 'metaDescription']);
+        return changes.length ? { changes } : null;
+      })(),
+    });
+    return updated;
+  }
+
   // ── Seller-facing: Store page-builder pages SEO (Phase 7) ─────────────────
 
   async getPageSeo(storeId: string, pageId: string) {
@@ -236,6 +273,7 @@ export class SeoContentService {
     if (!store) throw new NotFoundException('Store not found.');
 
     const seo = (store as any).seo ?? {};
+    const pageBefore = { ...(seo.pages?.[pageId] ?? {}) };
     seo.pages = { ...(seo.pages ?? {}), [pageId]: { ...(seo.pages?.[pageId] ?? {}), ...dto } };
     (store as any).seo = seo;
     await store.save();
@@ -245,6 +283,7 @@ export class SeoContentService {
       description: `SEO meta updated for page "${pageId}"`,
       actorId: actor.id, actorName: actor.name ?? null, actorRole: actor.role ?? null,
       targetId: pageId, targetType: 'page_seo',
+      metadata: (() => { const changes = diffFields(pageBefore, dto as any, Object.keys(dto)); return changes.length ? { changes } : null; })(),
     });
 
     return seo.pages[pageId];

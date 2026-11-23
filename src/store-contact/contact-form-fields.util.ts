@@ -12,7 +12,7 @@ import { BadRequestException } from '@nestjs/common';
  */
 export const CONTACT_FIELD_TYPES = [
   'name', 'text', 'email', 'phone', 'textarea', 'number', 'date', 'time', 'url',
-  'dropdown', 'radio', 'checkbox', 'consent', 'rating', 'country', 'hidden', 'heading', 'paragraph', 'step', 'file',
+  'dropdown', 'radio', 'checkbox', 'consent', 'rating', 'country', 'hidden', 'heading', 'paragraph', 'step', 'file', 'slider', 'signature', 'total',
 ] as const;
 export type ContactFieldType = (typeof CONTACT_FIELD_TYPES)[number];
 
@@ -44,6 +44,16 @@ export interface ContactFormField {
   /** file: which kinds of file are accepted, and the size limit in MB (at most 10). */
   fileKinds?: 'images' | 'documents' | 'both';
   maxSizeMb?: number;
+  /** A file field that takes up to MAX_FILES files (each is stored as its own answer line). */
+  multiple?: boolean;
+  /** Price of each choice (same order as options) for the Total field. */
+  optionPrices?: number[];
+  /** Price per unit of a number field (quantity x price) for the Total field. */
+  unitPrice?: number;
+  /** Short text before a Total ("Rs", "$"). */
+  currencyLabel?: string;
+  /** Slider step (default 1). */
+  step?: number;
   /** consent: when ticked and the visitor gave an email, add them to the store's email marketing list. */
   subscribes?: boolean;
 }
@@ -57,7 +67,9 @@ export const FILE_EXTENSIONS: Record<'images' | 'documents' | 'both', string[]> 
 export const MAX_FILE_MB = 10;
 export const UPLOAD_ID_RE = /^[a-f0-9]{24}$/i;
 
-export const MAX_CONTACT_FIELDS = 31;
+export const MAX_CONTACT_FIELDS = 100;
+export const MAX_CHOICES = 200;
+export const MAX_FILES = 5;
 const OPTION_TYPES: ContactFieldType[] = ['dropdown', 'radio', 'checkbox'];
 /** Fields that show text but collect nothing. */
 /** `step` starts a new page of a multi-step form; it only holds the page title. */
@@ -69,7 +81,7 @@ const WIDTHS = ['full', 'half', 'third', 'quarter'];
 
 const bad = (msg: string): never => { throw new BadRequestException(msg); };
 
-const labelLimit = (type: ContactFieldType) => (type === 'paragraph' ? 500 : type === 'consent' ? 300 : type === 'heading' ? 120 : 60);
+const labelLimit = (type: ContactFieldType) => (type === 'paragraph' ? 500 : type === 'consent' ? 300 : type === 'heading' ? 120 : 120);
 
 /** The old fixed form (Name, Email, optional Phone, Message), rebuilt from a section that has no `fields` yet. */
 export function legacyContactFields(settings: Record<string, any> | undefined): ContactFormField[] {
@@ -122,11 +134,19 @@ export function validateContactFieldDefs(input: unknown): void {
     if (STATIC_TYPES.includes(type) && f.required) return bad(`"${f.label}" only shows text, so it cannot be required`);
     if (f.fileKinds !== undefined && !['images', 'documents', 'both'].includes(f.fileKinds as string)) return bad(`${p}.fileKinds must be images, documents or both`);
     if (f.maxSizeMb !== undefined && !wholeNumber(f.maxSizeMb, 1, MAX_FILE_MB)) return bad(`${p}.maxSizeMb must be a whole number from 1 to ${MAX_FILE_MB}`);
+    if (f.optionPrices !== undefined) {
+      if (!(type === 'dropdown' || type === 'radio' || type === 'checkbox')) return bad(`${p}.optionPrices is only for choice fields`);
+      if (!Array.isArray(f.optionPrices) || f.optionPrices.length > MAX_CHOICES || (Array.isArray(f.options) && f.optionPrices.length !== f.options.length) || f.optionPrices.some((n: unknown) => typeof n !== 'number' || !Number.isFinite(n) || n < 0 || n > 1e9)) return bad(`"${f.label}": every choice needs a price from 0 to 1,000,000,000`);
+    }
+    if (f.unitPrice !== undefined && (type !== 'number' || typeof f.unitPrice !== 'number' || !Number.isFinite(f.unitPrice) || f.unitPrice < 0 || f.unitPrice > 1e9)) return bad(`"${f.label}": the price per unit must be a number from 0 to 1,000,000,000 (number fields only)`);
+    if (f.currencyLabel !== undefined && (type !== 'total' || typeof f.currencyLabel !== 'string' || f.currencyLabel.length > 8)) return bad(`"${f.label}": the currency text is up to 8 characters (total fields only)`);
+    if (f.multiple !== undefined && (typeof f.multiple !== 'boolean' || (f.multiple && type !== 'file'))) return bad(`${p}.multiple is only for file fields`);
+    if (f.step !== undefined && (typeof f.step !== 'number' || !(f.step > 0) || f.step > 1000000)) return bad(`${p}.step must be a positive number`);
     if (f.subscribes !== undefined && typeof f.subscribes !== 'boolean') return bad(`${p}.subscribes must be true or false`);
     if (f.subscribes === true && type !== 'consent') return bad(`"${f.label}": only a consent tick box can sign visitors up for email marketing`);
 
     if (f.options !== undefined) {
-      if (!Array.isArray(f.options) || f.options.length > 20) return bad(`${p}.options can have up to 20 choices`);
+      if (!Array.isArray(f.options) || f.options.length > MAX_CHOICES) return bad(`${p}.options can have up to ${MAX_CHOICES} choices`);
       const opts = new Set<string>();
       for (const o of f.options) {
         if (typeof o !== 'string' || !o.trim() || o.length > 60) return bad(`Each choice of "${String(f.label)}" must be 1 to 60 characters`);
@@ -150,8 +170,8 @@ export function validateContactFieldDefs(input: unknown): void {
     // The contact field that lets the seller answer must always be on the form.
     if ((type === 'email' || type === 'phone') && f.required === true && f.showIf === undefined) hasContact = true;
   });
-  // Shopify Forms: every form must collect a way to reach the visitor.
-  if (!hasContact) return bad('The form needs an Email or Phone field that is required (and always shown), so you can answer your visitors');
+  // The seller decides: a form without an Email/Phone field is allowed (a survey, an anonymous note). The inbox then just cannot reply.
+  void hasContact;
 }
 
 const SUCCESS_ACTIONS = ['message', 'redirect'];
@@ -192,6 +212,24 @@ export function validateContactFormSettings(settings: Record<string, any>): void
   if (settings.autoReplyEnabled !== undefined && typeof settings.autoReplyEnabled !== 'boolean') bad('settings.autoReplyEnabled must be true or false');
   if (settings.captcha !== undefined && typeof settings.captcha !== 'boolean') bad('settings.captcha must be true or false');
 }
+
+/** Sum of the prices of what the visitor picked (choices) and of quantity x unit price (number fields). */
+export function computeTotal(defs: ContactFormField[], answers: { id: string; type: string; value: string }[]): number {
+  let sum = 0;
+  for (const a of answers) {
+    const def = defs.find(d => d.id === a.id);
+    if (!def) continue;
+    if (def.type === 'number' && def.unitPrice) sum += (Number(a.value) || 0) * def.unitPrice;
+    else if ((def.type === 'dropdown' || def.type === 'radio' || def.type === 'checkbox') && def.options && def.optionPrices) {
+      for (const v of def.type === 'checkbox' ? a.value.split(', ') : [a.value]) {
+        const i = def.options.indexOf(v);
+        if (i >= 0) sum += def.optionPrices[i] ?? 0;
+      }
+    }
+  }
+  return Math.round(sum * 100) / 100;
+}
+export const formatTotal = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2));
 
 export interface CleanAnswer { id: string; label: string; type: ContactFieldType; value: string }
 
@@ -244,6 +282,14 @@ export function validateContactAnswers(defs: ContactFormField[], answers: unknow
   for (const def of defs) {
     if (STATIC_TYPES.includes(def.type)) continue;
     if (!conditionHolds(def.showIf, shown)) continue;
+    if (def.type === 'total') {
+      // The server works the total out from the answers above it: a total sent by the browser is never trusted.
+      const sum = computeTotal(defs, clean);
+      const text = formatTotal(sum);
+      clean.push({ id: def.id, label: def.label, type: def.type, value: `${def.currencyLabel ? def.currencyLabel + ' ' : ''}${text}` });
+      shown.set(def.id, text);
+      continue;
+    }
     const fail = (msg: string): never => bad(def.errorMessage?.trim() || msg);
     const raw = byId.get(def.id);
     let value = '';
@@ -265,6 +311,16 @@ export function validateContactAnswers(defs: ContactFormField[], answers: unknow
       if (def.required) fail(def.type === 'consent' ? `Please tick: ${def.label}` : `${def.label} is required`);
       continue;
     }
+    if (def.type === 'file' && def.multiple) {
+      const ids = Array.from(new Set(value.split(',').map(x => x.trim()).filter(Boolean)));
+      if (ids.length > MAX_FILES) fail(`You can attach up to ${MAX_FILES} files to ${def.label}`);
+      for (const id of ids) {
+        if (!UPLOAD_ID_RE.test(id)) fail('Attach the file again');
+        clean.push({ id: def.id, label: def.label, type: def.type, value: id });
+      }
+      shown.set(def.id, ids[0]);
+      continue;
+    }
     switch (def.type) {
       case 'name': if (value.length > 80) fail(`${def.label} is too long`); break;
       case 'text':
@@ -276,11 +332,18 @@ export function validateContactAnswers(defs: ContactFormField[], answers: unknow
       }
       case 'email': if (value.length > 120 || !EMAIL_RE.test(value)) fail('Enter a valid email address'); value = value.toLowerCase(); break;
       case 'phone': if (!PHONE_RE.test(value)) fail('Enter a valid phone number'); break;
+      case 'slider':
       case 'number': {
         const n = Number(value);
         if (value.length > 30 || !Number.isFinite(n)) fail(`${def.label} must be a number`);
-        if (def.min !== undefined && n < def.min) fail(`${def.label} must be ${def.min} or more`);
-        if (def.max !== undefined && n > def.max) fail(`${def.label} must be ${def.max} or less`);
+        const lo = def.min ?? (def.type === 'slider' ? 0 : undefined);
+        const hi = def.max ?? (def.type === 'slider' ? 100 : undefined);
+        if (lo !== undefined && n < lo) fail(`${def.label} must be ${lo} or more`);
+        if (hi !== undefined && n > hi) fail(`${def.label} must be ${hi} or less`);
+        if (def.type === 'slider') {
+          const steps = (n - (lo ?? 0)) / (def.step && def.step > 0 ? def.step : 1);
+          if (Math.abs(steps - Math.round(steps)) > 1e-6) fail(`${def.label} must be one of the slider steps`);
+        }
         break;
       }
       case 'date': if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) fail(`${def.label} must be a date`); break;
@@ -304,6 +367,7 @@ export function validateContactAnswers(defs: ContactFormField[], answers: unknow
         break;
       }
       case 'hidden': if (value.length > 300) value = value.slice(0, 300); break;
+      case 'signature':
       case 'file': if (!UPLOAD_ID_RE.test(value)) fail('Attach the file again'); break;
       case 'dropdown':
       case 'radio': if (!def.options?.includes(value)) bad(`"${value}" is not a choice of ${def.label}`); break;

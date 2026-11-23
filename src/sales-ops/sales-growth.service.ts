@@ -4,6 +4,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -35,6 +36,7 @@ import {
   SalesSettingsDocument,
 } from './schemas/sales-settings.schema';
 import { SalesOpsService } from './sales-ops.service';
+import { SalesVisit, SalesVisitDocument } from './schemas/sales-visit.schema';
 import type { SalesActor } from './sales-ops.util';
 import {
   type LeadRow,
@@ -84,6 +86,7 @@ export interface TargetInput {
   wonDeals?: number | null;
   wonValuePKR?: number | null;
   activities?: number | null;
+  visits?: number | null;
 }
 
 /** Sales Ops phase 3: marketing campaigns (spend → leads → sign-ups → paying) and the sales team (assignment, targets, leaderboard). */
@@ -104,6 +107,9 @@ export class SalesGrowthService {
     private readonly targets: Model<SalesTargetDocument>,
     @InjectModel(SalesSettings.name)
     private readonly settings: Model<SalesSettingsDocument>,
+    @Optional()
+    @InjectModel(SalesVisit.name)
+    private readonly visitModel?: Model<SalesVisitDocument>,
   ) {}
 
   // ── Campaigns ─────────────────────────────────────────────────────────────
@@ -349,6 +355,12 @@ export class SalesGrowthService {
           .lean(),
         this.targets.find({ month }).lean(),
       ]);
+    const visitRows: any[] = this.visitModel
+      ? await this.visitModel
+          .find({ isDelete: false, visitedAt: inMonth })
+          .select('adminId')
+          .lean()
+      : [];
     // A demo counts for whoever owns the lead (stage changes made by the system have no admin).
     const demoLeadIds = [
       ...new Set((demoChanges as any[]).map((d) => d.leadId)),
@@ -370,6 +382,7 @@ export class SalesGrowthService {
         demos: (demoChanges as any[]).map((d) => ({
           ownerAdminId: ownerOf.get(String(d.leadId)) ?? null,
         })),
+        visits: visitRows,
         closed: closed as any[],
         open: (open as any[]).map((o) => ({
           ownerAdminId: o.ownerAdminId,
@@ -382,6 +395,7 @@ export class SalesGrowthService {
         wonDeals: t.wonDeals,
         wonValuePKR: t.wonValuePKR,
         activities: t.activities,
+        visits: t.visits ?? null,
       })),
     );
     const unassignedOpen = (open as any[]).filter(
@@ -403,11 +417,13 @@ export class SalesGrowthService {
         wonDeals: clean(r.wonDeals),
         wonValuePKR: clean(r.wonValuePKR),
         activities: clean(r.activities),
+        visits: clean(r.visits),
       };
       if (
         t.wonDeals === null &&
         t.wonValuePKR === null &&
-        t.activities === null
+        t.activities === null &&
+        t.visits === null
       )
         await this.targets.deleteOne({ adminId: r.adminId, month });
       else

@@ -26,7 +26,6 @@ describe('EntitlementsService — trial vs. paid limits', () => {
   let productModel: any;
   let staffMemberModel: any;
   let employeeModel: any;
-  let addonModel: any;
 
   const leanFindOne = (value: any) => jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue(value) });
 
@@ -40,7 +39,6 @@ describe('EntitlementsService — trial vs. paid limits', () => {
     productModel = { countDocuments: jest.fn().mockResolvedValue(0) };
     staffMemberModel = { countDocuments: jest.fn().mockResolvedValue(0) };
     employeeModel = { countDocuments: jest.fn().mockResolvedValue(0) };
-    addonModel = { find: jest.fn().mockReturnValue({ lean: jest.fn().mockResolvedValue([]) }) };
 
     const db = {
       repositories: {
@@ -52,7 +50,6 @@ describe('EntitlementsService — trial vs. paid limits', () => {
         storeLocationModel: { countDocuments: jest.fn().mockResolvedValue(0) },
         storeBannerModel: { countDocuments: jest.fn().mockResolvedValue(0) },
         promotionRequestModel: { countDocuments: jest.fn().mockResolvedValue(0) },
-        platformAddonPurchaseModel: addonModel,
         aiCreditsWalletModel: { findOne: leanFindOne(null) },
       },
     } as unknown as DatabaseService;
@@ -168,14 +165,6 @@ describe('EntitlementsService — trial vs. paid limits', () => {
     staffMemberModel.countDocuments.mockResolvedValue(2);
 
     await expect(service.assertCanAddStaff(STORE_ID)).rejects.toThrow(BadRequestException);
-  });
-
-  it('a still-active legacy extra-seat add-on keeps its paid seats until it lapses', async () => {
-    setup({ storeId: STORE_ID, status: 'active', platformPlanId: 'plan-1' });
-    staffMemberModel.countDocuments.mockResolvedValue(2);
-    addonModel.find.mockReturnValue({ lean: jest.fn().mockResolvedValue([{ quantity: 1 }]) });
-
-    await expect(service.assertCanAddStaff(STORE_ID)).resolves.toBeUndefined();
   });
 
   it('getEntitlementsSummary reports the dashboard staff count', async () => {

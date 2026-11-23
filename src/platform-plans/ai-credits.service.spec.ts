@@ -106,7 +106,6 @@ describe('the billing summary shows the real AI credits', () => {
         productModel: { countDocuments: async () => 0 },
         staffMemberModel: { countDocuments: async () => 0 },
         storeLocationModel: { countDocuments: async () => 0 },
-        platformAddonPurchaseModel: { find: lean([]) },
         aiCreditsWalletModel: { findOne: lean(wallet) },
       },
     };

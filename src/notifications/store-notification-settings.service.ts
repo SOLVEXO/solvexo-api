@@ -16,6 +16,7 @@ import { renderCustomerEmail } from './customer-email-template.util';
 import { pickEmailText } from './customer-email-text.util';
 import { CUSTOMER_EMAIL_DEFAULTS_BY_LOCALE, emailUiStrings } from './customer-email-locales';
 import { normalizeLocale } from '@/markets/market-price.util';
+import { resolveStoreAccent } from '@/common/store-brand-accent.util';
 import { PreviewCustomerEmailDto, UpdateStoreNotificationSettingsDto } from './dto/update-store-notification-settings.dto';
 
 const MAX_SUBJECT = 200;
@@ -225,7 +226,7 @@ export class StoreNotificationSettingsService {
       bodyTemplate: bodyTpl,
       vars: { ...CUSTOMER_EMAIL_SAMPLE_VARS, storeName },
       storeName,
-      brand: { logoUrl: settings?.showLogo === false ? null : store.logo ?? null, accent: settings?.accentColor ?? null, footerText: settings?.footerText ?? null, locale: text.locale },
+      brand: { logoUrl: settings?.showLogo === false ? null : store.logo ?? null, accent: await resolveStoreAccent(this.r, storeId, settings?.accentColor), footerText: settings?.footerText ?? null, locale: text.locale },
       cta: dto.event === 'order_shipped'
         ? { label: ui.trackPackage, url: CUSTOMER_EMAIL_SAMPLE_VARS.trackingUrl }
         : { label: ui.viewOrder, url: CUSTOMER_EMAIL_SAMPLE_VARS.orderUrl },

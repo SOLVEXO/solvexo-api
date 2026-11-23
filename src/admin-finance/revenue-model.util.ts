@@ -5,10 +5,10 @@
  * take rate (Solvexo revenue ÷ merchant sales) is visible. Pure functions; RevenueModelService feeds them USD rows.
  */
 
-export const REVENUE_STREAMS = ['plans', 'transactionFees', 'commission', 'addons', 'posPlans', 'promotions'] as const;
+export const REVENUE_STREAMS = ['plans', 'transactionFees', 'commission', 'posPlans', 'promotions'] as const;
 export type RevenueStream = (typeof REVENUE_STREAMS)[number];
 export const STREAM_LABEL: Record<RevenueStream, string> = {
-  plans: 'Plan fees', transactionFees: 'Transaction fees', commission: 'Sales commission', addons: 'Add-ons', posPlans: 'POS plans', promotions: 'Paid promotions',
+  plans: 'Plan fees', transactionFees: 'Transaction fees', commission: 'Sales commission', posPlans: 'POS plans', promotions: 'Paid promotions',
 };
 /** Earned on merchants' sales (scales with GMV) vs paid for the software (subscriptions and one-off purchases). */
 export const TRANSACTIONAL: ReadonlySet<RevenueStream> = new Set(['transactionFees', 'commission']);

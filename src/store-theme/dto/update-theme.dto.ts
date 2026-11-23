@@ -53,6 +53,10 @@ export class UpdateThemeDto {
   @ApiProperty({ required: false }) @IsOptional() @IsIn(['pill', 'square']) badgeStyle?: string;
   @ApiProperty({ required: false }) @IsOptional() @IsIn(['show', 'hide']) cardRating?: string;
   @ApiProperty({ required: false }) @IsOptional() @IsIn(['show', 'hide']) cardTag?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsIn(['vendor', 'category', 'subcategory', 'subcategory_category', 'category_subcategory']) cardInfoLine?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsIn(['top-left', 'top-right', 'bottom-left', 'bottom-right']) cardBadgePosition?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsIn(['off', '7', '14', '30']) autoBadgeNew?: string;
+  @ApiProperty({ required: false }) @IsOptional() @IsIn(['off', '10', '25', '50', '100']) autoBadgeBest?: string;
   @ApiProperty({ required: false }) @IsOptional() @IsIn(['show', 'hide']) cardButton?: string;
   @ApiProperty({ required: false }) @IsOptional() @IsIn(['small', 'medium', 'large', 'xlarge']) headingScale?: string;
   @ApiProperty({ required: false }) @IsOptional() @IsIn(['small', 'medium', 'large']) bodyScale?: string;

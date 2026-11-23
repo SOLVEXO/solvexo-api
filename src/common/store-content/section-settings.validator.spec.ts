@@ -38,8 +38,145 @@ describe('section-settings.validator', () => {
     expect(() => validateSectionSettings('rich_text', { paddingBottom: -4 })).toThrow();
   });
 
-  it.each([-1, 161, Number.NaN, '24'])('rejects invalid section spacing: %s', spacing => {
+  it('space above/below is a margin: a minus number is allowed down to -160, inner space (padding) is not', () => {
+    expect(() => validateSectionSettings('rich_text', { spacingTop: -40, spacingBottom: -160 })).not.toThrow();
+    expect(() => validateSectionSettings('rich_text', { spacingTop: -161 })).toThrow();
+    expect(() => validateSectionSettings('rich_text', { spacingBottom: -161 })).toThrow();
+    expect(() => validateSectionSettings('rich_text', { paddingTop: -1 })).toThrow();
+  });
+
+  it.each([-161, 161, Number.NaN, '24'])('rejects invalid section spacing: %s', spacing => {
     expect(() => validateSectionSettings('rich_text', { spacingTop: spacing })).toThrow();
+  });
+  describe('design v2 (phone values, gradient/video, text style, motion, show-when rules)', () => {
+    const ok = (settings: Record<string, any>) => expect(() => validateSectionSettings('rich_text', settings)).not.toThrow();
+    const bad = (settings: Record<string, any>) => expect(() => validateSectionSettings('rich_text', settings)).toThrow(BadRequestException);
+
+    it('phone-only spacing 0-160', () => {
+      ok({ paddingTopMobile: 0, paddingBottomMobile: 160, spacingTopMobile: 8, spacingBottomMobile: 8 });
+      bad({ paddingTopMobile: 161 });
+      ok({ spacingTopMobile: -30, spacingBottomMobile: -1 }); // margins may be negative
+      bad({ spacingBottomMobile: -161 });
+      bad({ paddingTopMobile: -1 }); // padding may not
+      bad({ spacingTopMobile: '8' });
+    });
+    it('gradient colours and angle', () => {
+      ok({ gradientFrom: '#112233', gradientTo: '#AABBCC', gradientAngle: 90 });
+      bad({ gradientFrom: 'red' });
+      bad({ gradientTo: '#12345' });
+      bad({ gradientAngle: 361 });
+    });
+    it('background video: https link without quotes or brackets', () => {
+      ok({ backgroundVideoUrl: 'https://cdn.example.com/a/b.mp4' });
+      ok({ backgroundVideoUrl: '' });
+      bad({ backgroundVideoUrl: 'http://cdn.example.com/a.mp4' });
+      bad({ backgroundVideoUrl: 'https://cdn.example.com/a.mp4" onload="x' });
+      bad({ backgroundVideoUrl: 'https://cdn.example.com/a b.mp4' });
+      bad({ backgroundVideoUrl: 'javascript:alert(1)' });
+    });
+    it('text style choices and colours', () => {
+      ok({ textAlign: 'center', textAlignMobile: 'default', headingWeight: 'bold', headingCase: 'none', textColor: '#111111', headingColor: '#222222' });
+      bad({ textAlign: 'justify' });
+      bad({ headingWeight: 'heavy' });
+      ok({ headingCase: 'lowercase' });
+      ok({ headingCase: 'sentence' });
+      bad({ headingCase: 'lower' });
+      bad({ textColor: 'blue' });
+    });
+    it('entrance animation, sticky', () => {
+      ok({ animation: 'slide-up', animationSpeed: 'slow', animationDelay: 2000, sticky: true, stickyOffset: 72 });
+      bad({ animation: 'spin' });
+      bad({ animationSpeed: 'warp' });
+      bad({ animationDelay: 2001 });
+      bad({ sticky: 'yes' });
+      bad({ stickyOffset: 301 });
+    });
+    it('show-when rules', () => {
+      ok({ showTo: 'customers', showFrom: '2026-12-01T04:30:00.000Z', showUntil: '2026-12-31T19:00:00.000Z', showCountries: 'PK, AE', hideCountries: 'US', showLanguages: 'en, ur, pt-BR' });
+      ok({ showFrom: '', showUntil: null });
+      bad({ showTo: 'vip' });
+      bad({ showFrom: 'tomorrow-ish' });
+      bad({ showCountries: 'Pakistan' });
+      bad({ hideCountries: 'US;<script>' });
+      bad({ showLanguages: 'english' });
+    });
+  });
+  describe('featured products: rule-based lists', () => {
+    const ok = (settings: Record<string, any>) => expect(() => validateSectionSettings('featured_products', settings)).not.toThrow();
+    const bad = (settings: Record<string, any>) => expect(() => validateSectionSettings('featured_products', settings)).toThrow(BadRequestException);
+
+    it('accepts the rules source with every rule, and leaves older sources alone', () => {
+      ok({ source: 'rules' });
+      ok({ source: 'rules', ruleTags: ['summer', 'sale'], ruleVendors: ['Nike'], rulePriceMin: 10, rulePriceMax: 100, ruleType: 'physical', ruleStock: 'in_stock', ruleOnSale: true, ruleSort: 'price_asc', limit: 12 });
+      ok({ source: 'rules', rulePriceMin: null, ruleTags: null });
+      ok({ source: 'bestsellers', hideSoldOut: true });
+      ok({ source: 'newArrivals' });
+      ok({ source: 'category', categoryId: 'c1' });
+    });
+    it('tags and vendors: a short list of plain values', () => {
+      bad({ source: 'rules', ruleTags: 'summer' });
+      bad({ source: 'rules', ruleTags: ['a,b'] });
+      bad({ source: 'rules', ruleTags: ['<b>'] });
+      bad({ source: 'rules', ruleVendors: [''] });
+      bad({ source: 'rules', ruleTags: Array.from({ length: 21 }, (_, i) => 't' + i) });
+    });
+    it('price range: numbers, low not above high', () => {
+      bad({ source: 'rules', rulePriceMin: -1 });
+      bad({ source: 'rules', rulePriceMax: '5' });
+      bad({ source: 'rules', rulePriceMin: 50, rulePriceMax: 10 });
+    });
+    it('choices and switches', () => {
+      bad({ source: 'rules', ruleType: 'bundle' });
+      bad({ source: 'rules', ruleStock: 'out_of_stock' });
+      bad({ source: 'rules', ruleSort: 'random' });
+      bad({ source: 'rules', ruleOnSale: 'yes' });
+      bad({ source: 'rules', hideSoldOut: 1 });
+      bad({ source: 'unknown' });
+    });
+  });
+  describe('navigation items: badge, show-when rules, mega panel columns and promo cards', () => {
+    const base = { label: 'Shop', linkType: 'home' };
+    const promo = { imageUrl: 'https://cdn.example.com/a.jpg', title: 'Summer sale', text: 'Up to 50% off', buttonLabel: 'Shop now', link: { linkType: 'collection', collectionId: 'c1' } };
+    const ok = (extra: Record<string, any>) => expect(() => validateBlockSettings('nav_link', { ...base, ...extra })).not.toThrow();
+    const bad = (extra: Record<string, any>, re?: RegExp) => {
+      if (re) expect(() => validateBlockSettings('nav_link', { ...base, ...extra })).toThrow(re);
+      else expect(() => validateBlockSettings('nav_link', { ...base, ...extra })).toThrow(BadRequestException);
+    };
+
+    it('accepts a badge, the show-when rules and the mega options', () => {
+      ok({});
+      ok({ badge: 'New', badgeColor: '#ff0000', showTo: 'customers', showFrom: '2026-12-01T04:30:00.000Z', showUntil: '2026-12-31T19:00:00.000Z', showCountries: 'PK, AE', hideCountries: 'US', showLanguages: 'en, ur' });
+      ok({ badge: '', badgeColor: '', showTo: null });
+      ok({ menuStyle: 'mega', megaColumns: 4, megaPromos: [promo, { title: 'Only a title' }] });
+      ok({ children: [{ label: 'Kids', linkType: 'home', badge: 'Hot', showTo: 'guests', children: [{ label: 'Boys', linkType: 'home', badge: 'Sale' }] }] });
+    });
+    it('badge: short, plain text, a real colour', () => {
+      bad({ badge: 'x'.repeat(13) }, /badge/);
+      bad({ badge: '<b>' }, /badge/);
+      bad({ badgeColor: 'red' }, /badgeColor/);
+    });
+    it('show-when rules: the same checks sections use', () => {
+      bad({ showTo: 'vip' }, /showTo/);
+      bad({ showFrom: 'soon' }, /showFrom/);
+      bad({ showCountries: 'Pakistan' }, /showCountries/);
+      bad({ showLanguages: 'english' }, /showLanguages/);
+    });
+    it('mega columns 0-6 and at most two promo cards with only known fields', () => {
+      bad({ megaColumns: 7 }, /megaColumns/);
+      bad({ megaColumns: 2.5 }, /megaColumns/);
+      bad({ megaPromos: [promo, promo, promo] }, /at most 2/);
+      bad({ megaPromos: [{ title: 'x', onclick: 'a()' }] }, /not a promo card field/);
+      bad({ megaPromos: [{ imageUrl: 'http://x.com/a.jpg', title: 't' }] }, /https/);
+      bad({ megaPromos: [{ text: 'no picture or title' }] }, /picture or a title/);
+      bad({ megaPromos: [{ title: '<script>' }] }, /title/);
+      bad({ megaPromos: [{ title: 't', link: { linkType: 'external', url: 'javascript:alert(1)' } }] }, /https/);
+      bad({ megaPromos: [{ title: 't', link: { linkType: 'collection' } }] }, /collectionId/);
+    });
+    it('mega options belong to the top-level item, and a child badge is checked too', () => {
+      bad({ children: [{ label: 'Kids', linkType: 'home', megaColumns: 3 }] }, /top-level/);
+      bad({ children: [{ label: 'Kids', linkType: 'home', megaPromos: [promo] }] }, /top-level/);
+      bad({ children: [{ label: 'Kids', linkType: 'home', badge: 'y'.repeat(20) }] }, /children.*badge/);
+    });
   });
   describe('Shopify-parity library sections', () => {
     it('multicolumn / logo_list / marquee / image_banner accept valid settings and reject bad ones', () => {
@@ -55,6 +192,18 @@ describe('section-settings.validator', () => {
       expect(() => validateSectionSettings('image_banner', { overlayOpacity: 90 })).toThrow(BadRequestException);
     });
 
+    it('"make the whole image a link": a switch plus a real link target, on every image section', () => {
+      const good = { imageLinkOn: true, imageLink: { linkType: 'collection', collectionId: 'c1' } };
+      expect(() => validateSectionSettings('image_banner', good)).not.toThrow();
+      for (const type of ['multirow_row', 'multicolumn_column', 'image_text_pair'] as const) {
+        expect(() => validateBlockSettings(type, good)).not.toThrow();
+        expect(() => validateBlockSettings(type, { imageLinkOn: 'yes' })).toThrow(BadRequestException);
+        expect(() => validateBlockSettings(type, { imageLinkOn: true, imageLink: { linkType: 'external', url: 'javascript:alert(1)' } })).toThrow(BadRequestException);
+        expect(() => validateBlockSettings(type, { imageLinkOn: true, imageLink: { linkType: 'collection' } })).toThrow(BadRequestException);
+      }
+      expect(() => validateSectionSettings('image_banner', { imageLinkOn: 1 })).toThrow(BadRequestException);
+    });
+
     it('custom_html rejects scripts, iframes, forms, event handlers and javascript: links', () => {
       expect(() => validateSectionSettings('custom_html', { html: '<h2 style="color:red">Hi</h2><p>ok</p>' })).not.toThrow();
       for (const html of ['<script>alert(1)</script>', '<iframe src="https://x"></iframe>', '<form></form>', '<img src=x onerror=alert(1)>', '<a href="javascript:alert(1)">x</a>']) {
@@ -68,6 +217,9 @@ describe('section-settings.validator', () => {
       expect(() => validateBlockSettings('multicolumn_column', { imageUrl: 'http://insecure' })).toThrow(BadRequestException);
       expect(() => validateBlockSettings('logo_item', { imageUrl: 'https://x.test/l.png' })).not.toThrow();
       expect(() => validateBlockSettings('logo_item', {})).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('collection_item', { collectionId: 'abc', title: 'Pre-Primary', icon: 'book', ctaText: 'Shop', ctaLink: { linkType: 'home' } })).not.toThrow();
+      expect(() => validateBlockSettings('collection_item', { imageUrl: 'http://insecure' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('collection_item', { title: 'x'.repeat(121) })).toThrow(BadRequestException);
       expect(() => validateBlockSettings('marquee_item', { text: 'Free shipping' })).not.toThrow();
       expect(() => validateBlockSettings('marquee_item', { text: '' })).toThrow(BadRequestException);
     });
@@ -130,6 +282,7 @@ describe('section-settings.validator', () => {
         gallery_grid: {},
         // A theme-owned section must name which of the theme's own sections it is.
         theme_section: { sectionKey: 'hero' },
+        saved_section: { savedSectionId: '0123456789abcdef01234567' },
       };
       for (const type of SECTION_TYPES) {
         // `?? {}` — a section type not yet listed above (this map has
@@ -382,9 +535,17 @@ describe('section-settings.validator', () => {
   });
 
   describe('Main Product added blocks', () => {
-    it('variant picker style is pills or dropdown', () => {
-      expect(() => validateBlockSettings('product_variant_picker', { pickerStyle: 'dropdown' })).not.toThrow();
+    it('variant picker style: buttons, dropdown, colour swatches or picture tiles', () => {
+      for (const pickerStyle of ['pills', 'dropdown', 'swatches', 'images']) {
+        expect(() => validateBlockSettings('product_variant_picker', { pickerStyle })).not.toThrow();
+      }
       expect(() => validateBlockSettings('product_variant_picker', { pickerStyle: 'grid' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_variant_picker', {})).not.toThrow();
+    });
+    it('swatch shape and size', () => {
+      expect(() => validateBlockSettings('product_variant_picker', { pickerStyle: 'swatches', swatchShape: 'square', swatchSize: 'lg' })).not.toThrow();
+      expect(() => validateBlockSettings('product_variant_picker', { swatchShape: 'hexagon' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_variant_picker', { swatchSize: 'huge' })).toThrow(BadRequestException);
     });
     it('collapsible tab needs a title; size chart image must be https', () => {
       expect(() => validateBlockSettings('product_collapsible_tab', { title: 'Care', content: 'Wash cold' })).not.toThrow();
@@ -400,6 +561,18 @@ describe('section-settings.validator', () => {
       expect(() => validateBlockSettings('product_share', { customLinks: 'Reddit | https://www.reddit.com/submit?url={url}&title={title}' })).not.toThrow();
       expect(() => validateBlockSettings('product_share', { customLinks: 'Bad | http://x.com/?u={url}' })).toThrow(BadRequestException);
       expect(() => validateBlockSettings('product_share', { customLinks: 'NoUrl | https://x.com/' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_questions', { heading: 'Ask us', showForm: false })).not.toThrow();
+      expect(() => validateBlockSettings('product_questions', { showForm: 'yes' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_frequently_bought', { heading: 'Bought together', maxItems: 2, buttonLabel: 'Add all' })).not.toThrow();
+      expect(() => validateBlockSettings('product_frequently_bought', { maxItems: 5 })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_frequently_bought', { maxItems: 1.5 })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_trust_badges', { layout: 'grid', style: 'boxed', items: [{ icon: 'truck', title: 'Free shipping', text: 'Over $50' }] })).not.toThrow();
+      expect(() => validateBlockSettings('product_trust_badges', { items: [{ icon: 'rocket', title: 'x' }] })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_trust_badges', { items: Array.from({ length: 7 }, () => ({ icon: 'check', title: 'x' })) })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_trust_badges', { layout: 'diagonal' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_media', { layout: 'grid', aspect: 'square', zoom: false })).not.toThrow();
+      expect(() => validateBlockSettings('product_media', { layout: 'carousel' })).toThrow(BadRequestException);
+      expect(() => validateBlockSettings('product_media', { zoom: 'yes' })).toThrow(BadRequestException);
       expect(() => validateBlockSettings('product_pickup', {})).not.toThrow();
       expect(() => validateBlockSettings('product_pickup', { heading: 'Collect in store' })).not.toThrow();
       expect(() => validateBlockSettings('product_pickup', { heading: 'x'.repeat(61) })).toThrow(BadRequestException);

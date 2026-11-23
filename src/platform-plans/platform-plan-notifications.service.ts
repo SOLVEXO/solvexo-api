@@ -108,6 +108,21 @@ export class PlatformPlanNotificationsService {
     await this.send(to, `${data.storeName} moved to the free plan`, html);
   }
 
+  async sendPaymentReceived(to: string | string[], data: {
+    sellerName: string; storeName: string; planName: string; amountUSD: number; invoiceUrl?: string | null;
+  }) {
+    const linkLine = data.invoiceUrl
+      ? `<p style="text-align:center;"><a href="${data.invoiceUrl}">View your invoice</a></p>`
+      : '';
+    const html = shell('Payment received', `
+      <p>Hi ${data.sellerName},</p>
+      <p>Thank you — we received your platform-plan payment for <strong>${data.storeName}</strong> (${data.planName}).</p>
+      <div class="amount">${money(data.amountUSD)} paid</div>
+      ${linkLine}
+    `);
+    await this.send(to, `Payment received — ${money(data.amountUSD)} for ${data.storeName}`, html);
+  }
+
   async sendPaymentFailed(to: string | string[], data: {
     sellerName: string; storeName: string; planName: string; amountUSD: number;
     attemptNumber: number; maxAttempts: number; nextRetryDate: Date | null; lockDate?: Date | null;

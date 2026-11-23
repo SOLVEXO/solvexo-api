@@ -1,3 +1,4 @@
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import {
   Controller,
   Get,
@@ -56,6 +57,7 @@ export class CategoriesController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('categories.manage')
+  @AuditStoreWrites('category', 'products')
   @Post('store/:storeId/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   importCategories(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {

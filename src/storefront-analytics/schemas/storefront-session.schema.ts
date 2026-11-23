@@ -53,6 +53,10 @@ export class StorefrontSession {
   @Prop({ type: String, default: null }) utmSource: string | null;
   @Prop({ type: String, default: null }) utmMedium: string | null;
   @Prop({ type: String, default: null }) utmCampaign: string | null;
+  @Prop({ type: String, default: null }) utmTerm: string | null;
+  @Prop({ type: String, default: null }) utmContent: string | null;
+  /** 'gclid' | 'fbclid' | 'ttclid' | 'msclkid' when the landing URL carried that ad platform's click id (the id itself is not kept). */
+  @Prop({ type: String, default: null }) clickIdType: string | null;
 
   /** desktop | mobile | tablet */
   @Prop({ type: String, default: 'desktop' })

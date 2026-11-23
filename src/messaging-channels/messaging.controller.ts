@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, ForbiddenException, Get, Param, Patch, Post, Put, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -46,6 +47,7 @@ export class MessagingController {
   async optIn(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); return this.consent.optIn(s, b?.channel === 'sms' ? 'sms' : 'whatsapp', b?.phone, { source: 'manual', name: b?.name }); }
   @Post('consents/opt-out') @RequirePermission('marketing.manage')
   async optOut(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); return this.consent.optOut(s, b?.channel === 'sms' ? 'sms' : 'whatsapp', b?.phone, 'seller'); }
+  @AuditStoreWrites('sms_consent', 'marketing')
   @Post('consents/import') @RequirePermission('marketing.manage')
   async importConsents(@Req() req: any, @Param('storeId') s: string, @Body() b: any) { await this.own(req, s); return this.consent.importOptIns(s, b?.channel === 'sms' ? 'sms' : 'whatsapp', b?.rows, b?.attested); }
 

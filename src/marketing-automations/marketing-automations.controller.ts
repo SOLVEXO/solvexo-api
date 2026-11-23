@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Get, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -20,6 +21,7 @@ class BackInStockDto {
 }
 
 @ApiTags('Marketing automations')
+@AuditStoreWrites('automation', 'marketing')
 @Controller('api/marketing-automations')
 export class MarketingAutomationsController {
   constructor(private readonly automations: MarketingAutomationsService) {}

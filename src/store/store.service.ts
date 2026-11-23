@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { compileSegmentFilter, normalizeSegmentFilter, type CompiledSegment } from '../customer-segments/segment-filter.util';
+import { normalizeFloatingContact } from './floating-contact.util';
 import {
   Injectable,
   Optional,
@@ -26,7 +27,12 @@ import {
   type BusinessType, type VerificationDocumentType, type VerificationDocument,
   type VerificationStatus,
 } from './schemas/store.schema';
-import { getVerificationRequirements, isFieldSatisfied } from './verification-requirements.config';
+import { buildSellerPersonalization, SELLER_PROFILES, CAPABILITIES } from './seller-personalization';
+import { ProductType as CatalogProductType } from '../products/schemas/product.schema';
+import { getVerificationRequirements, isFieldSatisfied, VERIFICATION_DECLARATION_VERSION } from './verification-requirements.config';
+import type { RequirementOptions } from './verification-requirements.config';
+import { CHANGE_SCALAR_FIELDS, CHANGE_CONTACT_FIELDS, CHANGE_DIRECTOR_FIELDS, mergeVerificationChange, describeChange } from './verification-change.util';
+import { VERIFICATION_LIMITS } from './dto/update-verification.dto';
 import { normalizeCnic, normalizeNtn, CNIC_FORMAT_MESSAGE, NTN_FORMAT_MESSAGE } from './verification-validators';
 import {
   SOURCING_TYPES, REGULATED_CATEGORIES, PREMISES_TYPES, YEARS_SELLING, DISPATCH_TIMES, RETURN_POLICIES, MONTHLY_ORDERS,
@@ -35,7 +41,9 @@ import { SellerTrustService } from '../seller-trust/seller-trust.service';
 import { resolveCountryFromIp } from '@/common/geo-locate.util';
 import { currencyForCountry } from '@/common/country-currency.const';
 import { UploadService } from '@/upload/upload.service';
+import { isOwnKycPublicId, KYC_DOCUMENT_RESOURCE_TYPES } from '@/upload/upload-file-validation';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { UpdateStoreCustomerDto } from './dto/update-store-customer.dto';
 import { EntitlementsService, trimToMarketsLimit } from '@/platform-plans/entitlements.service';
 import { SellerPlatformSubscriptionsService } from '@/platform-plans/seller-platform-subscriptions.service';
@@ -44,7 +52,6 @@ import { NotificationsService } from '@/notifications/notifications.service';
 import { NOTIFICATION_TYPES } from '@/notifications/notification.types';
 import { RedisService } from '@/redis/redis.service';
 import { MarketingService } from '@/marketing/marketing.service';
-import { pickPrimaryCampaignForBadge } from '@/marketing/campaign-pricing.util';
 import { AdminConfigService } from '@/admin-config/admin-config.service';
 import { StoreThemeService } from '../store-theme/store-theme.service';
 import { StorePagesService } from '../store-pages/store-pages.service';
@@ -325,6 +332,29 @@ export class StoreService {
     return store;
   }
 
+  /** Static seller-type defaults + what is really shipped — onboarding reads this before any store exists. */
+  getSellerProfiles() {
+    return {
+      success: true,
+      data: {
+        profiles: Object.fromEntries(Object.entries(SELLER_PROFILES).map(([id, p]) => [id, { defaultProductTypes: p.defaultProductTypes }])),
+        capabilities: CAPABILITIES,
+      },
+    };
+  }
+
+  /** Per-store personalization: seller type + selling categories + real counts from the store's own data. Owner-scoped. */
+  async getSellerPersonalization(sellerId: string, storeId: string) {
+    const store = await this.findOwnedStoreOrThrow(sellerId, storeId);
+    const { productModel, supplierModel } = this.databaseService.repositories;
+    const [physicalProducts, digitalProducts, suppliers] = await Promise.all([
+      productModel.countDocuments({ storeId, isDelete: false, productType: CatalogProductType.PHYSICAL }),
+      productModel.countDocuments({ storeId, isDelete: false, productType: { $in: [CatalogProductType.DIGITAL, CatalogProductType.EDUCATIONAL] } }),
+      supplierModel.countDocuments({ storeId, isDelete: false, status: 'active' }),
+    ]);
+    return { success: true, data: buildSellerPersonalization(store, { physicalProducts, digitalProducts, suppliers }) };
+  }
+
   /** Documents are stored as Cloudinary private-type publicIds (never a bare
    *  URL) — a signed, short-lived URL is generated fresh on every read so a
    *  sensitive document (ID, tax cert) is never permanently link-shareable. */
@@ -334,16 +364,26 @@ export class StoreService {
     return this.uploadService.generateExpiringPrivateUrl(d.publicId, d.resourceType, 300, { inline: true });
   }
 
+  /** The admin switches that change what a seller must submit (never throws: on a settings failure the defaults apply). */
+  private async requirementOptions(): Promise<RequirementOptions> {
+    try {
+      const settings = await this.sellerTrust?.getSettings();
+      return { requireStrnForPk: settings?.requireStrnForPk === true };
+    } catch {
+      return {};
+    }
+  }
+
   /** THE evaluation used by getVerification (seller view), getLeadDetail
    *  (admin view — see AdminMarketplaceService), and submitVerification
    *  (the actual security gate) — one calculation, three consumers. Renders
    *  the FULL checklist (required + optional), each entry tagged with its
    *  current state, instead of just the list of what's missing, so the UI
    *  never has to re-derive "why is this shown" logic of its own. */
-  private evaluateVerification(store: any) {
+  private evaluateVerification(store: any, options?: RequirementOptions) {
     const v = store.verification ?? {};
     const level = store.verificationLevel ?? determineVerificationLevel(store.businessType ?? null);
-    const req = getVerificationRequirements(store.country ?? 'PK', store.businessType ?? null, level, v.businessProfile ?? null);
+    const req = getVerificationRequirements(store.country ?? 'PK', store.businessType ?? null, level, v.businessProfile ?? null, options);
 
     const missingFields = req.requiredFields.filter((path) => !isFieldSatisfied(v, path));
     // PK identifiers saved before format validation existed count as missing until corrected.
@@ -380,7 +420,7 @@ export class StoreService {
   async getVerification(sellerId: string, storeId: string) {
     const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
     const v: any = store.verification ?? {};
-    const evaluation = this.evaluateVerification(store);
+    const evaluation = this.evaluateVerification(store, await this.requirementOptions());
     const deadline = this.sellerTrust
       ? await this.sellerTrust.deadlineFor(store as any)
       : { dueAt: null, limited: false, enforcementStarted: false };
@@ -398,6 +438,7 @@ export class StoreService {
         businessAddress: v.businessAddress ?? null,
         idDocumentType: v.idDocumentType ?? null,
         authorizedContact: v.authorizedContact ?? null,
+        director: v.director ?? null,
         cnicNumber: v.cnicNumber ?? null,
         strn: v.strn ?? null,
         businessProfile: this.shapeBusinessProfile(v.businessProfile),
@@ -407,6 +448,8 @@ export class StoreService {
         missingDocuments: evaluation.missingDocuments,
         canSubmit: evaluation.canSubmit,
         history: v.history ?? [],
+        // A verified seller's waiting / decided change request (see requestVerificationChange); null when none.
+        change: this.shapeVerificationChange(v.change),
         storeStatus: store.status,
         rejectionReason: store.rejectionReason ?? null,
         // Set while verificationStatus is 'needs_info' — the admin's question.
@@ -434,21 +477,21 @@ export class StoreService {
     const country = query.country ?? store.country ?? 'PK';
     const level = determineVerificationLevel(businessType);
 
-    return { success: true, data: getVerificationRequirements(country, businessType, level) };
+    return { success: true, data: getVerificationRequirements(country, businessType, level, null, await this.requirementOptions()) };
   }
 
   /** Same preview, but usable BEFORE a store exists — onboarding doesn't
    *  create the store until the final submit step, so there's no storeId to
    *  scope `getVerificationRequirements` (above) to yet. Pure function of
    *  country+businessType, no DB read at all — no ownership check needed. */
-  previewVerificationRequirementsStandalone(query: { country?: string; businessType?: string }) {
+  async previewVerificationRequirementsStandalone(query: { country?: string; businessType?: string }) {
     const businessType = (query.businessType as BusinessType) ?? null;
     if (businessType && !BUSINESS_TYPES.includes(businessType)) {
       throw new BadRequestException('Invalid businessType');
     }
     const country = query.country ?? 'PK';
     const level = determineVerificationLevel(businessType);
-    return { success: true, data: getVerificationRequirements(country, businessType, level) };
+    return { success: true, data: getVerificationRequirements(country, businessType, level, null, await this.requirementOptions()) };
   }
 
   /** Validates a new store country (ISO alpha-2) and returns it normalised. The country decides which payment
@@ -478,10 +521,11 @@ export class StoreService {
     businessType?: BusinessType;
     legalBusinessName?: string;
     registrationNumber?: string;
-    taxId?: string;
+    taxId?: string | null;
     businessAddress?: string;
     idDocumentType?: string;
     authorizedContact?: { name?: string; designation?: string; email?: string; phone?: string };
+    director?: { name?: string; idNumber?: string };
     documents?: { type: VerificationDocumentType; publicId: string; resourceType?: string; fileName: string }[];
     cnicNumber?: string | null;
     strn?: string | null;
@@ -502,6 +546,9 @@ export class StoreService {
     if (body.documents) {
       for (const d of body.documents) {
         if (!VERIFICATION_DOCUMENT_TYPES.includes(d.type)) throw new BadRequestException(`Invalid document type: ${d.type}`);
+        // The file must be one this seller uploaded for verification — never someone else's or another private file.
+        if (!isOwnKycPublicId(d.publicId, sellerId)) throw new BadRequestException('Invalid document: upload the file again.');
+        if (d.resourceType !== undefined && !KYC_DOCUMENT_RESOURCE_TYPES.includes(d.resourceType)) throw new BadRequestException('Invalid document type.');
       }
     }
 
@@ -545,7 +592,27 @@ export class StoreService {
     if (body.businessAddress !== undefined) next.businessAddress = body.businessAddress;
     if (body.idDocumentType !== undefined) next.idDocumentType = body.idDocumentType;
     if (body.authorizedContact !== undefined) {
-      next.authorizedContact = { ...(current.authorizedContact ?? {}), ...body.authorizedContact };
+      // Only the four known keys are kept — any extra property a client sends is dropped.
+      const ac: Record<string, unknown> = body.authorizedContact ?? {};
+      const picked: Record<string, string> = {};
+      for (const key of ['name', 'designation', 'email', 'phone']) {
+        const value = ac[key];
+        if (typeof value === 'string') picked[key] = value.trim();
+      }
+      next.authorizedContact = { ...(current.authorizedContact ?? {}), ...picked };
+    }
+    if (body.director !== undefined) {
+      // Company / partnership: the person behind the business. A Pakistani ID number must be a valid CNIC (stored normalised).
+      const dir: Record<string, unknown> = body.director ?? {};
+      const pickedDir: Record<string, string | null> = {};
+      if (typeof dir.name === 'string') pickedDir.name = dir.name.trim().slice(0, VERIFICATION_LIMITS.directorName) || null;
+      if (typeof dir.idNumber === 'string') {
+        const raw = dir.idNumber.trim();
+        if (!raw) pickedDir.idNumber = null;
+        else if (isPk) { const cnic = normalizeCnic(raw); if (!cnic) throw new BadRequestException(`Director ID: ${CNIC_FORMAT_MESSAGE}`); pickedDir.idNumber = cnic; }
+        else pickedDir.idNumber = raw.slice(0, VERIFICATION_LIMITS.directorId);
+      }
+      next.director = { ...(current.director ?? {}), ...pickedDir };
     }
     if (body.documents !== undefined) {
       // Replace-by-type — re-uploading a document type overwrites the
@@ -590,14 +657,14 @@ export class StoreService {
    *  client-cached list) and rejects with a structured error naming exactly
    *  what's missing if anything is absent. This is the real security
    *  boundary — the frontend's own checklist is UX only. */
-  async submitVerification(sellerId: string, storeId: string) {
+  async submitVerification(sellerId: string, storeId: string, consent?: { accepted: boolean; ip?: string; userAgent?: string }) {
     const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
     const verificationStatus: VerificationStatus = store.verificationStatus ?? 'not_started';
     if (!EDITABLE_VERIFICATION_STATUSES.includes(verificationStatus)) {
       throw new BadRequestException('This store has already been submitted for review');
     }
 
-    const evaluation = this.evaluateVerification(store);
+    const evaluation = this.evaluateVerification(store, await this.requirementOptions());
     if (!evaluation.canSubmit) {
       throw new BadRequestException({
         message: 'Please complete every required field and document before submitting',
@@ -606,13 +673,19 @@ export class StoreService {
       });
     }
 
+    // The seller must confirm the declaration on every submit / resubmit; the backend refuses without it.
+    if (!consent?.accepted) {
+      throw new BadRequestException('Please confirm the declaration before submitting.');
+    }
+
     const nextStatus: VerificationStatus = 'pending';
     assertValidVerificationTransition(verificationStatus, nextStatus);
 
     const wasRejected = verificationStatus === 'rejected' || verificationStatus === 'needs_info';
+    const acceptedAt = new Date();
     const historyEntry = {
       action: wasRejected ? 'resubmitted' : 'submitted',
-      note: null,
+      note: `Declaration accepted (version ${VERIFICATION_DECLARATION_VERSION})`,
       actorId: sellerId,
       actorRole: 'seller',
       at: new Date(),
@@ -625,6 +698,11 @@ export class StoreService {
         infoRequestMessage: null,
         verificationSubmittedAt: new Date(),
         'verification.submitted': true,
+        'verification.consent': {
+          acceptedAt, version: VERIFICATION_DECLARATION_VERSION,
+          ip: consent.ip ? String(consent.ip).slice(0, 64) : null,
+          userAgent: consent.userAgent ? String(consent.userAgent).slice(0, 300) : null,
+        },
       },
       $push: { 'verification.history': historyEntry },
     });
@@ -638,6 +716,178 @@ export class StoreService {
     }).catch(() => {});
 
     return { success: true, message: wasRejected ? 'Resubmitted for review' : 'Submitted for review' };
+  }
+
+  // ── Change request (a VERIFIED seller cannot edit in place — see VerificationChangeRequest) ──
+
+  /** Evaluates the requirement checklist as if `verification` were the live data (used to vet a change before it is applied). */
+  async evaluateWithVerification(store: any, verification: Record<string, any>) {
+    return this.evaluateVerification(
+      { country: store.country, businessType: store.businessType, verificationLevel: store.verificationLevel, verification },
+      await this.requirementOptions(),
+    );
+  }
+
+  /**
+   * Would applying a change leave NEW required details empty? Only gaps the change itself creates count: a detail that was already
+   * missing before (e.g. a director for a company verified before that was required) never blocks an unrelated change.
+   */
+  async evaluateChangeGaps(store: any, current: Record<string, any>, merged: Record<string, any>) {
+    const [before, after] = await Promise.all([this.evaluateWithVerification(store, current), this.evaluateWithVerification(store, merged)]);
+    const missingFields = after.missingFields.filter((f: string) => !before.missingFields.includes(f));
+    const missingDocuments = after.missingDocuments.filter((d: string) => !(before.missingDocuments as string[]).includes(d));
+    return { ok: missingFields.length === 0 && missingDocuments.length === 0, missingFields, missingDocuments };
+  }
+
+  /** Stable shape of a change request for the seller (no links) and for the admin (`withLinks`: expiring links to the new files). */
+  shapeVerificationChange(change: any, withLinks = false) {
+    if (!change || change.status === 'cancelled') return null;
+    return {
+      status: change.status,
+      fields: change.fields ?? {},
+      documents: (change.documents ?? []).map((d: VerificationDocument) => ({
+        type: d.type, fileName: d.fileName, uploadedAt: d.uploadedAt, viewUrl: withLinks ? this.signedDocumentUrl(d) : null,
+      })),
+      sellerNote: change.sellerNote ?? null,
+      requestedAt: change.requestedAt ?? null,
+      reviewedAt: change.reviewedAt ?? null,
+      rejectionReason: change.rejectionReason ?? null,
+      consent: change.consent ? { acceptedAt: change.consent.acceptedAt, version: change.consent.version } : null,
+    };
+  }
+
+  /**
+   * A verified seller asks to change their details / files. Nothing live changes: the request waits for an admin.
+   * Only values that really differ are kept, formats are checked like a normal save, new files must be this seller's own
+   * uploads, the result must still satisfy every requirement, and the seller must accept the declaration again.
+   */
+  async requestVerificationChange(
+    sellerId: string,
+    storeId: string,
+    body: {
+      legalBusinessName?: string | null; registrationNumber?: string | null; taxId?: string | null; strn?: string | null;
+      cnicNumber?: string | null; businessAddress?: string | null;
+      authorizedContact?: { name?: string; designation?: string; email?: string; phone?: string };
+      director?: { name?: string; idNumber?: string };
+      documents?: { type: VerificationDocumentType; publicId: string; resourceType?: string; fileName: string }[];
+      note?: string | null;
+    },
+    consent?: { accepted: boolean; ip?: string; userAgent?: string },
+  ) {
+    const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
+    if ((store.verificationStatus ?? 'not_started') !== 'verified') {
+      throw new BadRequestException('Your details are not verified yet, so you can edit them directly. Change requests are for verified stores.');
+    }
+    if (!consent?.accepted) throw new BadRequestException('Please confirm the declaration before submitting.');
+
+    const current: any = (store.verification as any)?.toObject?.() ?? store.verification ?? {};
+    if (current.change?.status === 'pending') {
+      throw new BadRequestException('You already have a change request waiting for review. Cancel it to send a new one.');
+    }
+
+    const isPk = String(store.country ?? 'PK').toUpperCase() === 'PK';
+    const text = (raw: unknown, max: number): string | null => {
+      if (raw === null || raw === undefined) return null;
+      const s = String(raw).trim().slice(0, max);
+      return s === '' ? null : s;
+    };
+    const L = VERIFICATION_LIMITS;
+    const limits: Record<string, number> = {
+      legalBusinessName: L.legalBusinessName, registrationNumber: L.registrationNumber, taxId: L.taxId,
+      strn: L.strn, cnicNumber: L.idNumber, businessAddress: L.businessAddress,
+    };
+
+    const fields: Record<string, unknown> = {};
+    for (const key of CHANGE_SCALAR_FIELDS) {
+      if (body[key] === undefined) continue;
+      let next = text(body[key], limits[key]);
+      if (next && isPk && key === 'taxId') { next = normalizeNtn(next); if (!next) throw new BadRequestException(NTN_FORMAT_MESSAGE); }
+      if (next && isPk && key === 'cnicNumber') { next = normalizeCnic(next); if (!next) throw new BadRequestException(CNIC_FORMAT_MESSAGE); }
+      if (next !== (current[key] ?? null)) fields[key] = next;
+    }
+    const contact: Record<string, string> = {};
+    for (const key of CHANGE_CONTACT_FIELDS) {
+      const raw = body.authorizedContact?.[key];
+      if (raw === undefined) continue;
+      const next = String(raw ?? '').trim().slice(0, key === 'email' ? L.contactEmail : key === 'phone' ? L.contactPhone : L.contactName);
+      if (next !== String(current.authorizedContact?.[key] ?? '')) contact[key] = next;
+    }
+    if (Object.keys(contact).length) fields.authorizedContact = contact;
+
+    // Company / partnership: the director behind the business (same format rules as a normal save).
+    const directorChange: Record<string, string | null> = {};
+    for (const key of CHANGE_DIRECTOR_FIELDS) {
+      const raw = body.director?.[key];
+      if (raw === undefined) continue;
+      let next = text(raw, key === 'name' ? L.directorName : L.directorId);
+      if (next && isPk && key === 'idNumber') { next = normalizeCnic(next); if (!next) throw new BadRequestException(`Director ID: ${CNIC_FORMAT_MESSAGE}`); }
+      if (next !== (current.director?.[key] ?? null)) directorChange[key] = next;
+    }
+    if (Object.keys(directorChange).length) fields.director = directorChange;
+
+    const byType = new Map<string, VerificationDocument>();
+    for (const d of body.documents ?? []) {
+      if (!VERIFICATION_DOCUMENT_TYPES.includes(d.type)) throw new BadRequestException(`Invalid document type: ${d.type}`);
+      if (!isOwnKycPublicId(d.publicId, sellerId)) throw new BadRequestException('Invalid document: upload the file again.');
+      if (d.resourceType !== undefined && !KYC_DOCUMENT_RESOURCE_TYPES.includes(d.resourceType)) throw new BadRequestException('Invalid document type.');
+      byType.set(d.type, { type: d.type, publicId: d.publicId, resourceType: d.resourceType ?? 'raw', fileName: String(d.fileName).slice(0, L.fileName), uploadedAt: new Date() });
+    }
+    const documents = [...byType.values()];
+
+    if (!Object.keys(fields).length && !documents.length) throw new BadRequestException('You have not changed anything.');
+
+    // The details must still be complete after the change (e.g. the seller cannot blank a required field).
+    const { merged } = mergeVerificationChange(current, { fields, documents });
+    const gaps = await this.evaluateChangeGaps(store, current, merged);
+    if (!gaps.ok) {
+      throw new BadRequestException({
+        message: 'This change would leave required details empty',
+        missingFields: gaps.missingFields,
+        missingDocuments: gaps.missingDocuments,
+      });
+    }
+
+    const now = new Date();
+    await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, {
+      $set: {
+        'verification.change': {
+          status: 'pending', fields, documents,
+          sellerNote: text(body.note, 500), requestedAt: now,
+          consent: {
+            acceptedAt: now, version: VERIFICATION_DECLARATION_VERSION,
+            ip: consent.ip ? String(consent.ip).slice(0, 64) : null,
+            userAgent: consent.userAgent ? String(consent.userAgent).slice(0, 300) : null,
+          },
+          reviewedAt: null, reviewedBy: null, rejectionReason: null,
+        },
+      },
+      $push: { 'verification.history': { action: 'change_requested', note: describeChange({ fields, documents }).join(', '), actorId: sellerId, actorRole: 'seller', at: now } },
+    });
+
+    this.notificationsService.notifyAdmins({
+      type: NOTIFICATION_TYPES.ADMIN_VERIFICATION_CHANGE_REQUESTED,
+      title: 'Verified store asked to change its details',
+      body: `"${(store as any).name ?? 'A store'}" sent a change request: ${describeChange({ fields, documents }).join(', ')}.`,
+      data: { storeId, link: `/admin/seller-trust/${storeId}` },
+    }).catch(() => {});
+
+    return { success: true, message: 'Change request sent. Your current details stay in place until Solvexo approves it.' };
+  }
+
+  /** The seller withdraws a waiting change request; the files they uploaded for it are deleted. */
+  async cancelVerificationChange(sellerId: string, storeId: string) {
+    const store = await this.findOwnedStoreOrThrow(sellerId, storeId, { withVerification: true });
+    const change: any = (store.verification as any)?.change;
+    if (change?.status !== 'pending') throw new BadRequestException('There is no change request waiting for review.');
+    const now = new Date();
+    await this.databaseService.repositories.storeModel.findByIdAndUpdate(storeId, {
+      $set: { 'verification.change.status': 'cancelled', 'verification.change.reviewedAt': now },
+      $push: { 'verification.history': { action: 'change_cancelled', note: null, actorId: sellerId, actorRole: 'seller', at: now } },
+    });
+    for (const d of (change.documents ?? []) as VerificationDocument[]) {
+      await this.uploadService.deletePrivateFile(d.publicId, d.resourceType).catch(() => undefined);
+    }
+    return { success: true, message: 'Change request cancelled' };
   }
 
   /** Validates the questionnaire part of a verification PATCH; only the keys sent are returned (partial update). */
@@ -677,6 +927,7 @@ export class StoreService {
     oneOf('returnPolicy', RETURN_POLICIES);
     oneOf('monthlyOrders', MONTHLY_ORDERS);
     bool('bankAccountInOwnName');
+    bool('salesTaxRegistered');
     return out;
   }
 
@@ -694,6 +945,7 @@ export class StoreService {
       returnPolicy: p?.returnPolicy ?? null,
       monthlyOrders: p?.monthlyOrders ?? null,
       bankAccountInOwnName: p?.bankAccountInOwnName ?? null,
+      salesTaxRegistered: p?.salesTaxRegistered ?? null,
     };
   }
 
@@ -705,7 +957,7 @@ export class StoreService {
   async getVerificationEvaluationForAdmin(storeId: string) {
     const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false }).select('+verification');
     if (!store) throw new NotFoundException('Store not found');
-    return this.evaluateVerification(store);
+    return this.evaluateVerification(store, await this.requirementOptions());
   }
 
   /** KYC document upload — thin wrapper so the frontend can upload straight
@@ -859,22 +1111,6 @@ export class StoreService {
     // Sensible default: fully crawlable except the buyer's own account/cart/
     // checkout surfaces, which have no SEO value and shouldn't be indexed.
     return ['User-agent: *', 'Allow: /', 'Disallow: /account', 'Disallow: /cart', 'Disallow: /checkout'].join('\n') + '\n';
-  }
-
-  /** Platform-plan-gated: only stores on a plan with `whiteLabelAllowed` may hide Solvexo branding. */
-  async setWhiteLabel(sellerId: string, storeId: string, enabled: boolean) {
-    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
-    if (!store) throw new NotFoundException('Store not found');
-    if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
-
-    if (enabled) {
-      await this.entitlementsService.assertFeatureAllowed(storeId, 'whiteLabelAllowed', 'White-label branding');
-    }
-
-    store.whiteLabelEnabled = enabled;
-    await store.save();
-
-    return { success: true, message: 'White-label setting updated', data: { whiteLabelEnabled: store.whiteLabelEnabled } };
   }
 
   /**
@@ -1230,8 +1466,8 @@ export class StoreService {
   // recovery flows should be able to change. Accepting it from the request
   // body would let a seller un-suspend their own store (see
   // usersService.deleteSellerAccount, which suspends stores on delete).
-  async updateStore(sellerId: string, storeId: string, body: any) {
-    const { name, logo, faviconUrl, description, tagline, contactEmail, contactPhone, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, taxId, taxRegistered, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, customerAccounts, timezone, currencyDisplay, defaultLanguage } = body;
+  async updateStore(sellerId: string, storeId: string, body: any, actor?: { id: string; role: string }) {
+    const { name, logo, faviconUrl, description, tagline, contactEmail, contactPhone, mailingAddress, sellerType, productTypes, codEnabled, paymentCaptureMethod, dashboardMetrics, reviewModerationEnabled, lowStockThreshold, taxRate, taxRegions, taxShipping, taxPricesIncludeTax, taxOverrides, taxId, taxRegistered, showDutiesNotice, enabledCurrencies, cookieBannerEnabled, cookieBannerMessage, showDoNotSellLink, cookieBannerRegionMode, cookieBannerPosition, cookieBannerColorMode, floatingContact, customerAccounts, timezone, currencyDisplay, defaultLanguage } = body;
 
     if (!storeId) throw new BadRequestException('storeId is required');
 
@@ -1249,6 +1485,10 @@ export class StoreService {
       throw new BadRequestException('Invalid sellerType');
     }
 
+    // productTypes must be a real array of known types; duplicates are collapsed (a non-array used to slip through and 500 in resolveTools).
+    if (productTypes !== undefined && productTypes !== null && !Array.isArray(productTypes)) {
+      throw new BadRequestException('productTypes must be an array');
+    }
     if (productTypes && Array.isArray(productTypes)) {
       const validTypes = Object.values(ProductType);
       for (const pt of productTypes) {
@@ -1281,6 +1521,10 @@ export class StoreService {
     if (tagline !== undefined) updateData.tagline = tagline;
     if (contactEmail !== undefined) updateData.contactEmail = contactEmail;
     if (contactPhone !== undefined) updateData.contactPhone = contactPhone;
+    if (mailingAddress !== undefined) {
+      const addr = typeof mailingAddress === 'string' ? mailingAddress.replace(/\s+/g, ' ').trim().slice(0, 300) : '';
+      updateData.mailingAddress = addr || null;
+    }
     if (sellerType !== undefined) updateData.sellerType = sellerType;
     if (codEnabled !== undefined) updateData.codEnabled = !!codEnabled;
     if (paymentCaptureMethod !== undefined) {
@@ -1458,10 +1702,13 @@ export class StoreService {
       updateData.cookieBannerColorMode = cookieBannerColorMode;
     }
 
+    if (floatingContact !== undefined) updateData.floatingContact = normalizeFloatingContact(floatingContact);
+
     // productTypes change ho to enabledTools bhi refresh
-    if (productTypes !== undefined) {
-      updateData.productTypes = productTypes;
-      updateData.enabledTools = resolveTools(productTypes);
+    if (productTypes !== undefined && productTypes !== null) {
+      const uniqueProductTypes = [...new Set(productTypes as ProductType[])];
+      updateData.productTypes = uniqueProductTypes;
+      updateData.enabledTools = resolveTools(uniqueProductTypes);
     }
 
     const updated = await this.databaseService.repositories.storeModel.findByIdAndUpdate(
@@ -1469,6 +1716,28 @@ export class StoreService {
       updateData,
       { new: true },
     );
+
+    // The store's home title/description/logo/domain feed the crawler view: clear it so a rename shows up at once.
+    void this.redisService.del(`seo:meta:store:${String(store._id)}`).catch(() => undefined);
+
+    // Who the seller says they are / what they sell drives setup guidance and admin views, so a change is recorded.
+    const profileChanges: string[] = [];
+    if (sellerType !== undefined && (store.sellerType ?? null) !== (sellerType ?? null)) {
+      profileChanges.push(`seller type ${store.sellerType ?? 'not set'} -> ${sellerType ?? 'not set'}`);
+    }
+    if (updateData.productTypes) {
+      const before = [...(store.productTypes ?? [])].sort().join(',');
+      const after = [...updateData.productTypes].sort().join(',');
+      if (before !== after) profileChanges.push(`selling categories ${before || 'none'} -> ${after || 'none'}`);
+    }
+    if (profileChanges.length) {
+      this.activityLogService.log({
+        storeId, category: 'settings', action: 'store_business_profile_updated',
+        description: `Business profile changed: ${profileChanges.join('; ')}`,
+        // A staff member acts for the owner: record who really did it (the controller passes the caller as `actor`).
+        actorId: actor?.id ?? sellerId, actorRole: actor?.role ?? 'seller',
+      });
+    }
 
     return {
       success: true,
@@ -1575,9 +1844,6 @@ export class StoreService {
   }
 
   private async shapePublicStoreResponse(store: any, visitorIp?: string) {
-    const campaigns = await this.marketingService.getActiveCampaignsForStore(store._id.toString());
-    const primaryCampaign = pickPrimaryCampaignForBadge(campaigns);
-
     const bar = store.announcementBar;
     const now = Date.now();
     const announcementActive = !!bar?.isActive
@@ -1661,6 +1927,7 @@ export class StoreService {
         cookieBannerPosition: store.cookieBannerPosition ?? 'bottom_bar',
         cookieBannerColorMode: store.cookieBannerColorMode ?? 'dark',
         showDoNotSellLink: !!store.showDoNotSellLink,
+        floatingContact: store.floatingContact?.enabled ? store.floatingContact : null,
         announcementBar: announcementActive && visibleAnnouncements.length ? {
           message: visibleAnnouncements[0].message, type: bar.type, ctaLabel: visibleAnnouncements[0].ctaLabel, ctaLink: visibleAnnouncements[0].ctaLink,
           moreMessages: visibleAnnouncements.slice(1), rotateSeconds: bar.rotateSeconds ?? 5, closable: bar.closable !== false,
@@ -1670,14 +1937,6 @@ export class StoreService {
           showIcon: bar.showIcon !== false, device: bar.device ?? 'all', dismissFor: bar.dismissFor ?? 'forever',
           countdownEndAt: bar.countdownEndAt ?? null, linkStyle: bar.linkStyle ?? 'underline', barHeight: bar.barHeight ?? 'md',
         } : null,
-        activeCampaign: primaryCampaign ? {
-          campaignId: primaryCampaign.campaignId,
-          name: primaryCampaign.name,
-          discountType: primaryCampaign.discountType,
-          discountValue: primaryCampaign.discountValue,
-          currency: primaryCampaign.currency,
-          endDate: primaryCampaign.endDate,
-        } : null,
       },
     };
   }
@@ -1685,7 +1944,6 @@ export class StoreService {
   private shapeStoreListItem(
     store: any,
     productCount: number | null = null,
-    activeCampaign: ReturnType<typeof pickPrimaryCampaignForBadge> = null,
   ): any {
     return {
       storeId: store._id,
@@ -1700,14 +1958,6 @@ export class StoreService {
       sellerType: store.sellerType ?? null,
       badges: store.badges ?? [],
       ...(productCount !== null ? { productCount } : {}),
-      activeCampaign: activeCampaign ? {
-        campaignId: activeCampaign.campaignId,
-        name: activeCampaign.name,
-        discountType: activeCampaign.discountType,
-        discountValue: activeCampaign.discountValue,
-        currency: activeCampaign.currency,
-        endDate: activeCampaign.endDate,
-      } : null,
     };
   }
 
@@ -1749,7 +1999,6 @@ export class StoreService {
         ])
       : [];
     const productCountByStore = new Map<string, number>(productCounts.map((r: any) => [r._id, r.count]));
-    const campaignsByStore = await this.marketingService.getActiveCampaignsForStores(storeIds);
 
     return {
       success: true,
@@ -1759,7 +2008,6 @@ export class StoreService {
           this.shapeStoreListItem(
             s,
             productCountByStore.get(s._id.toString()) ?? 0,
-            pickPrimaryCampaignForBadge(campaignsByStore.get(s._id.toString()) ?? []),
           ),
         ),
       },
@@ -1789,13 +2037,11 @@ export class StoreService {
         ])
       : [];
     const productCountByStore = new Map<string, number>(productCounts.map((r: any) => [r._id, r.count]));
-    const campaignsByStore = await this.marketingService.getActiveCampaignsForStores(storeIds);
 
     const shaped = stores.map((s: any) =>
       this.shapeStoreListItem(
         s,
         productCountByStore.get(s._id.toString()) ?? 0,
-        pickPrimaryCampaignForBadge(campaignsByStore.get(s._id.toString()) ?? []),
       ),
     );
     await this.redisService.set(cacheKey, JSON.stringify(shaped), 600);
@@ -2175,24 +2421,20 @@ export class StoreService {
       .select('name isVerified')
       .lean();
 
-    // Every product on this page belongs to the same store, so this is one
-    // lookup for the whole page, not per-product — same active-campaign
-    // resolution checkout pricing uses.
-    const storeCampaigns = await this.marketingService.getActiveCampaignsForStore(storeId);
-    const primaryCampaign = pickPrimaryCampaignForBadge(storeCampaigns);
-    const activeCampaignBadge = primaryCampaign ? {
-      campaignId: primaryCampaign.campaignId,
-      name: primaryCampaign.name,
-      discountType: primaryCampaign.discountType,
-      discountValue: primaryCampaign.discountValue,
-      currency: primaryCampaign.currency,
-      endDate: primaryCampaign.endDate,
-    } : null;
+    // Category + sub-category names for the product card's info line: one lookup for the whole page.
+    const cardCategoryIds = [...new Set(products.flatMap((p: any) => [p.categoryId, p.subCategoryId]).filter(Boolean).map(String).filter((id: string) => /^[a-f0-9]{24}$/i.test(id)))];
+    const cardCategoryNames = new Map<string, string>();
+    if (cardCategoryIds.length) {
+      const cats: any[] = await this.databaseService.repositories.categoryModel.find({ _id: { $in: cardCategoryIds }, isDelete: false }).select('name').lean();
+      for (const c of cats) cardCategoryNames.set(String(c._id), c.name);
+    }
 
     const enrichedProducts = products.map((p: any) => {
       const variant = cheapestByProduct.get(p._id.toString());
       const base: any = {
         ...p,
+        categoryName:        p.categoryId ? cardCategoryNames.get(String(p.categoryId)) ?? '' : '',
+        subCategoryName:     p.subCategoryId ? cardCategoryNames.get(String(p.subCategoryId)) ?? '' : '',
         variants:            variantsByProduct.get(p._id.toString()) ?? [],
         sellerName:          seller ? seller.name : null,
         sellerVerified:      seller ? !!seller.isVerified : false,
@@ -2201,7 +2443,6 @@ export class StoreService {
         stock:               variant?.stock ?? null,
         compareAtPrice:      variant?.compareAtPrice ?? null,
         inStock:             (variantsByProduct.get(p._id.toString()) ?? []).some((v: any) => v.unlimitedStock || v.allowBackorder || availableStock(v) > 0),
-        activeCampaign:      activeCampaignBadge,
       };
       return base;
     });
@@ -2244,7 +2485,7 @@ export class StoreService {
       { $match: { ids: { $nin: [null, ''] } } },
       { $group: { _id: '$ids', count: { $sum: 1 } } },
     ]);
-    const categoryIds = categoryAgg.map((c) => c._id).filter(Boolean);
+    const categoryIds = categoryAgg.map((c) => c._id).filter((id) => /^[a-f0-9]{24}$/i.test(String(id ?? '')));
     const categories = categoryIds.length
       ? await categoryModel.find({ _id: { $in: categoryIds }, isDelete: false }).select('name slug').lean()
       : [];
@@ -2499,6 +2740,8 @@ export class StoreService {
           tags: { $ifNull: ['$meta.tags', []] },
           notes: { $ifNull: ['$meta.notes', ''] },
           isArchived: { $ifNull: ['$meta.isArchived', false] },
+          smsMarketingOptIn: { $ifNull: ['$meta.smsMarketingOptIn', false] },
+          whatsappMarketingOptIn: { $ifNull: ['$meta.whatsappMarketingOptIn', false] },
           // Shopify's four states: subscribed · pending (double opt-in not
           // confirmed yet) · unsubscribed (opted out) · not_subscribed (never
           // agreed). Campaigns only ever reach `subscribed`.
@@ -2757,10 +3000,35 @@ export class StoreService {
     const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, sellerId, isDelete: false }).select('_id').lean();
     if (!store) throw new UnauthorizedException('Store not found or unauthorized');
     const { userModel } = this.databaseService.repositories;
+    const { posCustomerModel, storeCustomerMetaModel, addressModel } = this.databaseService.repositories;
     return importCustomersCsv(
       {
         exists: async (email) => !!(await userModel.exists({ storeId, email: String(email), isDelete: { $ne: true } })),
-        create: (dto) => this.createStoreCustomer(sellerId, storeId, dto, ip, userAgent),
+        create: async (dto) => {
+          const res = await this.createStoreCustomer(sellerId, storeId, { name: dto.name, email: dto.email, phone: dto.phone, marketingConsent: dto.marketingConsent }, ip, userAgent);
+          const userId = res.data._id;
+          const now = new Date();
+          const set: Record<string, unknown> = {};
+          if (dto.tags) set.tags = dto.tags;
+          if (dto.notes) set.notes = dto.notes;
+          if (dto.smsConsent) Object.assign(set, { smsMarketingOptIn: true, smsMarketingConsentAt: now });
+          if (dto.whatsappConsent) Object.assign(set, { whatsappMarketingOptIn: true, whatsappMarketingConsentAt: now });
+          if (Object.keys(set).length) await storeCustomerMetaModel.updateOne({ storeId, userId }, { $set: set });
+          // The customer's first saved address becomes their default, as at checkout.
+          if (dto.address && !(await addressModel.exists({ userId, isDelete: false }))) {
+            await addressModel.create({ userId, label: 'Home', ...dto.address, addressLine2: dto.address.addressLine2 ?? undefined, country: dto.address.country ?? undefined, isDefault: true });
+          }
+          return res;
+        },
+        shopExists: async (phone) => !!(await posCustomerModel.exists({ storeId, phone, isDelete: false })),
+        createShop: async (dto) => {
+          const consent = dto.smsConsent || dto.whatsappConsent;
+          await posCustomerModel.create({
+            storeId, name: dto.name, phone: dto.phone, email: null, address: dto.address, notes: dto.notes,
+            smsMarketingConsent: dto.smsConsent, whatsappMarketingConsent: dto.whatsappConsent, marketingConsentAt: consent ? new Date() : null,
+            userId: null, createdBy: sellerId, source: 'import',
+          });
+        },
       },
       text,
       { consentConfirmed },
@@ -2809,6 +3077,7 @@ export class StoreService {
             _id: 1, name: 1, email: 1, phone: 1, createdAt: 1,
             orderCount: 1, totalSpent: 1, lastOrderAt: 1, segment: 1,
             tags: 1, notes: 1, isArchived: 1, marketingOptIn: 1, isErased: 1,
+            smsMarketingOptIn: 1, whatsappMarketingOptIn: 1,
             marketingStatus: 1, marketingSource: 1, marketingConsentAt: 1, marketingUnsubscribedAt: 1,
             isSubscriberOnly: 1,
           },
@@ -3309,6 +3578,8 @@ export class StoreService {
         tags: meta?.tags ?? [],
         notes: meta?.notes ?? '',
         marketingOptIn: meta?.marketingOptIn ?? false,
+        smsMarketingOptIn: (meta as any)?.smsMarketingOptIn ?? false,
+        whatsappMarketingOptIn: (meta as any)?.whatsappMarketingOptIn ?? false,
       },
       orders: orders.map((o: any) => ({
         orderNumber: o.orderNumber,

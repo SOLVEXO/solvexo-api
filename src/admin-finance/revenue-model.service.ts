@@ -12,7 +12,7 @@ const month = (field: string) => ({ $dateToString: { format: '%Y-%m', date: fiel
 
 /**
  * Solvexo revenue by stream and month, merchant GMV, take rate and revenue concentration (see revenue-model.util.ts).
- * Uses the same rules as Finance → Solvexo revenue (plan invoices net of tax and refunds, add-on charges, collected
+ * Uses the same rules as Finance → Solvexo revenue (plan invoices net of tax and refunds, collected
  * transaction-fee bills) plus commission on platform-held sales (as on the Analytics overview), POS plan purchases
  * and paid promotions. Store-app build fees aren't stored per request, so they're left out and the response says so.
  */
@@ -40,7 +40,7 @@ export class RevenueModelService {
     const to = new Date(now);
     const r = this.r;
 
-    const [plans, fees, addons, commission, pos, promos, gmv, rates] = await Promise.all([
+    const [plans, fees, commission, pos, promos, gmv, rates] = await Promise.all([
       r.platformPlanInvoiceModel.aggregate([
         { $match: { status: { $in: ['paid', 'partially_refunded', 'refunded'] }, isDelete: false, paidAt: { $gte: from, $lte: to } } },
         // Same as Finance: Solvexo's own tax isn't revenue, and a refund splits between net and tax like the charge did.
@@ -51,12 +51,6 @@ export class RevenueModelService {
       r.transactionFeeBillModel.aggregate([
         { $match: { status: 'paid', isDelete: false, paidAt: { $gte: from, $lte: to } } },
         { $group: { _id: { m: month('$paidAt'), s: '$storeId' }, amount: { $sum: '$amountUSD' } } },
-      ]),
-      r.platformAddonPurchaseModel.aggregate([
-        { $addFields: { _charges: { $cond: [{ $gt: [{ $size: { $ifNull: ['$charges', []] } }, 0] }, '$charges', [{ amountUSD: '$priceUSD', chargedAt: '$createdAt' }]] } } },
-        { $unwind: '$_charges' },
-        { $match: { '_charges.chargedAt': { $gte: from, $lte: to } } },
-        { $group: { _id: { m: month('$_charges.chargedAt'), s: '$storeId' }, amount: { $sum: '$_charges.amountUSD' } } },
       ]),
       // Commission netted out of platform-held sales; direct-settled sales are billed as transaction fees instead.
       r.transactionModel.aggregate([
@@ -89,7 +83,7 @@ export class RevenueModelService {
     });
     const streamRows: Record<RevenueStream, (MonthRow & StoreRow)[]> = {
       plans: usdRows(plans, false), transactionFees: usdRows(fees, false), commission: usdRows(commission, true),
-      addons: usdRows(addons, false), posPlans: usdRows(pos, true), promotions: usdRows(promos, false),
+      posPlans: usdRows(pos, true), promotions: usdRows(promos, false),
     };
 
     const monthly = buildMonths(keys, streamRows, gmv.map((g: any) => ({ month: g._id, gmv: g.gmv ?? 0, orders: g.orders ?? 0 })));

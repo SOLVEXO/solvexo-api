@@ -67,6 +67,6 @@ import { PurchaseOrdersModule } from '@/purchase-orders/purchase-orders.module';
   providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService, PosCustomerCore, PosCustomersService, PosSupplyService, PosCashService, PosTeamService, PosReportsService, PosPermissionsStoreService, PosAuditSealService, PosStoreSettingsService, PosCatalogAdminService, PosProductEditService, PosReceiptDeliveryService, PosFiscalService, PosConnectorsService, PosApiKeysService, PosApiKeyGuard, PosApiKeyAuditInterceptor, EmailService, PosReprintService,
     // G4.8: "hide costs from managers" for every POS response, in one place
     { provide: APP_INTERCEPTOR, useClass: CostVisibilityInterceptor }],
-  exports: [PosService, PosAuthorizer],
+  exports: [PosService, PosAuthorizer, PosCashService, PosReportsService, PosSupplyService],
 })
 export class PosModule {}

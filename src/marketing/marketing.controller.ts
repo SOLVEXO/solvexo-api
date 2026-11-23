@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Controller, Get, Post, Patch, Delete, Param, Body, Query, Req, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { MarketingService } from './marketing.service';
@@ -30,6 +31,7 @@ export class MarketingController {
   }
 
   @RequirePermission('discounts.manage')
+  @AuditStoreWrites('coupon', 'marketing')
   @Post(':storeId/coupons/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   importCoupons(@Req() req: any, @Param('storeId') storeId: string, @UploadedFile() file: any) {
@@ -58,25 +60,5 @@ export class MarketingController {
   @Delete(':storeId/coupons/:couponId')
   deleteCoupon(@Req() req: any, @Param('storeId') storeId: string, @Param('couponId') couponId: string) {
     return this.marketingService.deleteCoupon(actingSellerId(req.user), storeId, couponId, req.ip, req.headers['user-agent']);
-  }
-
-  // ─── Platform-wide sale campaigns (admin-created, seller opt-in) ────────
-
-  @RequirePermission('marketing.manage')
-  @Get(':storeId/campaigns')
-  getJoinableCampaigns(@Req() req: any, @Param('storeId') storeId: string) {
-    return this.marketingService.getJoinableCampaigns(actingSellerId(req.user), storeId);
-  }
-
-  @RequirePermission('marketing.manage')
-  @Post(':storeId/campaigns/:campaignId/join')
-  joinCampaign(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string) {
-    return this.marketingService.joinCampaign(actingSellerId(req.user), storeId, campaignId, req.ip, req.headers['user-agent']);
-  }
-
-  @RequirePermission('marketing.manage')
-  @Delete(':storeId/campaigns/:campaignId/leave')
-  leaveCampaign(@Req() req: any, @Param('storeId') storeId: string, @Param('campaignId') campaignId: string) {
-    return this.marketingService.leaveCampaign(actingSellerId(req.user), storeId, campaignId, req.ip, req.headers['user-agent']);
   }
 }

@@ -21,8 +21,13 @@ export class AbandonedCartSettings {
   // A multi-seller cart is evaluated against every participating store's own
   // setting — see AbandonedCartService.processAbandonedCarts — so one
   // seller's shorter delay can trigger the single reminder email sooner.
-  @Prop({ type: Number, default: 60, min: 5 })
+  @Prop({ type: Number, default: 600, min: 5 })
   delayMinutes: number;
+
+  // Who gets the reminder — same choice as Shopify's "To:" field: only customers who agreed to marketing emails (default), or
+  // every shopper who left a checkout (people who unsubscribed are never mailed either way).
+  @Prop({ type: String, enum: ['subscribed', 'all'], default: 'subscribed' })
+  audience: 'subscribed' | 'all';
 
   @Prop({ type: String, default: "You left something in your cart" })
   subject: string;
@@ -43,6 +48,12 @@ export class AbandonedCartSettings {
 
   // Optional second reminder, sent once, `secondReminderDelayHours` after the first one, only if the shopper still has not
   // ordered. Off until the seller switches it on.
+  // Drag-and-drop designs (the web app's EmailDesign JSON) and their rendered HTML with {{tags}}; when set they replace the plain text.
+  @Prop({ type: Object, default: null }) design: Record<string, unknown> | null;
+  @Prop({ type: String, default: null }) html: string | null;
+  @Prop({ type: Object, default: null }) secondDesign: Record<string, unknown> | null;
+  @Prop({ type: String, default: null }) secondHtml: string | null;
+
   @Prop({ type: Boolean, default: false })
   secondReminderEnabled: boolean;
 

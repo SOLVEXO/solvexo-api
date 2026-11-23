@@ -18,21 +18,21 @@ import { translatedHandleClause } from '../common/translated-handle.util';
 import { InjectConnection } from '@nestjs/mongoose';
 import { ClientSession, Connection, Types, isValidObjectId } from 'mongoose';
 import {
-  PRODUCT_LIMITS, assertMoney, assertStockQuantity, copySku, findDuplicateSku, generateSkus, normalizeBarcode, normalizeDescription, normalizeShortDescription, normalizeProductTabs,
+  PRODUCT_LIMITS, assertMoney, assertStockQuantity, copySku, findDuplicateSku, generateSkus, normalizeBarcode, normalizeDescription, normalizeShortDescription, normalizeProductTabs, normalizeOptionSwatches,
   normalizeImages, normalizeName, normalizeSku, normalizeStatus, normalizeTags, resolveScheduledAt, normalizeVideoUrl } from './product-input.util';
 import { softDeleteProducts } from './product-cascade.util';
 import { normalizeComplementaryIds } from './complementary-products.util';
 import { buildStoreProductFilter, productSort } from './product-list-filter.util';
 
 import { DatabaseService } from '@/database/databaseservice';
-import { ProductType as StoreProductType } from '@/store/schemas/store.schema';
+import { ProductType as StoreProductType, resolveTools } from '@/store/schemas/store.schema';
 import { ActivityLogService } from '@/activity-log/activity-log.service';
+import { diffFields } from '@/activity-log/activity-log-format.util';
 import { EntitlementsService } from '@/platform-plans/entitlements.service';
 import { MarketingService } from '@/marketing/marketing.service';
-import { pickPrimaryCampaignForBadge } from '@/marketing/campaign-pricing.util';
 import { EducationLevel } from './schemas/product.schema';
 import { toCsv } from '@/analytics/utils/csv.util';
-import { importProductsCsv as importProductsCsvRows } from './product-bulk-import';
+import { importProductsCsv as importProductsCsvRows, PRODUCT_SPEC_PAIRS } from './product-bulk-import';
 import { EducationLevelService } from './education-level.service';
 import { UploadService } from '@/upload/upload.service';
 import { generateUniqueSlug } from '@/common/slug.util';
@@ -64,38 +64,20 @@ export class ProductsService {
     @InjectConnection() private readonly connection: Connection,
   ) {}
 
-  /** Attaches an `activeCampaign` badge summary (or null) to each product,
-   *  based on whether its store currently has an active platform-sale
-   *  campaign. Same lookup CheckoutService uses to enforce the discount, so
-   *  a product never shows a "sale" badge checkout wouldn't actually honor.
-   *  One batched query for the whole page, not per-product. */
-  private async attachCampaignBadges<T extends { storeId?: string }>(
-    products: T[],
-  ): Promise<T[]> {
-    const storeIds = [
-      ...new Set(products.map((p) => p.storeId).filter(Boolean)),
-    ] as string[];
-    const campaignsByStore = storeIds.length
-      ? await this.marketingService.getActiveCampaignsForStores(storeIds)
-      : new Map();
-
-    return products.map((p) => {
-      const campaigns = p.storeId ? campaignsByStore.get(p.storeId) : undefined;
-      const primary = campaigns ? pickPrimaryCampaignForBadge(campaigns) : null;
-      return {
-        ...p,
-        activeCampaign: primary
-          ? {
-              campaignId: primary.campaignId,
-              name: primary.name,
-              discountType: primary.discountType,
-              discountValue: primary.discountValue,
-              currency: primary.currency,
-              endDate: primary.endDate,
-            }
-          : null,
-      };
-    });
+  /**
+   * The onboarding "What you sell" answer is a starting point, never a restriction. Creating a product of a type the
+   * store hasn't switched on yet enables that capability (additive only — nothing already enabled is removed).
+   * An educational store already covers both physical and digital creation, as before.
+   */
+  private async ensureStoreSellsType(store: any, type: StoreProductType): Promise<void> {
+    const current: StoreProductType[] = Array.isArray(store.productTypes) ? store.productTypes : [];
+    if (current.includes(type) || current.includes(StoreProductType.EDUCATIONAL_RESOURCES)) return;
+    const next = [...current, type];
+    await this.databaseService.repositories.storeModel.updateOne(
+      { _id: store._id },
+      { $addToSet: { productTypes: type }, $set: { enabledTools: resolveTools(next) } },
+    );
+    store.productTypes = next;
   }
 
   // Strips the private Cloudinary file manifest (publicId/name/size/mimeType)
@@ -356,7 +338,6 @@ export class ProductsService {
     productType?: string,
     educationLevel?: string,
     normalizedCustomLevel?: string,
-    campaignId?: string,
     minPrice?: number,
     maxPrice?: number,
     minRating?: number,
@@ -386,40 +367,6 @@ export class ProductsService {
     if (educationLevel) query.educationLevel = educationLevel;
     if (normalizedCustomLevel)
       query.normalizedCustomLevel = normalizedCustomLevel;
-
-    // "Shop the Sale" — an expired/unknown/inactive/malformed campaignId (e.g. a
-    // stale bookmark to a sale that's since ended) yields an intentionally
-    // empty result, not an error: it should read as "nothing left on sale",
-    // not a 404/500.
-    if (campaignId) {
-      const campaignModel = this.databaseService.repositories.campaignModel;
-      const campaignBaseFilter = {
-        isDelete: false,
-        status: 'active',
-        startDate: { $lte: new Date() },
-        endDate: { $gte: new Date() },
-      };
-      // campaignId may be the new slug-based handle (?campaign=summer-sale)
-      // or an old bookmarked raw id — try slug first, then id, same
-      // resolution order as ProductsService.getProductById.
-      let campaign = await campaignModel
-        .findOne({ slug: campaignId, ...campaignBaseFilter })
-        .select('participatingStoreIds sponsorType')
-        .lean();
-      if (!campaign && isValidObjectId(campaignId)) {
-        campaign = await campaignModel
-          .findOne({ _id: campaignId, ...campaignBaseFilter })
-          .select('participatingStoreIds sponsorType')
-          .lean();
-      }
-      // A platform-sponsored campaign applies to every store — no storeId
-      // restriction at all, same universal rule as getActiveCampaignsForStores.
-      if (campaign && campaign.sponsorType !== 'platform') {
-        query.storeId = this.narrowStoreIdConstraint(query.storeId, campaign.participatingStoreIds ?? []);
-      } else if (!campaign) {
-        query.storeId = { $in: [] };
-      }
-    }
 
     // 1️⃣ Agar category ID di gayi hai to filter lagao
     //
@@ -585,7 +532,7 @@ export class ProductsService {
       sellers.map((s) => [s._id.toString(), s]),
     );
 
-    const productsWithVariants = await this.attachCampaignBadges(
+    const productsWithVariants = (
       products.map((p) => {
         const seller = sellerMap.get(p.sellerId?.toString());
         return this.sanitizeDigitalForPublicView({
@@ -594,7 +541,7 @@ export class ProductsService {
           sellerVerified: seller ? !!seller.isVerified : false,
           variants: variantMap[p._id.toString()] || [],
         });
-      }),
+      })
     );
 
     return {
@@ -647,7 +594,7 @@ export class ProductsService {
       .lean();
     const sellerMap = new Map(sellers.map((s) => [s._id.toString(), s]));
 
-    return this.attachCampaignBadges(
+    return (
       products.map((p) => {
         const seller = sellerMap.get(p.sellerId?.toString());
         return this.sanitizeDigitalForPublicView({
@@ -656,7 +603,7 @@ export class ProductsService {
           sellerVerified: seller ? !!seller.isVerified : false,
           variants: variantMap[p._id.toString()] || [],
         });
-      }),
+      })
     );
   }
 
@@ -878,7 +825,7 @@ export class ProductsService {
       };
     }
 
-    const [productWithSeller] = await this.attachCampaignBadges([
+    const [productWithSeller] = ([
       this.sanitizeDigitalForPublicView({
         ...product,
         sellerName: seller ? seller.name : null,
@@ -1204,11 +1151,8 @@ export class ProductsService {
     if (!store) throw new BadRequestException('Store not found');
     if (store.status !== 'active') throw new BadRequestException('Your store is not active');
 
-    const allowsPhysical =
-      store.productTypes?.includes(StoreProductType.PHYSICAL_PRODUCTS) ||
-      store.productTypes?.includes(StoreProductType.EDUCATIONAL_RESOURCES);
-    if (!allowsPhysical) throw new BadRequestException('Your store does not support physical products');
-
+    // No product-type gate: the onboarding answer never restricts what can be sold. The capability is switched on
+    // (additively) once the product has actually been created — see ensureStoreSellsType below.
     await this.entitlementsService.assertCanCreateProduct(storeId);
 
     const name = normalizeName(body.name);
@@ -1264,6 +1208,7 @@ export class ProductsService {
             description,
             shortDescription,
             tabs,
+            optionSwatches: normalizeOptionSwatches(body.optionSwatches),
             supplierId: await this.resolveSupplierId(storeId, body.supplierId),
             shippingProfileId,
             ...parseSellingOptions(body),
@@ -1312,6 +1257,7 @@ export class ProductsService {
     }
 
     await this.enforceProductLimitAfterCreate(String(storeId), String(productId));
+    await this.ensureStoreSellsType(store, StoreProductType.PHYSICAL_PRODUCTS);
 
     const defaultVariant = created.variants.find((v: any) => v.isDefault) || created.variants[0] || null;
     return {
@@ -1380,11 +1326,7 @@ export class ProductsService {
     if (!store) throw new BadRequestException('Store not found');
     if (store.status !== 'active') throw new BadRequestException('Your store is not active');
 
-    const allowsDigital =
-      store.productTypes?.includes(StoreProductType.DIGITAL_DOWNLOADS) ||
-      store.productTypes?.includes(StoreProductType.EDUCATIONAL_RESOURCES);
-    if (!allowsDigital) throw new BadRequestException('Your store does not support digital products');
-
+    // Same rule as physical: never blocked by the onboarding answer; the capability is enabled once the product exists.
     await this.entitlementsService.assertCanCreateProduct(storeId);
 
     const name = normalizeName(body.name);
@@ -1485,6 +1427,10 @@ export class ProductsService {
     }
 
     await this.enforceProductLimitAfterCreate(String(storeId), String(productId));
+    await this.ensureStoreSellsType(
+      store,
+      finalProductType === 'educational' ? StoreProductType.EDUCATIONAL_RESOURCES : StoreProductType.DIGITAL_DOWNLOADS,
+    );
 
     return { success: true, message: 'Digital product created successfully', data: created };
   }
@@ -1650,6 +1596,7 @@ export class ProductsService {
     if (description !== undefined) productUpdate.description = normalizeDescription(description);
     if (body.shortDescription !== undefined) productUpdate.shortDescription = normalizeShortDescription(body.shortDescription);
     if (body.tabs !== undefined) productUpdate.tabs = normalizeProductTabs(body.tabs);
+    if (body.optionSwatches !== undefined) productUpdate.optionSwatches = normalizeOptionSwatches(body.optionSwatches);
     if (body.supplierId !== undefined) productUpdate.supplierId = await this.resolveSupplierId(String(product.storeId), body.supplierId);
     if (requestedCategoryId !== undefined) {
       productUpdate.categoryId = await this.resolveProductCategoryId(String(product.storeId), null, requestedCategoryId);
@@ -1729,6 +1676,11 @@ export class ProductsService {
       if (compareAtPrice !== undefined) variantUpdate.compareAtPrice = compareAtPrice === null ? null : assertMoney(compareAtPrice, 'Compare-at price');
     }
 
+    // Pre-edit default variant — only read when the edit touches variant fields, so the activity log can show price before → after.
+    const variantBefore = Object.keys(variantUpdate).length > 0
+      ? await productVariantModel.findOne({ productId, isDefault: true, isDelete: false }).lean().catch(() => null)
+      : null;
+
     let updatedProduct: any = product;
     let updatedVariant: any;
     try {
@@ -1758,6 +1710,11 @@ export class ProductsService {
 
     const changed = [...Object.keys(productUpdate), ...Object.keys(variantUpdate)];
     if (changed.length > 0) {
+      // Before → after for every field that really changed (long text is clipped) — shown in the activity detail and the CSV export.
+      const changes = [
+        ...diffFields(product.toObject?.() ?? product, productUpdate, Object.keys(productUpdate).filter((k) => !['updatedAt', 'slugHistory'].includes(k))),
+        ...diffFields(variantBefore, variantUpdate, Object.keys(variantUpdate)),
+      ];
       void this.activityLogService.log({
         storeId: String(product.storeId),
         category: 'products',
@@ -1767,8 +1724,11 @@ export class ProductsService {
         actorRole: 'seller',
         targetId: String(productId),
         targetType: 'product',
+        metadata: changes.length ? { changes } : null,
       } as any);
     }
+
+    void this.redisService.del(`seo:meta:product:${String(productId)}`).catch(() => undefined); // crawler title/description/price follow the edit
 
     return {
       success: true,
@@ -1802,6 +1762,8 @@ export class ProductsService {
       targetId: String(productId),
       targetType: 'product',
     } as any);
+
+    void this.redisService.del(`seo:meta:product:${String(productId)}`).catch(() => undefined);
 
     return { success: true, message: 'Product deleted successfully', data: null };
   }
@@ -1899,10 +1861,30 @@ export class ProductsService {
       if (!variantsByProduct[v.productId]) variantsByProduct[v.productId] = [];
       variantsByProduct[v.productId].push(v);
     }
-    const categoryIds = [...new Set((products as any[]).map((p) => p.categoryId).filter(Boolean))];
+    const categoryIds = [...new Set((products as any[]).map((p) => p.categoryId).filter((id) => /^[a-f0-9]{24}$/i.test(String(id ?? ''))))];
     const categories = await categoryModel.find({ _id: { $in: categoryIds } }).lean();
     const categoryNameById: Record<string, string> = {};
     for (const c of categories as any[]) categoryNameById[c._id.toString()] = c.name;
+
+    // Specs: the first 10 filled custom fields of each product (Spec N Name / Spec N Value), in field order.
+    const { metafieldDefinitionModel, metafieldValueModel } = this.databaseService.repositories;
+    const [specDefs, specValues] = await Promise.all([
+      metafieldDefinitionModel.find({ storeId, ownerResource: 'product' }).sort({ createdAt: 1 }).lean(),
+      metafieldValueModel.find({ storeId, ownerResource: 'product', ownerId: { $in: productIds } }).lean(),
+    ]);
+    const specValueByProduct = new Map<string, Map<string, string>>();
+    for (const v of specValues as any[]) {
+      const m = specValueByProduct.get(String(v.ownerId)) ?? new Map<string, string>();
+      m.set(`${v.namespace}:${v.key}`, String(v.value ?? ''));
+      specValueByProduct.set(String(v.ownerId), m);
+    }
+    const specCells = (productId: string): string[] => {
+      const m = specValueByProduct.get(productId);
+      const filled = (specDefs as any[]).map((d) => ({ name: String(d.name), value: m?.get(`${d.namespace}:${d.key}`) ?? '' })).filter((x) => x.value.trim() !== '').slice(0, PRODUCT_SPEC_PAIRS);
+      const cells: string[] = [];
+      for (let i = 0; i < PRODUCT_SPEC_PAIRS; i++) cells.push(filled[i]?.name ?? '', filled[i]?.value ?? '');
+      return cells;
+    };
 
     const rows: (string | number)[][] = [];
     for (const product of products as any[]) {
@@ -1936,11 +1918,12 @@ export class ProductsService {
         product.tabs?.[0]?.content ?? '',
         product.tabs?.[1]?.title ?? '',
         product.tabs?.[1]?.content ?? '',
+        ...specCells(product._id.toString()),
       ]);
     }
 
     return toCsv(
-      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax', 'Image URL', 'Video URL', 'Short Description', 'Tab 1 Title', 'Tab 1 Content', 'Tab 2 Title', 'Tab 2 Content'],
+      ['Name', 'SKU', 'Type', 'Product Type', 'Status', 'Price', 'Compare-at Price', 'Stock', 'Variant Count', 'Tags', 'All-Time Sales', 'Category', 'Length (cm)', 'Width (cm)', 'Height (cm)', 'Country of Origin', 'HS Code', 'Customs Description', 'Charge Tax', 'Image URL', 'Video URL', 'Short Description', 'Tab 1 Title', 'Tab 1 Content', 'Tab 2 Title', 'Tab 2 Content', ...Array.from({ length: PRODUCT_SPEC_PAIRS }, (_, i) => [`Spec ${i + 1} Name`, `Spec ${i + 1} Value`]).flat()],
       rows,
     );
   }
@@ -1955,10 +1938,10 @@ export class ProductsService {
     csvText: string,
     updateVariant: (sellerId: string, productId: string, variantId: string, dto: any) => Promise<any>,
   ) {
-    const { storeModel, categoryModel, productModel, productVariantModel } = this.databaseService.repositories;
+    const { storeModel, categoryModel, productModel, productVariantModel, metafieldDefinitionModel, metafieldValueModel } = this.databaseService.repositories;
     return importProductsCsvRows(
       {
-        repos: { storeModel, categoryModel, productModel, productVariantModel },
+        repos: { storeModel, categoryModel, productModel, productVariantModel, metafieldDefinitionModel, metafieldValueModel },
         addPhysicalProduct: (s, body) => this.addPhysicalProduct(s, body),
         editProduct: (s, body) => this.editProduct(s, body),
         updateVariant,

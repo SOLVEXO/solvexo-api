@@ -1,4 +1,6 @@
 import { Global, Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { RequestActorInterceptor } from './activity-actor.context';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ActivityLogController } from './activity-log.controller';
@@ -26,7 +28,7 @@ import { RedisModule } from '../redis/redis.module';
     }),
   ],
   controllers: [ActivityLogController, AdminActivityLogController],
-  providers: [ActivityLogService, ActivityLogGateway],
+  providers: [ActivityLogService, ActivityLogGateway, { provide: APP_INTERCEPTOR, useClass: RequestActorInterceptor }],
   exports: [ActivityLogService],
 })
 export class ActivityLogModule {}

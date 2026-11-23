@@ -39,6 +39,38 @@ export interface BaseSectionSettings {
   backgroundOverlay?: number | null;
   anchorId?: string | null;
   customCss?: string | null;
+  /** Section look: own background colour, border, rounded corners and shadow (see `validateCommonSectionDesign`). */
+  sectionBgColor?: string | null;
+  borderWidth?: number | null;
+  borderColor?: string | null;
+  borderRadius?: number | null;
+  shadow?: 'none' | 'soft' | 'medium' | 'strong';
+  /** Design v2: phone-only spacing, gradient / video background, text style, entrance animation, sticky and "show when" rules. */
+  spacingTopMobile?: number | null;
+  spacingBottomMobile?: number | null;
+  paddingTopMobile?: number | null;
+  paddingBottomMobile?: number | null;
+  gradientFrom?: string | null;
+  gradientTo?: string | null;
+  gradientAngle?: number | null;
+  backgroundVideoUrl?: string | null;
+  textAlign?: 'default' | 'left' | 'center' | 'right';
+  textAlignMobile?: 'default' | 'left' | 'center' | 'right';
+  textColor?: string | null;
+  headingColor?: string | null;
+  headingWeight?: 'default' | 'normal' | 'medium' | 'semibold' | 'bold' | 'black';
+  headingCase?: 'default' | 'uppercase' | 'lowercase' | 'capitalize' | 'sentence' | 'none';
+  animation?: 'none' | 'fade' | 'slide-up' | 'slide-left' | 'slide-right' | 'zoom';
+  animationSpeed?: 'fast' | 'normal' | 'slow';
+  animationDelay?: number | null;
+  sticky?: boolean;
+  stickyOffset?: number | null;
+  showTo?: 'all' | 'guests' | 'customers';
+  showFrom?: string | null;
+  showUntil?: string | null;
+  showCountries?: string | null;
+  hideCountries?: string | null;
+  showLanguages?: string | null;
 }
 
 /** Shared by any block/section CTA — a nav link, footer link, or hero/image-with-text button. */
@@ -83,9 +115,20 @@ export interface RichTextSectionSettings extends BaseSectionSettings {
   dynamicSourceKey?: string;
 }
 export interface FeaturedProductsSectionSettings extends BaseSectionSettings {
-  source: 'manual' | 'category' | 'collection' | 'bestsellers' | 'newArrivals' | 'trending' | 'pinned' | 'onSale';
+  source: 'manual' | 'category' | 'collection' | 'bestsellers' | 'newArrivals' | 'trending' | 'pinned' | 'onSale' | 'rules';
   categoryId?: string;
   collectionId?: string;
+  /** Source "rules": products that match ALL of these (all optional). Tags / vendors: any-of within the list. Prices are in the store's currency. */
+  ruleTags?: string[];
+  ruleVendors?: string[];
+  rulePriceMin?: number | null;
+  rulePriceMax?: number | null;
+  ruleType?: 'all' | 'physical' | 'digital';
+  ruleStock?: 'any' | 'in_stock';
+  ruleOnSale?: boolean;
+  ruleSort?: 'newest' | 'oldest' | 'best_selling' | 'trending' | 'price_asc' | 'price_desc' | 'title_asc' | 'title_desc' | 'best_rated';
+  /** Any source: leave out products that can not be bought right now. */
+  hideSoldOut?: boolean;
   /** Required, 1-24 items, only when `source === 'manual'`. */
   productIds?: string[];
   /** 1-24. */
@@ -184,6 +227,10 @@ export interface CollectionListSectionSettings extends BaseSectionSettings {
   limit?: number;
   imageRatio?: 'default' | 'adapt' | 'portrait' | 'square' | 'landscape';
   showDescription?: boolean;
+  /** Card around each tile: none (default) / thin border / filled background. */
+  cardStyle?: 'none' | 'bordered' | 'filled';
+  /** Look of each tile's button (only tiles that have button text show one). */
+  buttonStyle?: 'solid' | 'outline' | 'link';
 }
 export interface StoreLocationsSectionSettings extends BaseSectionSettings {}
 export interface RelatedProductsSectionSettings extends BaseSectionSettings {
@@ -228,6 +275,54 @@ export interface MulticolumnSectionSettings extends BaseSectionSettings {
   columns?: 1 | 2 | 3 | 4;
   textAlign?: 'left' | 'center';
   imageRatio?: 'default' | 'adapt' | 'portrait' | 'square' | 'landscape';
+}
+/** "Promo cards": a row of free-form cards (image + text panel) where every card can have its own layout and colours. */
+export type PromoCardLayout = 'image-left' | 'image-right' | 'image-top' | 'image-bottom' | 'overlay';
+export interface PromoCardsSectionSettings extends BaseSectionSettings {
+  /** Grid columns on desktop, 1-12 (cards can span several). */
+  columns?: number;
+  layout?: PromoCardLayout;
+  /** Card height in px, 0 or empty = fit the content. */
+  cardHeight?: number;
+  /** Share of the card the image takes in the side-by-side layouts, 10-90. */
+  imageWidth?: number;
+  /** Space between cards in px. */
+  gap?: number;
+  /** Corner radius in px; empty = the theme's own. */
+  radius?: number | null;
+  /** Space inside the text panel in px; empty = automatic. */
+  padding?: number | null;
+  contentAlign?: 'left' | 'center' | 'right';
+  contentPosition?: 'top' | 'center' | 'bottom' | 'spread';
+  headingSize?: number;
+  bodySize?: number;
+}
+export interface PromoCardBlockSettings {
+  imageUrl?: string;
+  imageLinkOn?: boolean;
+  imageLink?: LinkTarget;
+  /** Empty = follow the section's layout. */
+  layout?: PromoCardLayout | '';
+  /** How many grid columns this card takes (1-12). */
+  colSpan?: number;
+  /** This card's own height in px; empty = the section's. */
+  cardHeight?: number | null;
+  eyebrow?: string;
+  heading?: string;
+  body?: string;
+  ctaText?: string;
+  ctaLink?: LinkTarget;
+  ctaStyle?: 'solid' | 'outline' | 'link';
+  cta2Text?: string;
+  cta2Link?: LinkTarget;
+  cta2Style?: 'solid' | 'outline' | 'link';
+  bgColor?: string;
+  textColor?: string;
+  buttonBg?: string;
+  buttonText?: string;
+  overlayOpacity?: number;
+  imageFit?: 'cover' | 'contain';
+  focalPoint?: string;
 }
 export interface LogoListSectionSettings extends BaseSectionSettings {
   /** Logo height in px, 24-120. */
@@ -325,6 +420,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   stats_counter: StatsCounterSectionSettings;
   gallery_grid: GalleryGridSectionSettings;
   multicolumn: MulticolumnSectionSettings;
+  promo_cards: PromoCardsSectionSettings;
   logo_list: LogoListSectionSettings;
   marquee: MarqueeSectionSettings;
   custom_html: CustomHtmlSectionSettings;
@@ -347,6 +443,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   article_content: ArticleContentSectionSettings;
   page_content: PageContentSectionSettings;
   theme_section: ThemeSectionSettings;
+  saved_section: SavedSectionSettings;
 }>;
 
 // ── Block settings, one per block `type` string ─────────────────────────────
@@ -520,14 +617,21 @@ export interface LocationItemBlockSettings {
 // title, price, variant picker, quantity, buy buttons, description) this
 // entry represents, so a merchant can hide/reorder it. See
 // `collection-template/core-sections.util.ts`. ──────────────────────────────
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface ProductMediaBlockSettings {}
+/** How the product photos are laid out. Thumbnails left (default) or below the photo, or every photo shown big (grid / stacked). */
+export interface ProductMediaBlockSettings {
+  layout?: 'thumbs_left' | 'thumbs_bottom' | 'grid' | 'stacked';
+  aspect?: 'portrait' | 'square' | 'landscape' | 'natural';
+  zoom?: boolean;
+}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface ProductTitleBlockSettings {}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface ProductPriceBlockSettings {}
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface ProductVariantPickerBlockSettings {}
+export interface ProductVariantPickerBlockSettings {
+  pickerStyle?: 'pills' | 'dropdown' | 'swatches' | 'images';
+  swatchShape?: 'circle' | 'square';
+  swatchSize?: 'sm' | 'md' | 'lg';
+}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface ProductQuantityBlockSettings {}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
@@ -541,7 +645,22 @@ export type ProductShareBlockSettings = { [K in (typeof SHARE_NETWORKS)[number]]
 
 /** A section/block declared by the active theme's manifest: `sectionKey`/`blockKey` name it, the remaining keys are its fields (validated generically, see validateThemeFields). */
 export interface ThemeSectionSettings { sectionKey: string; [field: string]: unknown }
+
+/** A pointer to one entry of the store's saved-sections library. */
+export interface SavedSectionSettings { savedSectionId: string }
 export interface ThemeBlockSettings { blockKey: string; [field: string]: unknown }
+
+/** One hand-picked tile of a Collection List. Every field is optional: a picked collection supplies name/description/image/link, anything typed here wins over it. */
+export interface CollectionItemBlockSettings {
+  collectionId?: string;
+  title?: string;
+  description?: string;
+  imageUrl?: string;
+  /** Key of a built-in icon shown above the title when there is no image. */
+  icon?: string;
+  ctaText?: string;
+  ctaLink?: LinkTarget;
+}
 
 export const BLOCK_TYPES = [
   'nav_link',
@@ -571,8 +690,10 @@ export const BLOCK_TYPES = [
   'multirow_row',
   'collage_item',
   'multicolumn_column',
+  'promo_card',
   'logo_item',
   'marquee_item',
+  'collection_item',
   'location_item',
   'product_media',
   'product_title',
@@ -591,6 +712,9 @@ export const BLOCK_TYPES = [
   'product_size_chart',
   'product_text',
   'product_pickup',
+  'product_trust_badges',
+  'product_questions',
+  'product_frequently_bought',
   'theme_block',
 ] as const;
 export type BlockType = (typeof BLOCK_TYPES)[number];
@@ -624,8 +748,10 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   multirow_row: { imageUrl?: string; heading?: string; body?: string; ctaText?: string; ctaLink?: LinkTarget; focalPoint?: unknown };
   collage_item: { imageUrl: string; heading?: string; link?: LinkTarget };
   multicolumn_column: MulticolumnColumnBlockSettings;
+  promo_card: PromoCardBlockSettings;
   logo_item: LogoItemBlockSettings;
   marquee_item: MarqueeItemBlockSettings;
+  collection_item: CollectionItemBlockSettings;
   location_item: LocationItemBlockSettings;
   product_media: ProductMediaBlockSettings;
   product_title: ProductTitleBlockSettings;
@@ -644,6 +770,9 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   product_size_chart: { label?: string; title?: string; content?: string; imageUrl?: string };
   product_text: { text?: string; size?: 'small' | 'medium' | 'large' };
   product_pickup: { heading?: string };
+  product_questions: { heading?: string; showForm?: boolean };
+  product_frequently_bought: { heading?: string; maxItems?: number; buttonLabel?: string };
+  product_trust_badges: { heading?: string; layout?: 'row' | 'column' | 'grid'; style?: 'plain' | 'boxed'; items?: { icon?: string; title?: string; text?: string }[] };
   theme_block: ThemeBlockSettings;
 }>;
 

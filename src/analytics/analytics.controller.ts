@@ -11,7 +11,8 @@ import { StaffStorePinned } from '../auth/decorators/staff-store-pinned.decorato
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { AnalyticsService } from './analytics.service';
 import { AnalyticsReportsService, REPORT_EXPORT_SECTIONS } from './analytics-reports.service';
-import { AnalyticsQueryDto } from './dto/analytics-query.dto';
+import { AttributionService } from './attribution.service';
+import { AnalyticsQueryDto, AttributionQueryDto } from './dto/analytics-query.dto';
 import { TopProductsQueryDto } from './dto/top-products-query.dto';
 import { ProductPerformanceQueryDto } from './dto/product-performance-query.dto';
 import { ExportQueryDto } from './dto/export-query.dto';
@@ -37,7 +38,24 @@ export class AnalyticsController {
   constructor(
     private readonly analyticsService: AnalyticsService,
     private readonly reportsService: AnalyticsReportsService,
+    private readonly attributionService: AttributionService,
   ) {}
+
+  // ── Growth (Shopify: Growth → Overview / Attribution / Campaigns) ──
+  @Get('marketing/overview')
+  getMarketingOverview(@Req() req: any, @Query() query: AttributionQueryDto) {
+    return this.attributionService.getOverview(actingSellerId(req.user), query.storeId, query);
+  }
+
+  @Get('marketing/attribution')
+  getMarketingAttribution(@Req() req: any, @Query() query: AttributionQueryDto) {
+    return this.attributionService.getAttribution(actingSellerId(req.user), query.storeId, query);
+  }
+
+  @Get('marketing/campaigns')
+  getMarketingCampaignsReport(@Req() req: any, @Query() query: AttributionQueryDto) {
+    return this.attributionService.getCampaignsReport(actingSellerId(req.user), query.storeId, query);
+  }
 
   @Get('today')
   getTodaySummary(@Req() req: any, @Query() query: AnalyticsQueryDto) {

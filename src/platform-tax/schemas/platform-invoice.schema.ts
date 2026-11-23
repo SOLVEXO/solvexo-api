@@ -5,7 +5,7 @@ import { Document } from 'mongoose';
 export type PlatformInvoiceDocument = PlatformInvoice & Document;
 
 /**
- * Read-only SHADOW of one paid Solvexo charge (plan invoice, add-on charge, fee bill, ...). It is written only by the ledger sync and
+ * Read-only SHADOW of one paid Solvexo charge (plan invoice, fee bill, ...). It is written only by the ledger sync and
  * never feeds billing, payments or any tax authority. `taxKnown:false` means the source never recorded its tax: tax fields are then null, NOT 0.
  */
 @Schema({ timestamps: true, collection: 'platform_invoices' })

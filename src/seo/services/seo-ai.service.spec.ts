@@ -96,3 +96,13 @@ describe('AI SEO suggestions', () => {
     expect(logs.rows[0].accepted).toBe(false);
   });
 });
+
+describe('AI SEO availability (drives whether the seller sees the AI tab at all)', () => {
+  it('is available once the AI key is configured', () => {
+    expect(setup({ configured: true }).svc.isAvailable()).toBe(true);
+  });
+
+  it('is NOT available without a key, so the SEO Center hides the AI tab', () => {
+    expect(setup({ configured: false }).svc.isAvailable()).toBe(false);
+  });
+});

@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Get, Header, Param, Post, Put, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -17,6 +18,7 @@ import { AutoTranslateTextDto, SaveTextTranslationsDto } from './dto/store-text-
 @Roles('seller', 'staff')
 @RequirePermission('onlinestore.content.manage')
 @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
+@AuditStoreWrites('text_translation', 'settings')
 @Controller('api/store-text-translations')
 export class StoreTextTranslationsController {
   constructor(private readonly service: StoreTextTranslationsService) {}

@@ -15,7 +15,7 @@ type Req = { method?: string; path?: string; originalUrl?: string; query?: any; 
 const RULES: Array<{ re: RegExp; kind: 'param' | 'product' | 'variant' | 'ctx' }> = [
   { re: /^\/api\/store\/public\/([^/]+)\/(products|filters)\/?$/, kind: 'param' },
   { re: /^\/api\/products\/store\/([^/]+)\/(pinned|new-arrivals|best-sellers|trending)\/?$/, kind: 'param' },
-  { re: /^\/api\/public\/(?:collections|store-pages|store-theme|store-markets|memberships|selling-plans|experiments|store-blog|store-banners|collection-template)\/([^/]+)(?:\/|$)/, kind: 'param' },
+  { re: /^\/api\/public\/(?:collections|store-pages|store-theme|store-markets|memberships|selling-plans|experiments|store-blog|store-banners|collection-template|saved-sections|store-section-defs|search-config|product-questions)\/([^/]+)(?:\/|$)/, kind: 'param' },
   { re: /^\/api\/products\/getProductById\/([^/]+)\/?$/, kind: 'product' },
   { re: /^\/api\/products\/preview\/([^/]+)\/?$/, kind: 'product' },
   { re: /^\/api\/products\/getVariantById\/([^/]+)\/?$/, kind: 'variant' },
@@ -24,7 +24,7 @@ const RULES: Array<{ re: RegExp; kind: 'param' | 'product' | 'variant' | 'ctx' }
   { re: /^\/api\/public\/search\/(suggest|content)\/?$/, kind: 'ctx' },
   { re: /^\/api\/cart\/(add-to-cart|get-cart|update-cart-quantity|remove-cart-item|clear-cart|add-to-wishlist|get-wishlist|get-wishlist-item|remove-from-wishlist|clear-wishlist)\/?$/, kind: 'ctx' },
   { re: /^\/api\/checkout\/create-checkout\/?$/, kind: 'ctx' },
-  { re: /^\/api\/payment\/(cod-payment|store-credit-payment|initiate-payment)\/?$/, kind: 'ctx' },
+  { re: /^\/api\/payment\/(cod-payment|store-credit-payment|free-payment|initiate-payment)\/?$/, kind: 'ctx' },
 ];
 
 /** Shopify "password page" / holding page, enforced server-side: while `Store.privacyMode` is 'password', buyer-facing storefront reads/writes need a

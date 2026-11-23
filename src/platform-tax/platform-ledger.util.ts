@@ -38,23 +38,6 @@ export function planInvoiceFacts(inv: any): LedgerFacts | null {
   };
 }
 
-/** Every charge of an add-on purchase (a monthly add-on has one per month). `taxUSD` missing on a charge = unknown (read the raw document: Mongoose would fill the default 0). */
-export function addonChargeFacts(purchase: any): LedgerFacts[] {
-  const out: LedgerFacts[] = [];
-  (purchase?.charges ?? []).forEach((c: any, i: number) => {
-    const paidAt = validDate(c?.chargedAt);
-    if (!paidAt || !num(c.amountUSD)) return;
-    const known = num(c.taxUSD);
-    out.push({
-      sourceType: 'addon_charge', sourceId: `${String(purchase._id)}:${i}`, storeId: String(purchase.storeId), sellerId: purchase.sellerId ? String(purchase.sellerId) : null, paidAt,
-      taxKnown: known, netUSD: c.amountUSD, chargedTaxUSD: known ? c.taxUSD : null, totalUSD: known ? r2(c.amountUSD + c.taxUSD) : null,
-      taxLines: known ? (c.taxUSD > 0 ? [{ label: null, ratePercent: null, amountUSD: c.taxUSD, country: null }] : []) : null,
-      refundedUSD: 0, status: 'paid',
-    });
-  });
-  return out;
-}
-
 /** A PAID monthly transaction-fee bill. Bills from before the tax field existed have no `taxAmountUSD` in the stored document: unknown. */
 export function feeBillFacts(bill: any): LedgerFacts | null {
   const paidAt = validDate(bill?.paidAt);

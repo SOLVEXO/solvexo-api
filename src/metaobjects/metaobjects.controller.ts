@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UploadedFile, UseGuards, UseInterceptors, UsePipes, ValidationPipe } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -21,6 +22,7 @@ import { SetEntryFieldsDto } from './dto/set-entry-fields.dto';
 @Roles('seller', 'staff')
 @RequirePermission('content.metaobjects.manage')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+@AuditStoreWrites('metaobject', 'settings')
 @Controller('api/metaobjects')
 export class MetaobjectsController {
   constructor(private readonly metaobjectsService: MetaobjectsService) {}
@@ -59,6 +61,7 @@ export class MetaobjectsController {
     return payload;
   }
 
+  @AuditStoreWrites('metaobject_entry', 'settings')
   @Post(':storeId/definitions/:definitionId/entries/import')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   async importEntries(@Req() req: any, @Param('storeId') storeId: string, @Param('definitionId') definitionId: string, @UploadedFile() file: any) {

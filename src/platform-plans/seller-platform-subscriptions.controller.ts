@@ -11,9 +11,11 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator';
 import { actingSellerId } from '../common/acting-seller-id.util';
 import { IdempotencyInterceptor } from '../common/idempotency.interceptor';
-import { ChangePlatformPlanDto, CancelPlatformPlanDto, BillingPortalDto, ConfirmOnboardingPaymentMethodDto, SaveOnboardingDraftDto, AdminExtendSubscriptionDto, AdminAssignPlanDto, AdminUnlockOrLockDto } from './dto/subscribe-platform-plan.dto';
+import { ChangePlatformPlanDto, CancelPlatformPlanDto, BillingPortalDto, ConfirmOnboardingPaymentMethodDto, SaveOnboardingDraftDto, AdminExtendSubscriptionDto, AdminAssignPlanDto, AdminUnlockOrLockDto, AdminComplimentaryReviewDto, AdminRemoveComplimentaryDto } from './dto/subscribe-platform-plan.dto';
 import { RefundInvoiceDto } from './dto/refund-invoice.dto';
 import { ListInvoicesQueryDto } from './dto/list-invoices.dto';
+import { BillingTimelineQueryDto } from './dto/billing-timeline.dto';
+import { BillingTimelineService } from './billing-timeline.service';
 
 @ApiTags('Platform Plans — Seller')
 @Controller('api/platform-plans')
@@ -21,6 +23,7 @@ export class SellerPlatformSubscriptionsController {
   constructor(
     private readonly sellerPlatformSubscriptionsService: SellerPlatformSubscriptionsService,
     private readonly entitlementsService: EntitlementsService,
+    private readonly billingTimeline: BillingTimelineService,
   ) {}
 
   @RequirePermission('billing.manage')
@@ -57,7 +60,36 @@ export class SellerPlatformSubscriptionsController {
   @Roles('admin')
   @Post('admin/stores/:storeId/assign-plan')
   adminAssignPlan(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminAssignPlanDto) {
-    return this.sellerPlatformSubscriptionsService.adminAssignPlan(req.user.userId, storeId, dto.planId, dto.reason);
+    return this.sellerPlatformSubscriptionsService.adminAssignPlan(req.user.userId, storeId, dto.planId, dto.reason, dto.reviewAt);
+  }
+
+  // Complimentary (admin-given) plans: the admin list, ending one, and moving its review date.
+  // The list route has 3 segments on purpose so it can never be swallowed by PlatformPlansController's `admin/:id`.
+  @RequirePermission('billing.manage')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('admin')
+  @Get('admin/stores/complimentary/list')
+  adminListComplimentary() {
+    return this.sellerPlatformSubscriptionsService.adminListComplimentary();
+  }
+
+  @RequirePermission('billing.manage')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('admin')
+  @Post('admin/stores/:storeId/complimentary/remove')
+  adminRemoveComplimentary(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminRemoveComplimentaryDto) {
+    return this.sellerPlatformSubscriptionsService.adminRemoveComplimentary(req.user.userId, storeId, dto.reason);
+  }
+
+  @RequirePermission('billing.manage')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('admin')
+  @Post('admin/stores/:storeId/complimentary/review')
+  adminComplimentaryReview(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: AdminComplimentaryReviewDto) {
+    return this.sellerPlatformSubscriptionsService.adminUpdateComplimentaryReview(req.user.userId, storeId, dto.reviewAt ?? null);
   }
 
   @RequirePermission('billing.manage')
@@ -101,6 +133,25 @@ export class SellerPlatformSubscriptionsController {
   @Get('admin/stores/:storeId/invoices')
   adminListInvoices(@Param('storeId') storeId: string, @Query() query: ListInvoicesQueryDto) {
     return this.sellerPlatformSubscriptionsService.adminListInvoices(storeId, query);
+  }
+
+  // Admin: one store's complete billing timeline (trial → today) + CSV. Declared with the other literal admin routes.
+  @RequirePermission('billing.manage')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('admin')
+  @Get('admin/stores/:storeId/billing-timeline')
+  adminBillingTimeline(@Param('storeId') storeId: string, @Query() query: BillingTimelineQueryDto) {
+    return this.billingTimeline.getForAdmin(storeId, query);
+  }
+
+  @RequirePermission('billing.manage')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('admin')
+  @Get('admin/stores/:storeId/billing-timeline/export')
+  adminBillingExport(@Param('storeId') storeId: string, @Query() query: BillingTimelineQueryDto) {
+    return this.billingTimeline.exportForAdmin(storeId, query);
   }
 
   // Onboarding wizard's Payment step — no store exists yet at this point, so
@@ -172,6 +223,24 @@ export class SellerPlatformSubscriptionsController {
   @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
   @RequirePermission('settings.billing.view', 'settings.billing.manage')
+  @Get(':storeId/billing-timeline')
+  billingTimelineFor(@Req() req: any, @Param('storeId') storeId: string, @Query() query: BillingTimelineQueryDto) {
+    return this.billingTimeline.getForSeller(actingSellerId(req.user), storeId, query);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.billing.view', 'settings.billing.manage')
+  @Get(':storeId/billing-timeline/export')
+  billingExportFor(@Req() req: any, @Param('storeId') storeId: string, @Query() query: BillingTimelineQueryDto) {
+    return this.billingTimeline.exportForSeller(actingSellerId(req.user), storeId, query);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.billing.view', 'settings.billing.manage')
   @Get(':storeId/invoices')
   listInvoices(@Req() req: any, @Param('storeId') storeId: string, @Query() query: ListInvoicesQueryDto) {
     return this.sellerPlatformSubscriptionsService.listInvoices(actingSellerId(req.user), storeId, query);
@@ -191,6 +260,17 @@ export class SellerPlatformSubscriptionsController {
   @Patch(':storeId/change-plan')
   changePlan(@Req() req: any, @Param('storeId') storeId: string, @Body() dto: ChangePlatformPlanDto) {
     return this.sellerPlatformSubscriptionsService.changePlan(actingSellerId(req.user), storeId, dto, req.headers['idempotency-key']);
+  }
+
+  /** After the browser confirmed a 3DS charge: verifies it with Stripe and only then applies the pending plan change. Idempotent. */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
+  @Roles('seller', 'staff')
+  @RequirePermission('settings.billing.manage')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post(':storeId/confirm-pending-plan-change')
+  confirmPendingPlanChange(@Req() req: any, @Param('storeId') storeId: string) {
+    return this.sellerPlatformSubscriptionsService.confirmPendingPlanChange(actingSellerId(req.user), storeId);
   }
 
   /** Dry-run of change-plan's exact proration math — what the "confirm your plan change" modal shows before the seller commits. */

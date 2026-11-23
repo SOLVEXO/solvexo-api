@@ -1,3 +1,4 @@
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, HttpCode, Param, Put, Query, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -29,6 +30,7 @@ function resourceFrom(user: any, raw: string): TranslationResource {
 
 @ApiTags('Translations')
 @ApiBearerAuth()
+@AuditStoreWrites('translation', 'settings')
 @Controller('api/translations')
 @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard, StoreAccessGuard)
 @Roles('seller', 'staff')

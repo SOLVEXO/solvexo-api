@@ -80,6 +80,9 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined && v !== '') @Matches(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, { message: 'Top bar email is not a valid address' }) @MaxLength(120) topBarEmail?: string | null;
   @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) topBarBg?: string | null;
   @ApiProperty({ required: false, nullable: true }) @ValidateIf((_, v) => v !== null && v !== undefined) @Matches(/^#[0-9a-fA-F]{6}$/) topBarTextColor?: string | null;
+  @ApiProperty({ required: false, description: 'Seller-built top-strip items (text / link / popup); validated in the service' })
+  @IsOptional() @IsArray() topBarItems?: Record<string, unknown>[];
+  @ApiProperty({ required: false, enum: ['sm', 'md', 'lg'] }) @IsOptional() @IsIn(['sm', 'md', 'lg']) topBarSize?: 'sm' | 'md' | 'lg';
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(40) preset?: string | null;
 
   @ApiProperty({ required: false, type: [SectionInputDto], description: 'Extra sections shown with the header/footer (validated per type in the service)' })

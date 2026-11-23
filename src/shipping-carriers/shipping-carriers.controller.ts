@@ -1,3 +1,4 @@
+import { AuditStoreWrites } from '@/activity-log/audit-store-writes';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -15,6 +16,7 @@ import { CreateShippingCarrierDto, UpdateShippingCarrierDto } from './dto/shippi
 @Roles('seller', 'staff')
 @RequirePermission('settings.shipping.manage')
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+@AuditStoreWrites('shipping_carrier', 'settings')
 @Controller('api/shipping-carriers/:storeId')
 export class ShippingCarriersController {
   constructor(private readonly shippingCarriersService: ShippingCarriersService) {}

@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsEnum, IsNumber, IsOptional, IsDateString, IsBoolean, Min } from 'class-validator';
+import { IsString, IsEnum, IsNumber, IsOptional, IsDateString, IsBoolean, IsInt, Min } from 'class-validator';
 import { IsMongoId } from 'class-validator';
 
 export class UpdateCouponDto {
@@ -24,7 +24,7 @@ export class UpdateCouponDto {
   @IsOptional()
   @IsNumber()
   @Min(0)
-  minOrderAmount?: number;
+  minOrderAmount?: number | null;
 
   @ApiProperty({ required: false, description: 'G2.4: honour this coupon at the POS till' })
   @IsOptional()
@@ -35,7 +35,18 @@ export class UpdateCouponDto {
   @IsOptional()
   @IsNumber()
   @Min(1)
-  usageLimit?: number;
+  usageLimit?: number | null;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  minQuantity?: number | null;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsBoolean()
+  oncePerCustomer?: boolean;
 
   @ApiProperty({ required: false, description: 'Saved customer segment id — only its members can redeem (null = everyone)' })
   @IsOptional()
@@ -45,12 +56,12 @@ export class UpdateCouponDto {
   @ApiProperty({ required: false })
   @IsOptional()
   @IsDateString()
-  startsAt?: string;
+  startsAt?: string | null;
 
   @ApiProperty({ required: false })
   @IsOptional()
   @IsDateString()
-  expiresAt?: string;
+  expiresAt?: string | null;
 
   @ApiProperty({ required: false })
   @IsOptional()

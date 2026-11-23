@@ -630,6 +630,7 @@ export class Order {
       'stripe',
       'manual_bank_transfer',
       'store_credit',
+      'free',
       'safepay',
       'jazzcash',
       'easypaisa',

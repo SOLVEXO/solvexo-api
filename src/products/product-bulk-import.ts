@@ -11,12 +11,15 @@ import {
 import { verifyStoreOwnershipOrForbidden } from '../common/store-ownership.util';
 import { parseCustomsInput } from '../shipping-rates/customs.util';
 import { normalizeShortDescription, normalizeProductTabs, normalizeVideoUrl } from './product-input.util';
+import { assertValueMatchesType } from '../metafields/metafields.service';
 
 /** Product import (Shopify-style "Import products"): CSV template + per-row
  *  create/update through the real ProductsService/ProductVariantsService
  *  paths. Unique key = SKU (case-insensitive, per store). */
 
 export const PRODUCT_IMPORT_MAX_ROWS = 500;
+
+export const PRODUCT_SPEC_PAIRS = 10;
 
 export const PRODUCT_IMPORT_COLUMNS: BulkColumn[] = [
   { key: 'Name', required: true, description: 'Product name (required for new products).', example: 'Classic Cotton T-Shirt' },
@@ -42,6 +45,10 @@ export const PRODUCT_IMPORT_COLUMNS: BulkColumn[] = [
   { key: 'Tab 1 Content', description: 'Text of that tab (plain text or simple HTML). Blank = unchanged.', example: 'S fits 36, M fits 38' },
   { key: 'Tab 2 Title', description: 'Title of a second extra tab. Blank = unchanged.', example: 'Delivery' },
   { key: 'Tab 2 Content', description: 'Text of the second tab. Blank = unchanged.', example: 'Ships in 2 to 3 days' },
+  ...Array.from({ length: PRODUCT_SPEC_PAIRS }, (_, i) => i + 1).flatMap((n): BulkColumn[] => [
+    { key: `Spec ${n} Name`, description: n === 1 ? 'A specification name shown in the product\'s Specifications table / Additional information tab, e.g. Brand. Up to 10 pairs (Spec 1 .. Spec 10). A new name is created as a shared field of the store. Needs the Value too; blank = unchanged.' : `Name of specification ${n}.`, example: n === 1 ? 'Brand' : n === 2 ? 'Capacity' : '' },
+    { key: `Spec ${n} Value`, description: n === 1 ? 'The value of that specification for this product (max 500 characters).' : `Value of specification ${n}.`, example: n === 1 ? 'Ecostar' : n === 2 ? '1.0 Ton' : '' },
+  ]),
   { key: 'Video URL', description: 'https link to an uploaded video, or a YouTube / Vimeo link, shown in the product gallery. Blank = unchanged.', example: 'https://www.youtube.com/watch?v=...' },
 ];
 
@@ -51,6 +58,8 @@ export interface ProductImportDeps {
     categoryModel: any;
     productModel: any;
     productVariantModel: any;
+    metafieldDefinitionModel?: any;
+    metafieldValueModel?: any;
   };
   addPhysicalProduct: (sellerId: string, body: any) => Promise<any>;
   editProduct: (sellerId: string, body: any) => Promise<any>;
@@ -90,8 +99,64 @@ export async function importProductsCsv(
     }
   }
 
+  // Specs (Spec N Name / Spec N Value): names match the store's shared product fields (case-insensitive); an unknown name creates one.
+  const { metafieldDefinitionModel: defModel, metafieldValueModel: valModel } = deps.repos;
+  type SpecDef = { key: string; namespace: string; type: string; name: string };
+  const specDefByName = new Map<string, SpecDef>();
+  const usedSpecKeys = new Set<string>();
+  if (defModel) {
+    const defs: any[] = await defModel.find({ storeId, ownerResource: 'product' }).lean();
+    for (const d of defs) {
+      specDefByName.set(String(d.name).trim().toLowerCase(), { key: d.key, namespace: d.namespace, type: d.type, name: d.name });
+      usedSpecKeys.add(String(d.key));
+    }
+  }
+  const specKeyFor = (name: string) => {
+    let base = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 34);
+    if (!/^[a-z]/.test(base)) base = `spec-${base}`.replace(/-$/, '');
+    let key = base, n = 2;
+    while (usedSpecKeys.has(key)) key = `${base.slice(0, 34)}-${n++}`;
+    return key;
+  };
+  /** Validate the Spec cells of a row BEFORE anything is saved (so a bad row never half-creates a product). */
+  const readSpecs = (r: Record<string, string>): { name: string; value: string }[] => {
+    const out: { name: string; value: string }[] = [];
+    for (let n = 1; n <= PRODUCT_SPEC_PAIRS; n++) {
+      const name = (r[`Spec ${n} Name`] ?? '').trim();
+      const value = (r[`Spec ${n} Value`] ?? '').trim();
+      if (!name && !value) continue;
+      if (!name || !value) throw new BulkRowError(`Spec ${n}: give both a Name and a Value (or leave both blank)`);
+      if (name.length > 60) throw new BulkRowError(`Spec ${n} Name is too long (max 60 characters)`);
+      if (value.length > 500) throw new BulkRowError(`Spec ${n} Value is too long (max 500 characters)`);
+      if (out.some(o => o.name.toLowerCase() === name.toLowerCase())) throw new BulkRowError(`Spec "${name}" appears twice in this row`);
+      const def = specDefByName.get(name.toLowerCase());
+      if (def) { try { assertValueMatchesType(def.type as any, value, def.name); } catch (e: any) { throw new BulkRowError(e?.message ?? `Spec "${name}": invalid value`); } }
+      out.push({ name, value });
+    }
+    return out;
+  };
+  const applySpecs = async (productId: string, specs: { name: string; value: string }[]) => {
+    if (!defModel || !valModel) return;
+    for (const s of specs) {
+      let def = specDefByName.get(s.name.toLowerCase());
+      if (!def) {
+        const key = specKeyFor(s.name);
+        await defModel.create({ storeId, ownerResource: 'product', namespace: 'custom', key, name: s.name, type: 'single_line_text_field', required: false, storefrontAccess: true });
+        def = { key, namespace: 'custom', type: 'single_line_text_field', name: s.name };
+        specDefByName.set(s.name.toLowerCase(), def);
+        usedSpecKeys.add(key);
+      }
+      await valModel.findOneAndUpdate(
+        { storeId, ownerResource: 'product', ownerId: productId, namespace: def.namespace, key: def.key },
+        { $set: { value: s.value } },
+        { upsert: true },
+      );
+    }
+  };
+
   const handler = async (r: Record<string, string>) => {
     const sku = r['SKU'].trim();
+    const specs = readSpecs(r);
     const skuKey = sku.toLowerCase();
     const price = parseNumberCell(r['Price'], 'Price', { min: 0 });
     const compareAt = parseNumberCell(r['Compare-at Price'], 'Compare-at Price', { min: 0 });
@@ -165,7 +230,7 @@ export async function importProductsCsv(
       if (taxable !== undefined && taxable !== (v.taxable !== false)) variantPatch.taxable = taxable;
       if (imageUrl && (v.images ?? [])[0] !== imageUrl) variantPatch.images = [imageUrl];
 
-      if (Object.keys(productPatch).length === 0 && Object.keys(variantPatch).length === 0) {
+      if (Object.keys(productPatch).length === 0 && Object.keys(variantPatch).length === 0 && specs.length === 0) {
         return { outcome: 'skipped' as const, note: `No changes (SKU ${sku})` };
       }
       if (Object.keys(productPatch).length) {
@@ -174,6 +239,7 @@ export async function importProductsCsv(
       if (Object.keys(variantPatch).length) {
         await deps.updateVariant(sellerId, existing.productId, existing.id, variantPatch);
       }
+      await applySpecs(existing.productId, specs);
       return { outcome: 'updated' as const };
     }
 
@@ -225,6 +291,7 @@ export async function importProductsCsv(
       variantBySku.set(skuKey, { id: String(createdVariant._id), productId: String(createdProduct._id) });
       typeById.set(String(createdProduct._id), 'physical');
     }
+    if (createdProduct) await applySpecs(String(createdProduct._id), specs);
     return { outcome: 'created' as const };
   };
 
