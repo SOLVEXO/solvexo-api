@@ -16,7 +16,7 @@ export const HEADER_CONTENT_KEYS = [
   'logoSource', 'customLogoUrl', 'logoLink', 'blocks', 'sections', 'menuId',
   'shopMenuLabel', 'blogLinkLabel', 'includePagesInNav', 'showDefaultBlogLink', 'showShopMenu',
   'showSearch', 'showAccount', 'showWishlist',
-  'ctaLabel', 'ctaLink', 'topBarEnabled', 'topBarText', 'topBarPhone', 'topBarEmail',
+  'ctaLabel', 'ctaLink', 'topBarEnabled', 'topBarText', 'topBarPhone', 'topBarEmail', 'topBarItems',
 ] as const;
 
 /** Footer fields that hold seller content, not theme design. */

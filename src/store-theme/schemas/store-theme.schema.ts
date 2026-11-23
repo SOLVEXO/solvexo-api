@@ -260,6 +260,9 @@ export class StorefrontHeader {
   @Prop({ type: String, default: null }) topBarEmail: string | null;
   @Prop({ type: String, default: null }) topBarBg: string | null;
   @Prop({ type: String, default: null }) topBarTextColor: string | null;
+  // Seller-built strip items (text / links / icons / popups with a designed QR) — validated by sanitizeChromeItems.
+  @Prop({ type: [Object], default: [] }) topBarItems: Record<string, unknown>[];
+  @Prop({ type: String, enum: ['sm', 'md', 'lg'], default: 'md' }) topBarSize: 'sm' | 'md' | 'lg';
   @Prop({ type: String, default: null }) preset: string | null;
 }
 export const StorefrontHeaderSchema = SchemaFactory.createForClass(StorefrontHeader);

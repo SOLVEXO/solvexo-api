@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { sanitizeChromeItems, type ChromeItem } from '../common/chrome-items.util';
 
 /** Floating contact bar shown on every storefront theme (call / WhatsApp / social icons). */
 export interface FloatingContactConfig {
@@ -23,6 +24,14 @@ export interface FloatingContactConfig {
   x: string;
   snapchat: string;
   linkedin: string;
+  /** Seller-built buttons (any link or popup) shown after the built-in ones. */
+  items: ChromeItem[];
+  /** Round corner button instead of the flush edge stack, with an optional speech bubble ("Need help? Chat with us"). */
+  shape: 'flush' | 'round';
+  bubbleText: string;
+  /** Overrides the colours of the built-in buttons (null = brand/theme colour). */
+  customBg: string;
+  customFg: string;
 }
 
 const URL_KEYS = ['facebook', 'instagram', 'tiktok', 'youtube', 'x', 'snapchat', 'linkedin'] as const;
@@ -31,6 +40,7 @@ export const DEFAULT_FLOATING_CONTACT: FloatingContactConfig = {
   enabled: false, position: 'right', vertical: 'middle', size: 'md', style: 'brand', showLabels: true, device: 'all',
   phone: '', phoneLabel: '', whatsapp: '', whatsappMessage: '', whatsappLabel: '', email: '', emailLabel: '',
   facebook: '', instagram: '', tiktok: '', youtube: '', x: '', snapchat: '', linkedin: '',
+  items: [], shape: 'flush', bubbleText: '', customBg: '', customFg: '',
 };
 
 function oneOf<T extends string>(v: unknown, allowed: readonly T[], field: string, fallback: T): T {
@@ -44,6 +54,12 @@ function text(v: unknown, field: string, max: number): string {
   if (typeof v !== 'string') throw new BadRequestException(`floatingContact.${field} must be text`);
   const t = v.trim();
   if (t.length > max) throw new BadRequestException(`floatingContact.${field} is too long (max ${max})`);
+  return t;
+}
+
+function hex(v: unknown, field: string): string {
+  const t = text(v, field, 7);
+  if (t && !/^#[0-9a-fA-F]{6}$/.test(t)) throw new BadRequestException(`floatingContact.${field} must be a colour like #1a2b3c`);
   return t;
 }
 
@@ -87,6 +103,11 @@ export function normalizeFloatingContact(input: unknown): FloatingContactConfig 
     email,
     emailLabel: text(b.emailLabel, 'emailLabel', 40),
     facebook: '', instagram: '', tiktok: '', youtube: '', x: '', snapchat: '', linkedin: '',
+    items: sanitizeChromeItems(b.items, 'floatingContact.items'),
+    shape: oneOf(b.shape, ['flush', 'round'], 'shape', 'flush'),
+    bubbleText: text(b.bubbleText, 'bubbleText', 60),
+    customBg: hex(b.customBg, 'customBg'),
+    customFg: hex(b.customFg, 'customFg'),
   };
   for (const k of URL_KEYS) out[k] = httpsUrl(b[k], k);
   return out;
