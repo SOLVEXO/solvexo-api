@@ -44,6 +44,18 @@ function matches(doc: any, f: any): boolean {
     return String(d) === String(v);
   });
 }
+/** `$set` the way Mongo does it: a dotted key ('brevo.pending') writes into the nested object. */
+function applySet(r: any, set: Record<string, unknown> = {}) {
+  for (const [k, v] of Object.entries(set)) {
+    const parts = k.split('.');
+    let o = r;
+    for (const p of parts.slice(0, -1)) {
+      if (o[p] == null || typeof o[p] !== 'object') o[p] = {};
+      o = o[p];
+    }
+    o[parts[parts.length - 1]] = v;
+  }
+}
 export function model(rows: any[] = []) {
   // A chainable query: sort() really sorts, the rest pass through; `one` returns the first hit.
   const q = (list: any[], one = false) => {
@@ -107,7 +119,7 @@ export function model(rows: any[] = []) {
         rows.push(r);
       }
       if (r) {
-        Object.assign(r, u.$set);
+        applySet(r, u.$set);
         for (const [k, v] of Object.entries(u.$inc ?? {}))
           r[k] = (r[k] ?? 0) + (v as number);
         for (const [k, v] of Object.entries(u.$push ?? {}))
@@ -133,8 +145,8 @@ export function model(rows: any[] = []) {
     }),
     updateMany: jest.fn(async (f: any, u: any) => {
       const hit = rows.filter((x) => matches(x, f));
-      hit.forEach((r) => Object.assign(r, u.$set));
-      return { modifiedCount: hit.length };
+      hit.forEach((r) => applySet(r, u.$set));
+      return { matchedCount: hit.length, modifiedCount: hit.length };
     }),
     // Just the $match + $group shapes Sales Ops uses.
     aggregate: jest.fn(async (pipeline: any[]) => {

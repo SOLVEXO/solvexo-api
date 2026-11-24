@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Module } from '@nestjs/common';
 import { SalesWhatsAppService } from './sales-whatsapp.service';
+import { SalesBrevoService } from './sales-brevo.service';
 import {
   SalesWaConversation,
   SalesWaConversationSchema,
@@ -135,6 +136,7 @@ import {
     PartnerScorecardService,
     SalesAgentService,
     SalesWhatsAppService,
+    SalesBrevoService,
     SalesVisitsService,
     EmailService,
   ],

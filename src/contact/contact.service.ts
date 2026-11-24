@@ -45,7 +45,7 @@ export class ContactService {
     @Optional() private readonly databaseService?: DatabaseService,
   ) {}
 
-  async submit(dto: CreateContactSubmissionDto) {
+  async submit(dto: CreateContactSubmissionDto, ip: string | null = null) {
     const submission = await this.contactModel.create({
       name: dto.name.trim(),
       email: dto.email.trim().toLowerCase(),
@@ -63,7 +63,9 @@ export class ContactService {
       .catch(() => undefined);
 
     if (this.salesCapture && SALES_TOPICS.has(submission.topic))
-      this.salesCapture.fromContactMessage(submission).catch(() => undefined);
+      this.salesCapture
+        .fromContactMessage(submission, { marketingOptIn: dto.marketingOptIn === true, ip })
+        .catch(() => undefined);
 
     this.emailService
       .sendMail(
