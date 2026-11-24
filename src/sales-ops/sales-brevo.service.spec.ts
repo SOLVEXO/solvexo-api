@@ -294,7 +294,10 @@ describe('permission emails, confirmation link, webhook, export', () => {
     await t.leads.create({ ...lead({ email: 'legacy@example.com', brevo: { pending: false } }), marketingConsent: undefined });
     await t.leads.create(lead({ email: null, marketingConsent: { status: 'none' } }));
     const r = await t.brevo.requestConsent(SUPER, {});
-    expect(r.data).toEqual({ sent: 2, skipped: 0 });
+    expect(r.data).toEqual({ sent: 2, skipped: 0, more: 0 });
+    // Marked asked before any email goes out, so a retry while sending can't email them twice
+    expect(t.leads.rows[0].marketingConsent).toMatchObject({ status: 'asked' });
+    await t.brevo.consentRun;
     const [to, subject, html] = t.email.sendMail.mock.calls[0] as any[];
     expect(to).toBe('ayesha@example.com');
     expect(subject).toBe('Can we keep you posted?');
@@ -306,7 +309,9 @@ describe('permission emails, confirmation link, webhook, export', () => {
     expect(t.leads.rows[0].marketingConsent.askedAt).toBeInstanceOf(Date);
     // Asking again: nobody left to ask
     const again = await t.brevo.requestConsent(SUPER, { leadIds: [String(t.leads.rows[0]._id), String(t.leads.rows[1]._id), 'not-an-id'] });
-    expect(again.data).toEqual({ sent: 0, skipped: 3 });
+    expect(again.data).toEqual({ sent: 0, skipped: 3, more: 0 });
+    await t.brevo.consentRun;
+    expect(t.email.sendMail).toHaveBeenCalledTimes(2);
 
     const link = /href="([^"]+\/api\/sales\/consent\/[^"]+)"/.exec(html)![1];
     const token = link.split('/').pop()!;
@@ -316,6 +321,32 @@ describe('permission emails, confirmation link, webhook, export', () => {
     expect(await t.brevo.confirmConsent(token, null)).toContain('status=ok'); // idempotent
     expect(t.activities.rows.filter((a) => a.body.startsWith('Agreed to marketing emails (clicked')).length).toBe(1);
     expect(await t.brevo.confirmConsent(`${token}x`, null)).toBe('https://solvexo.store/email-preferences/confirmed?status=invalid');
+  });
+
+  it('without ticked leads it asks every lead the filters match, not just the loaded page', async () => {
+    const t = setup();
+    for (let i = 0; i < 3; i++) await t.leads.create(lead({ email: `w${i}@example.com`, stage: 'won', marketingConsent: { status: 'none' } }));
+    await t.leads.create(lead({ email: 'new@example.com', stage: 'new', marketingConsent: { status: 'none' } }));
+    await t.leads.create(lead({ email: 'g@example.com', stage: 'won', marketingConsent: { status: 'granted' } }));
+    // A consent filter other than "not asked" can't widen it to people already asked or agreed
+    const r = await t.brevo.requestConsent(SUPER, { filters: { stage: 'won', consent: 'granted' } as any });
+    expect(r.data).toEqual({ sent: 0, skipped: 0, more: 0 });
+    const r2 = await t.brevo.requestConsent(SUPER, { filters: { stage: 'won' } as any });
+    expect(r2.data).toEqual({ sent: 3, skipped: 0, more: 0 });
+    await t.brevo.consentRun;
+    expect(t.email.sendMail.mock.calls.map((c: any[]) => c[0]).sort()).toEqual(['w0@example.com', 'w1@example.com', 'w2@example.com']);
+    expect(t.leads.rows.find((l: any) => l.email === 'new@example.com').marketingConsent.status).toBe('none');
+  });
+
+  it('a failed send puts the lead back so it can be asked again', async () => {
+    const t = setup();
+    await t.leads.create(lead({ marketingConsent: { status: 'none' } }));
+    t.email.sendMail.mockResolvedValueOnce(false);
+    const r = await t.brevo.requestConsent(SUPER, {});
+    expect(r.data.sent).toBe(1);
+    await t.brevo.consentRun;
+    expect(t.leads.rows[0].marketingConsent).toMatchObject({ status: 'none', askedAt: null });
+    expect(t.activities.rows.some((a: any) => String(a.body).startsWith('Asked by email'))).toBe(false);
   });
 
   it('an old link does not undo a later unsubscribe', async () => {
