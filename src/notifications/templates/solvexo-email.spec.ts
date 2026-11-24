@@ -5,7 +5,7 @@ import { platformReplyTo } from '../../otp/services/email.service';
 describe('Solvexo-branded platform email', () => {
   it('has the Solvexo wordmark, escapes the title, and puts the given note in the footer', () => {
     const html = solvexoEmail('Hi <b>there</b>', '<p>Body</p>', { cta: { label: 'Open', url: 'https://x.test/a' }, note: 'Partner note' });
-    expect(html).toContain('<div class="wordmark"><span>Solvexo</span></div>');
+    expect(html).toContain('<img src="https://www.solvexo.store/brand/solvexo-logo.png" alt="Solvexo" width="176" height="60"');
     expect(html).toContain('<h1>Hi &lt;b&gt;there&lt;/b&gt;</h1>');
     expect(html).toContain('<a class="cta" href="https://x.test/a">Open</a>');
     expect(html).toContain('<p>Partner note</p>');
@@ -22,7 +22,7 @@ describe('Solvexo-branded platform email', () => {
   it('a store-branded mail shows the store, not Solvexo', () => {
     const html = notificationEmailShell('Code', '<div class="code">123456</div>', undefined, { name: 'Ali & Sons', hideReceivingNotice: true });
     expect(html).toContain('<span>Ali &amp; Sons</span>');
-    expect(html).not.toContain('<span>Solvexo</span>');
+    expect(html).not.toContain('solvexo-logo.png');
   });
 
   it('escapes text', () => {

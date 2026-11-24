@@ -3,6 +3,12 @@ import { emailUiStrings, isRtlLocale } from '../customer-email-locales';
 
 const APP_NAME = process.env.APP_NAME || 'Solvexo';
 const BRAND_COLOR = '#d97757';
+/** The full Solvexo logo (icon + wordmark, 833×285 PNG) at the top of every platform email. EMAIL_LOGO_URL overrides it. */
+export const SOLVEXO_EMAIL_LOGO = 'https://www.solvexo.store/brand/solvexo-logo.png';
+function platformLogoUrl(): string | null {
+  const v = (process.env.EMAIL_LOGO_URL ?? SOLVEXO_EMAIL_LOGO).trim();
+  return /^https:\/\//i.test(v) ? v.replace(/"/g, '%22') : null;
+}
 
 /**
  * Modern shared shell for every Notifications-module email — a text wordmark
@@ -40,9 +46,13 @@ export function notificationEmailShell(
   const brand = b ? esc(b.name) : APP_NAME;
   const accent = b?.accent && HEX.test(b.accent) ? b.accent : BRAND_COLOR;
   const logo = b?.logoUrl && /^https:\/\//i.test(b.logoUrl) ? b.logoUrl.replace(/"/g, '%22') : null;
+  // Platform mail carries the real Solvexo logo (width/height set so it never renders huge in clients that ignore CSS).
+  const platformLogo = b ? null : platformLogoUrl();
   const wordmarkHtml = logo
     ? `<img src="${logo}" alt="${brand}" style="max-height:56px;max-width:220px;">`
-    : `<span>${brand}</span>`;
+    : platformLogo
+      ? `<img src="${platformLogo}" alt="${esc(APP_NAME)}" width="176" height="60" style="display:inline-block;width:176px;height:auto;max-width:176px;border:0;">`
+      : `<span>${brand}</span>`;
   const ui = emailUiStrings(b?.locale);
   const rtl = isRtlLocale(b?.locale);
   const lang = esc(String(b?.locale ?? 'en').toLowerCase().split('-')[0] || 'en');
