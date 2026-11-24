@@ -9,6 +9,8 @@ import { ApiTokenGuard, ApiTokensService } from './api-tokens.service';
 import { MerchantApiSettingsController, MerchantApiV1Controller } from './merchant-api.controller';
 import { MerchantWebhooksService } from './merchant-webhooks.service';
 import { ApiWritesService } from './api-writes.service';
+import { ApiReadsService } from './api-reads.service';
+import { MerchantApiDocsController } from './merchant-api-docs.controller';
 
 @Module({
   imports: [AuthModule, RedisModule, PlatformPlansModule, InventoryModule, MongooseModule.forFeature([
@@ -17,8 +19,8 @@ import { ApiWritesService } from './api-writes.service';
     { name: ApiToken.name, schema: ApiTokenSchema },
     { name: ApiIdempotency.name, schema: ApiIdempotencySchema },
   ])],
-  controllers: [MerchantApiSettingsController, MerchantApiV1Controller],
-  providers: [MerchantWebhooksService, ApiTokensService, ApiTokenGuard, ApiWritesService],
+  controllers: [MerchantApiDocsController, MerchantApiSettingsController, MerchantApiV1Controller],
+  providers: [MerchantWebhooksService, ApiTokensService, ApiTokenGuard, ApiWritesService, ApiReadsService],
   exports: [MerchantWebhooksService],
 })
 export class MerchantApiModule {}

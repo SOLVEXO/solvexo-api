@@ -13,6 +13,7 @@ const HTTP = new Set(['Get', 'Post', 'Put', 'Patch', 'Delete', 'All']);
 const PUBLIC_FILES: Record<string, string> = {
   'health/health.controller.ts': 'liveness/readiness probes',
   'app-platform/app-platform.controller.ts': 'OAuth token exchange authenticates with the client secret + single-use code',
+  'merchant-api/merchant-api-docs.controller.ts': 'the public OpenAPI description of the Admin API (no store data)',
 };
 
 function walk(dir: string, out: string[] = []): string[] {
