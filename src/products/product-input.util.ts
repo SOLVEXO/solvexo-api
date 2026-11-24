@@ -9,7 +9,7 @@ import { BadRequestException } from '@nestjs/common';
 export const PRODUCT_LIMITS = {
   nameMax: 255,
   descriptionMax: 50_000,
-  imagesMax: 50,
+  imagesMax: 250,
   imageUrlMax: 2048,
   tagsMax: 250,
   tagMax: 255,
