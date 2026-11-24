@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsIn, IsNotEmpty, IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsBoolean, IsEmail, IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { ContactSubmissionStatus } from '../schemas/contact-submission.schema';
 
 export class CreateContactSubmissionDto {
@@ -22,6 +22,12 @@ export class CreateContactSubmissionDto {
   @IsString()
   @IsNotEmpty({ message: 'Message is required' })
   message: string;
+
+  /** "Send me tips and offers by email": only acted on when the message becomes a Sales Ops lead. Unticked = no change. */
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  marketingOptIn?: boolean;
 }
 
 export class UpdateContactStatusDto {

@@ -50,6 +50,19 @@ export class SalesSettings {
   @Prop({ type: Boolean, default: false }) waTemplateUsesName: boolean;
   @Prop({ type: Date, default: null }) waConnectedAt: Date | null;
   @Prop({ type: Date, default: null }) waLastEventAt: Date | null;
+
+  // ── Brevo (marketing email) — see sales-brevo.service.ts ─────────────────
+  /** Brevo API key, encrypted (INTEGRATIONS key). Never sent to the browser. */
+  @Prop({ type: String, default: null }) brevoApiKeyEnc: string | null;
+  @Prop({ type: String, default: null }) brevoAccountEmail: string | null;
+  @Prop({ type: Number, default: null }) brevoListId: number | null;
+  @Prop({ type: String, default: null }) brevoListName: string | null;
+  @Prop({ type: Number, default: null }) brevoFolderId: number | null;
+  @Prop({ type: Date, default: null }) brevoConnectedAt: Date | null;
+  @Prop({ type: Date, default: null }) brevoLastSyncAt: Date | null;
+  @Prop({ type: String, default: null }) brevoLastError: string | null;
+  /** Secret path segment of the Brevo webhook URL (32 hex characters), made on the first connect. */
+  @Prop({ type: String, default: null }) brevoWebhookSecret: string | null;
 }
 
 export const SalesSettingsSchema = SchemaFactory.createForClass(SalesSettings);
