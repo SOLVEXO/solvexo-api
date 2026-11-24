@@ -293,7 +293,9 @@ export class AppPlatformService {
   }
 
   // ── public: the app's server swaps the code for its access token ──────────
+  /** Standard OAuth 2.0 authorization-code swap (JSON or form-encoded), as Zapier and Make send it. */
   async exchange(body: any) {
+    if (body?.grant_type !== undefined && body.grant_type !== 'authorization_code') throw new BadRequestException('unsupported_grant_type: only authorization_code is supported');
     const clientId = typeof body?.client_id === 'string' ? body.client_id : '';
     const clientSecret = typeof body?.client_secret === 'string' ? body.client_secret : '';
     const code = typeof body?.code === 'string' ? body.code : '';

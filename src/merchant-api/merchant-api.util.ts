@@ -5,6 +5,14 @@ import { isIP } from 'net';
 export const WEBHOOK_EVENTS = ['order.created', 'order.paid', 'order.fulfilled', 'order.cancelled', 'refund.created', 'product.updated', 'inventory.changed', 'customer.created', 'form.submitted'] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 
+/** The read permission a token needs to subscribe to each event (it would otherwise learn data it may not read). */
+export const EVENT_SCOPE: Record<string, string> = {
+  'order.created': 'read_orders', 'order.paid': 'read_orders', 'order.fulfilled': 'read_orders', 'order.cancelled': 'read_orders', 'refund.created': 'read_orders',
+  'product.updated': 'read_products', 'inventory.changed': 'read_inventory', 'customer.created': 'read_customers', 'form.submitted': 'read_customers',
+};
+/** Webhooks one API token may create through the API (Zapier makes one per Zap). */
+export const MAX_TOKEN_WEBHOOKS = 50;
+
 export const API_SCOPES = ['read_orders', 'write_orders', 'read_products', 'write_products', 'read_customers', 'write_customers', 'read_inventory', 'write_inventory'] as const;
 export type ApiScope = (typeof API_SCOPES)[number];
 

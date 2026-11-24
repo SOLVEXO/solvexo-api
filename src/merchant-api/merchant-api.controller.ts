@@ -53,7 +53,7 @@ export class MerchantApiSettingsController {
 @UseGuards(ApiTokenGuard)
 @Controller('api/merchant/v1')
 export class MerchantApiV1Controller {
-  constructor(private readonly db: DatabaseService, private readonly writes: ApiWritesService, private readonly reads: ApiReadsService) {}
+  constructor(private readonly db: DatabaseService, private readonly writes: ApiWritesService, private readonly reads: ApiReadsService, private readonly hooks: MerchantWebhooksService) {}
   private page(q: any) { const page = Math.max(1, Number(q?.page) || 1); const limit = Math.min(50, Math.max(1, Number(q?.limit) || 20)); return { page, limit, skip: (page - 1) * limit }; }
   /** Integrations built before cursors send `page`: they keep the old answer (raw rows + total). */
   private legacy(q: any) { return q?.page !== undefined && q?.cursor === undefined; }
@@ -121,4 +121,14 @@ export class MerchantApiV1Controller {
 
   @Get('customers/:id') @NeedsApiScope('read_customers')
   customer(@Req() req: any, @Param('id') id: string) { return this.reads.customer(req.apiToken.storeId, id); }
+
+  /** Webhooks this token made for itself (REST hooks for Zapier/Make). Each event needs its read permission (checked per event). */
+  @Get('webhooks')
+  webhooks(@Req() req: any) { return this.hooks.listForToken(req.apiToken); }
+
+  @Post('webhooks')
+  createWebhook(@Req() req: any, @Body() body: any) { return this.hooks.createForToken(req.apiToken, body); }
+
+  @Delete('webhooks/:id')
+  deleteWebhook(@Req() req: any, @Param('id') id: string) { return this.hooks.removeForToken(req.apiToken, id); }
 }
