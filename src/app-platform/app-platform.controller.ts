@@ -28,6 +28,8 @@ export class AdminAppPlatformController {
   @Patch(':id') update(@Param('id') id: string, @Body() b: any) { return this.svc.updateApp(id, b); }
   @Post(':id/approve') approve(@Req() req: any, @Param('id') id: string) { return this.svc.approve(this.actor(req), id); }
   @Post(':id/suspend') suspend(@Req() req: any, @Param('id') id: string) { return this.svc.suspend(this.actor(req), id); }
+  /** Turn a developer's listing request down, with what to change. The app stays private. */
+  @Post(':id/reject') reject(@Req() req: any, @Param('id') id: string, @Body() b: any) { return this.svc.reject(this.actor(req), id, b?.note); }
   @Post(':id/rotate-secrets') rotate(@Param('id') id: string) { return this.svc.rotateSecrets(id); }
 }
 
@@ -58,6 +60,31 @@ export class SellerAppPlatformController {
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('installs/:installId/session-token') @RequirePermission('apps.view')
   async session(@Req() req: any, @Param('storeId') s: string, @Param('installId') id: string) { return this.svc.sessionToken(s, await this.own(req, s), id); }
+}
+
+/**
+ * Developers: any seller account registers and manages its OWN apps (never another account's). A new app is private:
+ * it installs only on stores this account owns, with no review. Asking for a listing sends it to Super Admin.
+ * Staff are not developers: an app belongs to the person, so only the seller's own login is accepted.
+ */
+@ApiTags('App platform (developer)')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles('seller')
+@UsePipes(new ValidationPipe({ transform: false }))
+@Controller('api/developer/apps')
+export class DeveloperAppsController {
+  constructor(private readonly svc: AppPlatformService) {}
+  private me(req: any) { return String(req.user.userId ?? req.user.sub ?? req.user.id ?? ''); }
+  @Get() list(@Req() req: any) { return this.svc.devList(this.me(req)); }
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post() create(@Req() req: any, @Body() b: any) { return this.svc.devCreate(this.me(req), b); }
+  @Get(':id') get(@Req() req: any, @Param('id') id: string) { return this.svc.devGet(this.me(req), id); }
+  @Patch(':id') update(@Req() req: any, @Param('id') id: string, @Body() b: any) { return this.svc.devUpdate(this.me(req), id, b); }
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post(':id/rotate-secrets') rotate(@Req() req: any, @Param('id') id: string) { return this.svc.devRotate(this.me(req), id); }
+  @Post(':id/submit') submit(@Req() req: any, @Param('id') id: string) { return this.svc.devSubmit(this.me(req), id); }
+  @Delete(':id') remove(@Req() req: any, @Param('id') id: string) { return this.svc.devDelete(this.me(req), id); }
 }
 
 /** The app's own server calls this (no login): authenticated by client id + secret + the single-use code. */

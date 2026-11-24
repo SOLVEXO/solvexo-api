@@ -6,6 +6,21 @@ export const MAX_REDIRECTS = 5;
 export const CODE_TTL_MS = 10 * 60_000;
 export const SESSION_TOKEN_TTL_S = 5 * 60;
 export const MAX_INSTALLS_PER_STORE = 20;
+/** Apps one developer account may register. */
+export const MAX_APPS_PER_DEVELOPER = 10;
+
+/**
+ * Who may install an app on a store: a listed (approved) app anywhere; a developer's private (draft) app only on
+ * stores that developer owns. A suspended app nowhere.
+ */
+export function installableOn(app: { status: string; ownerSellerId?: string | null }, store: { sellerId?: unknown } | null): boolean {
+  if (app.status === 'approved') return true;
+  if (!store) return false;
+  return app.status === 'draft' && !!app.ownerSellerId && String(store.sellerId ?? '') === app.ownerSellerId;
+}
+
+/** True when `next` asks for a permission `prev` did not have (a listed app then needs a new review). */
+export const widensScopes = (prev: string[], next: string[] | undefined) => !!next && next.some((s) => !prev.includes(s));
 
 export const SCOPE_LABEL: Record<string, string> = {
   read_orders: 'See your orders and customers\' delivery details', write_orders: 'See and change your orders',

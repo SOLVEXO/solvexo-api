@@ -5,7 +5,7 @@ import { RedisModule } from '../redis/redis.module';
 import { PlatformPlansModule } from '../platform-plans/platform-plans.module';
 import { ApiToken, ApiTokenSchema, WebhookSubscription, WebhookSubscriptionSchema } from '../merchant-api/merchant-api.schema';
 import { AppAuthCode, AppAuthCodeSchema, AppDefinition, AppDefinitionSchema, AppInstall, AppInstallSchema } from './app.schema';
-import { AdminAppPlatformController, AppOAuthController, SellerAppPlatformController } from './app-platform.controller';
+import { AdminAppPlatformController, AppOAuthController, DeveloperAppsController, SellerAppPlatformController } from './app-platform.controller';
 import { AppPlatformService } from './app-platform.service';
 
 @Module({
@@ -19,7 +19,7 @@ import { AppPlatformService } from './app-platform.service';
       { name: WebhookSubscription.name, schema: WebhookSubscriptionSchema },
     ]),
   ],
-  controllers: [AdminAppPlatformController, SellerAppPlatformController, AppOAuthController],
+  controllers: [AdminAppPlatformController, DeveloperAppsController, SellerAppPlatformController, AppOAuthController],
   providers: [AppPlatformService],
   exports: [AppPlatformService],
 })

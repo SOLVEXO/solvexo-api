@@ -68,6 +68,13 @@ export class BillingAccessGuard implements CanActivate {
     // own doc comment) — a genuinely still-trialing store can otherwise build
     // freely (unlimited products/staff/etc.), matching Shopify's own real
     // trial, which disables checkout specifically until a plan is chosen.
+    if (options.blockDuringTrial && sub && (sub as any).status === 'development') {
+      throw new ForbiddenException(
+        forBuyer
+          ? 'This is a test store. It does not take real orders.'
+          : 'This is a development store: it can\'t take real payments. Use draft orders to make test orders.',
+      );
+    }
     if (options.blockDuringTrial && sub && (sub as any).status === 'trialing') {
       throw new ForbiddenException(
         forBuyer

@@ -185,7 +185,8 @@ export class EntitlementsService {
    * guard's own route-blocking.
    */
   private applyTrialOverride(limits: PlatformPlanLimits, subscription: any | null): PlatformPlanLimits {
-    if (subscription?.status !== 'trialing') return limits;
+    // A developer's development store gets the same open feature set as a trial, for good (see DevelopmentStoresService).
+    if (subscription?.status !== 'trialing' && subscription?.status !== 'development') return limits;
     return {
       ...limits,
       maxProducts: -1,

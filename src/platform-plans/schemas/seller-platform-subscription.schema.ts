@@ -39,7 +39,7 @@ export class SellerPlatformSubscription {
     // billing/account routes stay reachable so the seller can pay and
     // unlock. Only ever reached for `legacyFreeEligible: false` stores —
     // see that field's comment.
-    enum: ['trialing', 'trial_ended', 'active', 'past_due', 'locked', 'canceled'],
+    enum: ['trialing', 'trial_ended', 'active', 'past_due', 'locked', 'canceled', 'development'],
     default: 'trialing',
   })
   status: string;
