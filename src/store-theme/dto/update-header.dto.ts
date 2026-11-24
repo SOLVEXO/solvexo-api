@@ -61,6 +61,16 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false, enum: ['thin', 'regular', 'bold'] }) @IsOptional() @IsIn(['thin', 'regular', 'bold']) iconStroke?: 'thin' | 'regular' | 'bold';
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() iconTooltips?: boolean;
   @ApiProperty({ required: false, enum: ['none', 'below'] }) @IsOptional() @IsIn(['none', 'below']) iconLabels?: 'none' | 'below';
+  @ApiProperty({ required: false, enum: ['theme', 'dark', 'light', 'brand'] }) @IsOptional() @IsIn(['theme', 'dark', 'light', 'brand']) iconTipStyle?: 'theme' | 'dark' | 'light' | 'brand';
+  @ApiProperty({ required: false, enum: ['below', 'above'] }) @IsOptional() @IsIn(['below', 'above']) iconTipPosition?: 'below' | 'above';
+  @ApiProperty({ required: false, nullable: true, maxLength: 30 }) @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(30) iconTipSearch?: string | null;
+  @ApiProperty({ required: false, nullable: true, maxLength: 30 }) @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(30) iconTipAccount?: string | null;
+  @ApiProperty({ required: false, nullable: true, maxLength: 30 }) @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(30) iconTipWishlist?: string | null;
+  @ApiProperty({ required: false, nullable: true, maxLength: 30 }) @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(30) iconTipCart?: string | null;
+  @ApiProperty({ required: false, enum: ['theme', 'light', 'dark', 'brand'] }) @IsOptional() @IsIn(['theme', 'light', 'dark', 'brand']) dropdownBg?: 'theme' | 'light' | 'dark' | 'brand';
+  @ApiProperty({ required: false, enum: ['theme', 'square', 'soft', 'round'] }) @IsOptional() @IsIn(['theme', 'square', 'soft', 'round']) dropdownRadius?: 'theme' | 'square' | 'soft' | 'round';
+  @ApiProperty({ required: false, enum: ['theme', 'none', 'soft', 'strong'] }) @IsOptional() @IsIn(['theme', 'none', 'soft', 'strong']) dropdownShadow?: 'theme' | 'none' | 'soft' | 'strong';
+  @ApiProperty({ required: false, enum: ['theme', 'tint', 'underline', 'none'] }) @IsOptional() @IsIn(['theme', 'tint', 'underline', 'none']) dropdownHover?: 'theme' | 'tint' | 'underline' | 'none';
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showShopMenu?: boolean;
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(24) shopMenuLabel?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() includePagesInNav?: boolean;
