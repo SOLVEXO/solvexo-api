@@ -54,6 +54,13 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showSearch?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showAccount?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showWishlist?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showCart?: boolean;
+  @ApiProperty({ required: false, nullable: true, description: "Id of one of the active theme's own icon sets (a short slug); unknown ids read as the theme default." })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @Matches(/^[a-z][a-z0-9_-]{0,31}$/, { message: 'iconSet must be a short lowercase slug' }) iconSet?: string | null;
+  @ApiProperty({ required: false, enum: ['sm', 'md', 'lg'] }) @IsOptional() @IsIn(['sm', 'md', 'lg']) iconSize?: 'sm' | 'md' | 'lg';
+  @ApiProperty({ required: false, enum: ['thin', 'regular', 'bold'] }) @IsOptional() @IsIn(['thin', 'regular', 'bold']) iconStroke?: 'thin' | 'regular' | 'bold';
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() iconTooltips?: boolean;
+  @ApiProperty({ required: false, enum: ['none', 'below'] }) @IsOptional() @IsIn(['none', 'below']) iconLabels?: 'none' | 'below';
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showShopMenu?: boolean;
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(24) shopMenuLabel?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() includePagesInNav?: boolean;

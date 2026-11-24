@@ -234,6 +234,12 @@ export class StorefrontHeader {
   @Prop({ type: Boolean, default: true }) showSearch: boolean;
   @Prop({ type: Boolean, default: true }) showAccount: boolean;
   @Prop({ type: Boolean, default: true }) showWishlist: boolean;
+  @Prop({ type: Boolean, default: true }) showCart: boolean;
+  @Prop({ type: String, default: null }) iconSet: string | null; // an id from the ACTIVE theme's own icon sets; null = the theme default
+  @Prop({ type: String, enum: ['sm', 'md', 'lg'], default: 'md' }) iconSize: 'sm' | 'md' | 'lg';
+  @Prop({ type: String, enum: ['thin', 'regular', 'bold'], default: 'regular' }) iconStroke: 'thin' | 'regular' | 'bold';
+  @Prop({ type: Boolean, default: true }) iconTooltips: boolean;
+  @Prop({ type: String, enum: ['none', 'below'], default: 'none' }) iconLabels: 'none' | 'below';
   @Prop({ type: Boolean, default: true }) showShopMenu: boolean;          // the auto "Shop" dropdown (categories + collections)
   @Prop({ type: String, default: null }) shopMenuLabel: string | null;    // null = "Shop"
   @Prop({ type: Boolean, default: true }) includePagesInNav: boolean;     // pages flagged "show in navigation"
