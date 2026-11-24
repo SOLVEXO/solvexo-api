@@ -160,9 +160,12 @@ d('webhooks and tokens on a real MongoDB', () => {
     expect(stored.tokenHash).toBe(hashToken(t.token)); expect(JSON.stringify(stored)).not.toContain(t.token);
     expect(JSON.stringify(await tokens.list(S1))).not.toContain(t.token);
     const guard = new ApiTokenGuard(tokens, { get: () => 'read_orders' } as any);
-    const ctx = (auth: string, req: any = { headers: { authorization: auth } }) => ({ switchToHttp: () => ({ getRequest: () => req }), getHandler: () => null }) as any;
+    const headers: Record<string, string> = {};
+    const res = { setHeader: (k: string, v: string) => { headers[k] = v; } };
+    const ctx = (auth: string, req: any = { headers: { authorization: auth } }) => ({ switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }), getHandler: () => null }) as any;
     const req: any = { headers: { authorization: `Bearer ${t.token}` } };
     expect(await guard.canActivate(ctx('', req))).toBe(true); expect(req.apiToken.storeId).toBe(S1);
+    expect(headers).toMatchObject({ 'X-RateLimit-Limit': '120', 'X-RateLimit-Remaining': '119' });
     await expect(new ApiTokenGuard(tokens, { get: () => 'read_products' } as any).canActivate(ctx('', { headers: { authorization: `Bearer ${t.token}` } }))).rejects.toThrow(/permission/);
     await expect(guard.canActivate(ctx('Bearer sxk_' + 'a'.repeat(40)))).rejects.toThrow(/Invalid/);
     await expect(guard.canActivate(ctx('Bearer nope'))).rejects.toThrow(/malformed/);

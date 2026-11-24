@@ -46,7 +46,7 @@ d('resource webhooks + API writes on a real MongoDB', () => {
     await Promise.all([subs.init(), dels.init(), idem.init()]);
     const db: any = { repositories: M }; const act: any = { log: audit };
     hooks = new MerchantWebhooksService(subs as any, dels as any, db, act);
-    writes = new ApiWritesService(idem as any, db, act, { adjustStock: adjust } as any);
+    writes = new ApiWritesService(idem as any, db, act, { adjustStock: adjust } as any, {} as any);
   });
   afterAll(async () => { global.fetch = realFetch; await conn?.dropDatabase(); await conn?.close(); });
   beforeEach(() => { fetchMock = jest.fn(async () => ({ status: 200 })); (global as any).fetch = fetchMock; jest.spyOn(dnsPromises, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as any); audit.mockClear(); adjust.mockClear(); });
