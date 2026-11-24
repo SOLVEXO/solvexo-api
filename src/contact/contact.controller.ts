@@ -35,8 +35,8 @@ export class ContactController {
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post()
   @ApiOperation({ summary: 'Submit the Contact Us form (public)' })
-  submit(@Body() dto: CreateContactSubmissionDto) {
-    return this.contactService.submit(dto);
+  submit(@Body() dto: CreateContactSubmissionDto, @Req() req: any) {
+    return this.contactService.submit(dto, req?.ip ?? null);
   }
 
   // ============================================================

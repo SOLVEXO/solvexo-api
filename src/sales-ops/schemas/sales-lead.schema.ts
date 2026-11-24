@@ -6,6 +6,7 @@ import {
   LEAD_STAGES,
   LOST_REASONS,
 } from '../sales-ops.constants';
+import type { BrevoSyncState, MarketingConsent } from '../sales-brevo.util';
 
 export type SalesLeadDocument = SalesLead & Document;
 
@@ -67,6 +68,21 @@ export class SalesLead {
   /** Partner whose referral code came with the lead (Book-a-demo form). */
   @Prop({ type: String, default: null }) partnerId: string | null;
   @Prop({ type: String, default: null }) createdByAdminId: string | null;
+  /**
+   * Permission to send marketing email (tips, product news, offers). Only 'granted' leads are sent to Brevo; 'withdrawn'
+   * ones are taken off the Brevo list and never added back by the sync. `ip` is kept as evidence and never sent to the browser.
+   */
+  @Prop({
+    type: Object,
+    default: () => ({ status: 'none', at: null, source: null, note: null, askedAt: null, ip: null }),
+  })
+  marketingConsent: MarketingConsent;
+  /** Brevo sync state: `pending` = something changed that Brevo should hear about (see SalesBrevoService). */
+  @Prop({
+    type: Object,
+    default: () => ({ syncedAt: null, error: null, pending: false }),
+  })
+  brevo: BrevoSyncState;
   @Prop({ type: Boolean, default: false, index: true }) isDelete: boolean;
 }
 
@@ -74,3 +90,5 @@ export const SalesLeadSchema = SchemaFactory.createForClass(SalesLead);
 SalesLeadSchema.index({ email: 1 });
 SalesLeadSchema.index({ 'utm.campaign': 1 });
 SalesLeadSchema.index({ isDelete: 1, stage: 1, updatedAt: -1 });
+SalesLeadSchema.index({ 'brevo.pending': 1 });
+SalesLeadSchema.index({ 'marketingConsent.status': 1 });
