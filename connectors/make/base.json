@@ -1,0 +1,14 @@
+{
+  "baseUrl": "https://api.solvexo.store/api/merchant/v1",
+  "headers": {
+    "Authorization": "Bearer {{connection.accessToken}}"
+  },
+  "response": {
+    "error": {
+      "message": "[{{statusCode}}] {{ifempty(body.message; 'Solvexo request failed')}}"
+    }
+  },
+  "log": {
+    "sanitize": ["request.headers.authorization"]
+  }
+}

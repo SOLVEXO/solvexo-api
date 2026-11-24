@@ -43,7 +43,7 @@ describe('OpenAPI contract', () => {
     const proto = MerchantApiV1Controller.prototype as any;
     const routes = Object.getOwnPropertyNames(proto).filter((k) => k !== 'constructor' && Reflect.hasMetadata(PATH_METADATA, proto[k]))
       .map((k) => ({ path: `/${String(Reflect.getMetadata(PATH_METADATA, proto[k]))}`.replace(/:([a-z]+)/g, '{$1}'), method: RequestMethod[Reflect.getMetadata(METHOD_METADATA, proto[k])].toLowerCase() }));
-    expect(routes.length).toBe(12);
+    expect(routes.length).toBe(15);
     for (const r of routes) expect([r.path, r.method, !!spec.paths[r.path]?.[r.method]]).toEqual([r.path, r.method, true]);
     const described = Object.entries(spec.paths).flatMap(([p, ops]: any) => Object.keys(ops).map((m) => `${m} ${p}`));
     expect(described.sort()).toEqual(routes.map((r) => `${r.method} ${r.path}`).sort());
@@ -57,7 +57,8 @@ describe('OpenAPI contract', () => {
   });
   it('writes demand an Idempotency-Key and every operation has a unique id', () => {
     const ops = Object.values(spec.paths).flatMap((o: any) => Object.entries(o)) as [string, any][];
-    for (const [m, op] of ops) if (m !== 'get') expect(op.parameters.some((p: any) => p.name === 'Idempotency-Key' && p.required)).toBe(true);
+    // Changes to store data need a key; subscribing/unsubscribing a REST hook doesn't (Zapier and Make don't send one).
+    for (const [m, op] of ops) if (m !== 'get' && !['createWebhook', 'deleteWebhook'].includes(op.operationId)) expect(op.parameters.some((p: any) => p.name === 'Idempotency-Key' && p.required)).toBe(true);
     const ids = ops.map(([, op]) => op.operationId);
     expect(new Set(ids).size).toBe(ids.length);
   });
@@ -193,5 +194,77 @@ d('v1 reads and fulfil on a real MongoDB', () => {
     expect((await run()).replayed).toBe(true);
     expect(fulfilItems).toHaveBeenCalledTimes(1);
     expect(fulfilItems).toHaveBeenCalledWith(SELLER, A, String(o._id), { items: [{ itemId: String(line._id), quantity: 2 }], carrier: 'TCS', trackingNumber: 'T123', trackingUrl: 'https://tcs.example/T123', notifyCustomer: true }, undefined, 'Solvexo API');
+    // No line_items: everything not shipped yet.
+    fulfilItems.mockClear();
+    await writes.fulfilOrder(caller, String(o._id), { carrier: 'TCS' });
+    expect(fulfilItems).toHaveBeenCalledWith(SELLER, A, String(o._id), expect.objectContaining({ items: [{ itemId: String(line._id), quantity: 2 }], carrier: 'TCS' }), undefined, 'Solvexo API');
+    await M.orderModel.updateOne({ _id: o._id }, { $set: { 'sellerOrders.0.shipments': [{ items: [{ itemId: String(line._id), quantity: 2 }] }] } });
+    await expect(writes.fulfilOrder(caller, String(o._id), {})).rejects.toThrow(/already been shipped/);
+  });
+});
+
+describe('ship everything not shipped yet', () => {
+  it('leaves out cancelled and digital lines and what earlier shipments took', async () => {
+    const { unshippedLines } = await import('./api-writes.service');
+    const a = new Types.ObjectId(); const b = new Types.ObjectId(); const c = new Types.ObjectId(); const dgt = new Types.ObjectId();
+    const so = {
+      items: [{ _id: a, quantity: 3, type: 'physical' }, { _id: b, quantity: 1, type: 'physical' }, { _id: c, quantity: 2, type: 'physical', cancelledAt: new Date() }, { _id: dgt, quantity: 1, type: 'digital' }],
+      shipments: [{ items: [{ itemId: String(a), quantity: 1 }] }, { items: [{ itemId: String(b), quantity: 1 }] }],
+    };
+    expect(unshippedLines(so)).toEqual([{ itemId: String(a), quantity: 2 }]);
+    expect(unshippedLines({ items: [], shipments: [] })).toEqual([]);
+    expect(unshippedLines(undefined)).toEqual([]);
+  });
+});
+
+d('webhooks a token makes for itself (REST hooks for Zapier / Make)', () => {
+  jest.setTimeout(60000);
+  let conn: Connection; let hooks: any; let tokens: any; let subs: any;
+  const S = new Types.ObjectId().toHexString();
+  const zap = { id: 'tok-zap', storeId: S, scopes: ['read_orders', 'write_inventory'], appInstallId: 'inst-1' };
+  const other = { id: 'tok-other', storeId: S, scopes: ['read_orders'] };
+
+  beforeAll(async () => {
+    process.env.INTEGRATIONS_CREDENTIALS_ENCRYPTION_KEY = process.env.INTEGRATIONS_CREDENTIALS_ENCRYPTION_KEY || 'a'.repeat(64);
+    conn = await mongoose.createConnection(URI as string, { dbName: `mapiv1_hooks_${Date.now()}` }).asPromise();
+    const { WebhookSubscriptionSchema, WebhookDeliverySchema, ApiTokenSchema } = await import('./merchant-api.schema');
+    const { MerchantWebhooksService } = await import('./merchant-webhooks.service');
+    const { ApiTokensService } = await import('./api-tokens.service');
+    subs = conn.model('WebhookSubscription', WebhookSubscriptionSchema);
+    const act: any = { log: jest.fn(async () => undefined) };
+    hooks = new MerchantWebhooksService(subs, conn.model('WebhookDelivery', WebhookDeliverySchema) as any, { repositories: {} } as any, act);
+    tokens = new ApiTokensService(conn.model('ApiToken', ApiTokenSchema) as any, act, hooks);
+  });
+  afterAll(async () => { await conn?.dropDatabase(); await conn?.close(); });
+
+  it('subscribing needs the read permission of every event; the secret comes back once; it belongs to the token and its install', async () => {
+    await expect(hooks.createForToken(zap, { url: 'https://hooks.zapier.com/x', events: ['order.paid', 'customer.created'] })).rejects.toThrow(/customer.created: it needs read_customers/);
+    await expect(hooks.createForToken(zap, { url: 'http://insecure.example.com', events: ['order.paid'] })).rejects.toThrow(/https/);
+    await expect(hooks.createForToken(zap, { url: 'https://hooks.zapier.com/x', events: ['nope'] })).rejects.toThrow(/events must list/);
+    const r = await hooks.createForToken(zap, { url: 'https://hooks.zapier.com/hooks/standard/1', events: ['order.paid', 'inventory.changed'] });
+    expect(r).toMatchObject({ url: 'https://hooks.zapier.com/hooks/standard/1', events: ['order.paid', 'inventory.changed'], enabled: true });
+    expect(r.secret).toMatch(/^whsec_/);
+    const row = await subs.findById(r.id).lean();
+    expect(row).toMatchObject({ apiTokenId: 'tok-zap', appInstallId: 'inst-1', description: 'Made through the API' });
+    expect((await hooks.listForToken(zap)).items.map((h: any) => h.id)).toEqual([r.id]);
+    expect(JSON.stringify(await hooks.listForToken(zap))).not.toMatch(/whsec_|secretEnc/);
+  });
+
+  it('another token can\'t see or delete it; the store owner\'s own webhook limit doesn\'t count it', async () => {
+    const mine = (await hooks.listForToken(zap)).items[0];
+    expect((await hooks.listForToken(other)).items).toEqual([]);
+    await expect(hooks.removeForToken(other, mine.id)).rejects.toThrow(/not found/);
+    await expect(hooks.removeForToken({ ...zap, storeId: new Types.ObjectId().toHexString() }, mine.id)).rejects.toThrow(/not found/);
+    expect(await subs.countDocuments({ storeId: S, appInstallId: null, apiTokenId: null })).toBe(0);
+    expect(await hooks.removeForToken(zap, mine.id)).toEqual({ success: true });
+    expect(await subs.countDocuments({ apiTokenId: 'tok-zap' })).toBe(0);
+  });
+
+  it('revoking the token removes the webhooks it made', async () => {
+    const t = await tokens.create(S, { id: 'u1', role: 'seller' }, { name: 'Zapier', scopes: ['read_orders'] });
+    await hooks.createForToken({ id: t.id, storeId: S, scopes: ['read_orders'] }, { url: 'https://hooks.zapier.com/2', events: ['order.created'] });
+    expect(await subs.countDocuments({ apiTokenId: t.id })).toBe(1);
+    await tokens.revoke(S, { id: 'u1', role: 'seller' }, t.id);
+    expect(await subs.countDocuments({ apiTokenId: t.id })).toBe(0);
   });
 });

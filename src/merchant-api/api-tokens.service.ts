@@ -1,17 +1,18 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, CanActivate, ExecutionContext, HttpException, Injectable, NotFoundException, SetMetadata, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, CanActivate, ExecutionContext, HttpException, Injectable, NotFoundException, Optional, SetMetadata, UnauthorizedException, ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { ApiToken, ApiTokenDocument } from './merchant-api.schema';
+import { MerchantWebhooksService } from './merchant-webhooks.service';
 import { API_SCOPES, generateToken, hashToken, makeRateLimiterInfo, API_RATE_LIMIT_PER_MIN, scopeAllows, validScopes, type ApiScope } from './merchant-api.util';
 
 const MAX_TOKENS = 20;
 
 @Injectable()
 export class ApiTokensService {
-  constructor(@InjectModel(ApiToken.name) readonly tokens: Model<ApiTokenDocument>, private readonly activity: ActivityLogService) {}
+  constructor(@InjectModel(ApiToken.name) readonly tokens: Model<ApiTokenDocument>, private readonly activity: ActivityLogService, @Optional() private readonly webhooks?: MerchantWebhooksService) {}
 
   private audit(storeId: string, actor: { id: string; role: string }, action: string, description: string, targetId: string) {
     return this.activity.log({ storeId, category: 'api_tokens', action, description, actorId: actor.id, actorRole: actor.role, targetId, targetType: 'api_token' } as any).catch(() => undefined);
@@ -35,6 +36,7 @@ export class ApiTokensService {
     if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Token not found');
     const r = await this.tokens.findOneAndUpdate({ _id: id, storeId, revokedAt: null }, { $set: { revokedAt: new Date() } }, { new: true }).lean();
     if (!r) throw new NotFoundException('Token not found or already revoked');
+    await this.webhooks?.removeAllForToken(id); // webhooks the token made for itself (e.g. Zapier) stop with it
     void this.audit(storeId, actor, 'api_token_revoked', `Token "${r.name}" revoked`, id);
     return { success: true };
   }
@@ -63,7 +65,7 @@ export class ApiTokenGuard implements CanActivate {
     const needed = this.reflector.get<ApiScope | undefined>(API_SCOPE_KEY, ctx.getHandler());
     if (needed && !scopeAllows(tok.scopes, needed)) throw new ForbiddenException(`This token does not have the "${needed}" permission`);
     if (!tok.lastUsedAt || Date.now() - new Date(tok.lastUsedAt).getTime() > 60_000) void this.svc.tokens.updateOne({ _id: tok._id }, { $set: { lastUsedAt: new Date() } }).catch(() => undefined);
-    req.apiToken = { id: String(tok._id), storeId: String(tok.storeId), scopes: tok.scopes };
+    req.apiToken = { id: String(tok._id), storeId: String(tok.storeId), scopes: tok.scopes, appInstallId: tok.appInstallId ?? null };
     return true;
   }
 }

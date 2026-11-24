@@ -307,4 +307,11 @@ d('app platform service (real Mongo, direct calls)', () => {
     await expect(svc.devRotate(DEV, r.id)).rejects.toThrow(/suspended/);
     await expect(svc.authorize(MINE, owner, { client_id: r.clientId, redirect_uri: CB, scope: 'read_orders', state: 's3' })).rejects.toThrow(/not available/);
   });
+
+  it('the code swap is standard OAuth: grant_type authorization_code is accepted, any other grant is refused', async () => {
+    const r = await reg();
+    await expect(swap(r, (await consent(r)).code, { grant_type: 'client_credentials' })).rejects.toThrow(/unsupported_grant_type/);
+    const t: any = await swap(r, (await consent(r)).code, { grant_type: 'authorization_code' });
+    expect(t.access_token).toMatch(/^sxk_/);
+  });
 });

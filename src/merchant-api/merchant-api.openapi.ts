@@ -50,6 +50,8 @@ export function buildOpenApiSpec(serverUrl: string = API_PUBLIC_ORIGIN) {
         '',
         '**Authentication.** Send `Authorization: Bearer sxk_…`. A store owner creates a token in *Settings → API & webhooks* and picks its permissions (scopes); apps get the same kind of token through the OAuth app flow. A token only ever sees its own store.',
         '',
+        '**OAuth for apps.** Send the store owner to `https://www.solvexo.store/oauth/authorize?client_id=…&redirect_uri=…&scope=read_orders%20read_products&state=…` (they sign in, pick a store and allow the permissions). You get `code` and `state` back on your redirect address; swap the code within 10 minutes with `POST /api/app-platform/oauth/token` (`grant_type=authorization_code`, `client_id`, `client_secret`, `code`, `redirect_uri`; JSON or form-encoded). The access token doesn\'t expire; it stops when the store uninstalls your app.',
+        '',
         `**Paging.** Lists return newest first, \`limit\` records at a time (default ${DEFAULT_PAGE_SIZE}, at most ${MAX_PAGE_SIZE}), as \`{ items, has_more, next_cursor }\`. Pass \`next_cursor\` back as \`cursor\` for the next page. To sync, remember when you last ran and send \`updated_since\`.`,
         '',
         `**Rate limits.** ${API_RATE_LIMIT_PER_MIN} requests a minute per token. Every answer carries \`X-RateLimit-Limit\`, \`X-RateLimit-Remaining\` and \`X-RateLimit-Reset\` (seconds); a 429 also carries \`Retry-After\`.`,
@@ -66,7 +68,7 @@ export function buildOpenApiSpec(serverUrl: string = API_PUBLIC_ORIGIN) {
     servers: [{ url: `${serverUrl}/api/merchant/v1` }],
     security: [{ bearer: [] }],
     tags: [
-      { name: 'Store' }, { name: 'Orders' }, { name: 'Products' }, { name: 'Inventory' }, { name: 'Collections' }, { name: 'Customers' },
+      { name: 'Store' }, { name: 'Orders' }, { name: 'Products' }, { name: 'Inventory' }, { name: 'Collections' }, { name: 'Customers' }, { name: 'Webhooks' },
     ],
     paths: {
       '/store': { get: { tags: ['Store'], operationId: 'getStore', summary: 'The store this token belongs to', description: 'Any valid token can call this; use it to check a token and read the store currency.', responses: { ...ok(ref('Store')), ...errors } } },
@@ -122,6 +124,16 @@ export function buildOpenApiSpec(serverUrl: string = API_PUBLIC_ORIGIN) {
           responses: { ...ok({ type: 'object', properties: { variantId: id, delta: { type: 'integer' }, reason: { type: 'string' }, result: {} } }), ...errors, ...notFound },
         },
       },
+      '/webhooks': {
+        get: { tags: ['Webhooks'], operationId: 'listWebhooks', summary: 'Webhooks this token made', responses: { ...ok({ type: 'object', properties: { items: { type: 'array', items: ref('Webhook') } } }), ...errors } },
+        post: {
+          tags: ['Webhooks'], operationId: 'createWebhook', summary: 'Subscribe to events (REST hook)',
+          description: 'For tools like Zapier and Make: subscribe when a user turns an automation on, unsubscribe when they turn it off. Each event needs its read permission (order and refund events: read_orders; product.updated: read_products; inventory.changed: read_inventory; customer.created and form.submitted: read_customers). The webhook belongs to this token: only it can list or delete it, and revoking the token or uninstalling the app removes it. No Idempotency-Key needed.',
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['url', 'events'], properties: { url: { type: 'string', format: 'uri', description: 'Public https address.' }, events: { type: 'array', minItems: 1, items: { type: 'string', enum: [...WEBHOOK_EVENTS] } }, description: { type: 'string', maxLength: 120 } } } } } },
+          responses: { ...ok({ allOf: [ref('Webhook'), { type: 'object', properties: { secret: { type: 'string', description: 'Signing secret, shown only here.' } } }] }, 'The new webhook'), ...errors },
+        },
+      },
+      '/webhooks/{id}': { delete: { tags: ['Webhooks'], operationId: 'deleteWebhook', summary: 'Unsubscribe', parameters: [idParam('webhook')], responses: { ...ok({ type: 'object', properties: { success: { type: 'boolean' } } }), ...errors, ...notFound } } },
       '/customers': { get: { tags: ['Customers'], operationId: 'listCustomers', summary: 'List customers', ...scope('read_customers'), description: 'People who bought from this store, were added to a POS sale, or were added by the seller.', parameters: listParams, responses: { ...ok(page('Customer')), ...errors } } },
       '/customers/{id}': { get: { tags: ['Customers'], operationId: 'getCustomer', summary: 'Get a customer', ...scope('read_customers'), parameters: [idParam('customer')], responses: { ...ok(ref('Customer')), ...errors, ...notFound } } },
     },
@@ -142,6 +154,7 @@ export function buildOpenApiSpec(serverUrl: string = API_PUBLIC_ORIGIN) {
         bearer: { type: 'http', scheme: 'bearer', bearerFormat: 'sxk_ + 40 hex characters', description: `Scopes: ${API_SCOPES.join(', ')}. A write scope includes the matching read scope.` },
       },
       schemas: {
+        Webhook: { type: 'object', properties: { id, url: { type: 'string' }, events: { type: 'array', items: { type: 'string' } }, enabled: { type: 'boolean', description: 'Switched off after repeated failed deliveries.' }, created_at: dt } },
         Error: { type: 'object', properties: { statusCode: { type: 'integer' }, message: { description: 'What went wrong, in plain words (a string, or a list of strings).' }, error: { type: 'string' } } },
         Store: { type: 'object', properties: { id, name: { type: 'string' }, slug: nullable('string'), currency: { ...nullable('string'), description: 'ISO 4217 code the store prices in.' }, timezone: nullable('string'), domain: { ...nullable('string'), description: 'The verified custom domain, if any.' }, created_at: dt } },
         Address: { type: 'object', properties: { name: nullable('string'), phone: nullable('string'), address1: nullable('string'), address2: nullable('string'), city: nullable('string'), province: nullable('string'), zip: nullable('string'), country: nullable('string') } },
@@ -167,8 +180,8 @@ export function buildOpenApiSpec(serverUrl: string = API_PUBLIC_ORIGIN) {
           },
         },
         FulfillmentInput: {
-          type: 'object', required: ['line_items'], properties: {
-            line_items: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['id', 'quantity'], properties: { id: { ...id, description: 'A line item id from the order.' }, quantity: { type: 'integer', minimum: 1, maximum: 999 } } } },
+          type: 'object', properties: {
+            line_items: { type: 'array', minItems: 1, maxItems: 100, description: 'Which lines to ship. Leave it out to ship everything not shipped yet.', items: { type: 'object', required: ['id', 'quantity'], properties: { id: { ...id, description: 'A line item id from the order.' }, quantity: { type: 'integer', minimum: 1, maximum: 999 } } } },
             carrier: { type: 'string', maxLength: 80 }, tracking_number: { type: 'string', maxLength: 120 }, tracking_url: { type: 'string', maxLength: 500, format: 'uri' },
             notify_customer: { type: 'boolean', default: true, description: 'Email the buyer that the items shipped.' },
           },

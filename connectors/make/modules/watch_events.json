@@ -1,0 +1,41 @@
+{
+  "name": "watchEvents",
+  "label": "Watch Events",
+  "description": "Triggers instantly when the chosen event happens in your store (new order, paid, shipped, new customer, stock change…).",
+  "type": "instant_trigger",
+  "webhook": "solvexoEvent",
+  "communication": {
+    "output": "{{body}}"
+  },
+  "interface": [
+    { "name": "id", "label": "Event ID", "type": "text" },
+    { "name": "event", "label": "Event", "type": "text" },
+    { "name": "created_at", "label": "Happened at", "type": "date" },
+    { "name": "store_id", "label": "Store ID", "type": "text" },
+    { "name": "data", "label": "Data", "type": "collection", "spec": [
+      { "name": "order_id", "label": "Order ID", "type": "text" },
+      { "name": "order_number", "label": "Order number", "type": "text" },
+      { "name": "status", "label": "Status", "type": "text" },
+      { "name": "paid", "label": "Paid", "type": "boolean" },
+      { "name": "total", "label": "Total", "type": "number" },
+      { "name": "currency", "label": "Currency", "type": "text" },
+      { "name": "refunded_total", "label": "Refunded total", "type": "number" },
+      { "name": "customer_id", "label": "Customer ID", "type": "text" },
+      { "name": "product_id", "label": "Product ID", "type": "text" },
+      { "name": "variant_id", "label": "Variant ID", "type": "text" },
+      { "name": "sku", "label": "SKU", "type": "text" },
+      { "name": "available", "label": "Available stock", "type": "number" },
+      { "name": "name", "label": "Name", "type": "text" },
+      { "name": "email", "label": "Email", "type": "email" },
+      { "name": "phone", "label": "Phone", "type": "text" },
+      { "name": "message", "label": "Form message", "type": "text" }
+    ] }
+  ],
+  "samples": {
+    "id": "order.paid:6740c1f2a9b3c4d5e6f70812",
+    "event": "order.paid",
+    "created_at": "2026-11-24T10:00:00.000Z",
+    "store_id": "6740c1f2a9b3c4d5e6f70001",
+    "data": { "order_id": "6740c1f2a9b3c4d5e6f70812", "order_number": "SX-10234", "status": "processing", "paid": true, "total": 5250, "currency": "PKR" }
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "name": "updateProduct",
+  "label": "Update a Product",
+  "description": "Shows or hides a product, or replaces its tags.",
+  "type": "action",
+  "communication": {
+    "url": "/products/{{encodeURL(parameters.productId)}}",
+    "method": "PATCH",
+    "headers": {
+      "Idempotency-Key": "make:{{uuid}}"
+    },
+    "body": "{{omit(parameters; 'productId')}}",
+    "response": {
+      "output": "{{body}}"
+    }
+  },
+  "mappableParameters": [
+    {
+      "name": "productId",
+      "label": "Product ID",
+      "type": "text",
+      "required": true
+    },
+    {
+      "name": "status",
+      "label": "Status",
+      "type": "select",
+      "options": [
+        {
+          "label": "Active (for sale)",
+          "value": "active"
+        },
+        {
+          "label": "Inactive (hidden)",
+          "value": "inactive"
+        }
+      ]
+    },
+    {
+      "name": "tags",
+      "label": "Tags",
+      "type": "array",
+      "spec": {
+        "type": "text",
+        "label": "Tag"
+      },
+      "help": "Replaces all of the product's tags."
+    }
+  ],
+  "interface": [
+    {
+      "name": "id",
+      "label": "Product ID",
+      "type": "text"
+    },
+    {
+      "name": "name",
+      "label": "Name",
+      "type": "text"
+    },
+    {
+      "name": "status",
+      "label": "Status",
+      "type": "text"
+    },
+    {
+      "name": "tags",
+      "label": "Tags",
+      "type": "array",
+      "spec": {
+        "type": "text"
+      }
+    }
+  ]
+}
