@@ -155,7 +155,7 @@ export class SalesOpsController {
   consentRequests(@Req() req: any, @Body() dto: ConsentRequestsDto) {
     return this.brevo.requestConsent(
       salesActor(req.user),
-      { leadIds: dto.leadIds },
+      { leadIds: dto.leadIds, filters: { stage: dto.stage, owner: dto.owner, source: dto.source, q: dto.q, due: dto.due, consent: dto.consent } },
       auditCtx(req),
     );
   }

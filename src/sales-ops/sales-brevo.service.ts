@@ -47,6 +47,8 @@ const isId = (s: unknown): s is string => typeof s === 'string' && /^[a-f0-9]{24
 /** A 4xx other than 429 will fail the same way next time: stop retrying that lead. */
 const permanent = (status: number | null) => status !== null && status >= 400 && status < 500 && status !== 429;
 const withEmail = { email: { $ne: null } };
+/** Never asked (leads saved before consent existed have no status: they count as never asked). */
+const NOT_ASKED = { 'marketingConsent.status': { $nin: ['asked', 'granted', 'withdrawn'] } };
 
 /**
  * Sales Ops → Brevo marketing sync. Leads who agreed to marketing email ('granted') are kept in one Brevo list
@@ -251,32 +253,60 @@ export class SalesBrevoService {
 
   /**
    * Sends each eligible lead ONE "Can we keep you posted?" email: they need an email and consent 'none' (leads already
-   * asked, granted or withdrawn are skipped). Without `leadIds`: every visible lead that qualifies. At most 500 a call.
+   * asked, granted or withdrawn are skipped). With `leadIds`: those leads. Without: every lead the list filters match.
+   * At most 500 a call; `more` says how many eligible leads are left for the next call.
+   *
+   * The leads are marked 'asked' first and the emails go out in the background, so the request returns at once (SMTP
+   * takes a few seconds per email) and a repeat click or retry never emails anyone twice. A failed send puts the lead
+   * back to 'none' so it can be asked again.
    */
-  async requestConsent(actor: SalesActor, input: { leadIds?: string[] }, ctx: AuditCtx = {}) {
-    const notAsked = { 'marketingConsent.status': { $nin: ['asked', 'granted', 'withdrawn'] } };
-    const base = { isDelete: false, ...leadScope(actor), ...withEmail, ...notAsked };
+  async requestConsent(actor: SalesActor, input: { leadIds?: string[]; filters?: LeadListQuery }, ctx: AuditCtx = {}) {
+    const eligible = { $and: [{ isDelete: false, ...leadScope(actor) }, withEmail, NOT_ASKED] };
     let rows: any[];
     let skipped = 0;
+    let more = 0;
     if (Array.isArray(input.leadIds)) {
       const ids = [...new Set(input.leadIds.filter(isId))].slice(0, MAX_CONSENT_REQUESTS);
-      rows = ids.length ? await this.leads.find({ ...base, _id: { $in: ids } }).select('name businessName email marketingConsent').lean() : [];
+      rows = ids.length ? await this.leads.find({ $and: [...eligible.$and, { _id: { $in: ids } }] }).select('name businessName email marketingConsent').lean() : [];
       skipped = input.leadIds.length - rows.length;
     } else {
-      rows = await this.leads.find(base).sort({ createdAt: 1 }).limit(MAX_CONSENT_REQUESTS).select('name businessName email marketingConsent').lean();
+      const filter = { $and: [this.sales.leadFilter(actor, input.filters ?? {}), withEmail, NOT_ASKED] };
+      rows = await this.leads.find(filter).sort({ createdAt: 1 }).limit(MAX_CONSENT_REQUESTS).select('name businessName email marketingConsent').lean();
+      more = Math.max(0, (await this.leads.countDocuments(filter)) - rows.length);
     }
-    let sent = 0;
+    const now = new Date();
+    const claimed: any[] = [];
     for (const lead of rows) {
+      // Only this call's own claim counts, so two clicks at once can't both email the same lead.
+      const r: any = await this.leads.updateOne({ $and: [{ _id: lead._id }, NOT_ASKED] }, { $set: { 'marketingConsent.status': 'asked', 'marketingConsent.askedAt': now } });
+      if (Number(r?.modifiedCount ?? r?.matchedCount ?? 0) > 0) claimed.push(lead); else skipped++;
+    }
+    this.consentRun = this.deliverConsentEmails(actor, claimed, ctx);
+    return { success: true, data: { sent: claimed.length, skipped, more } };
+  }
+
+  /** The background half of requestConsent (kept on the service so tests can await it). */
+  consentRun: Promise<void> = Promise.resolve();
+
+  private async deliverConsentEmails(actor: SalesActor, leads: any[], ctx: AuditCtx) {
+    let sent = 0;
+    let failed = 0;
+    for (const lead of leads) {
       const id = String(lead._id);
       const ok = await this.email.sendMail(lead.email, 'Can we keep you posted?', this.consentEmail(id, lead.name, lead.businessName)).catch(() => false);
-      if (!ok) { skipped++; continue; }
-      sent++;
-      const now = new Date();
-      await this.leads.updateOne({ _id: id }, { $set: { 'marketingConsent.status': 'asked', 'marketingConsent.askedAt': now } });
-      await this.sales.log(id, 'email', 'Asked by email whether they want marketing emails ("Can we keep you posted?").', actor.adminId, { to: lead.email, consent: 'asked' });
+      try {
+        if (!ok) {
+          failed++;
+          await this.leads.updateOne({ _id: id, 'marketingConsent.status': 'asked' }, { $set: { 'marketingConsent.status': 'none', 'marketingConsent.askedAt': null } });
+          continue;
+        }
+        sent++;
+        await this.sales.log(id, 'email', 'Asked by email whether they want marketing emails ("Can we keep you posted?").', actor.adminId, { to: lead.email, consent: 'asked' });
+      } catch (e) {
+        this.logger.warn(`Consent email bookkeeping failed for lead ${id}: ${(e as Error)?.message}`);
+      }
     }
-    this.audit(ctx, 'sales.leads.consent_requests', `Sent ${sent} marketing permission email(s), skipped ${skipped}`, { sent, skipped });
-    return { success: true, data: { sent, skipped } };
+    if (leads.length) this.audit(ctx, 'sales.leads.consent_requests', `Sent ${sent} marketing permission email(s), ${failed} failed`, { sent, failed });
   }
 
   consentEmail(leadId: string, name: string | null, businessName: string | null): string {

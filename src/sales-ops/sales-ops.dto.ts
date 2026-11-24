@@ -103,13 +103,19 @@ export class BrevoConnectDto {
   @IsString() @MaxLength(500) apiKey: string;
 }
 
+/** Either the ticked leads (`leadIds`) or, without them, every lead the list's filters match (same fields as the list). */
 export class ConsentRequestsDto {
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(500)
   @IsString({ each: true })
   leadIds?: string[];
-  @IsOptional() @IsIn(['none']) consent?: 'none';
+  @IsOptional() @IsIn(LEAD_STAGES as unknown as string[]) stage?: string;
+  @IsOptional() @IsString() owner?: string;
+  @IsOptional() @IsIn(LEAD_SOURCES as unknown as string[]) source?: string;
+  @IsOptional() @IsString() @MaxLength(100) q?: string;
+  @IsOptional() @IsIn(['overdue', 'today']) due?: 'overdue' | 'today';
+  @IsOptional() @IsIn(CONSENT_STATUSES as unknown as string[]) consent?: 'none' | 'asked' | 'granted' | 'withdrawn';
 }
 
 export class StageDto {
