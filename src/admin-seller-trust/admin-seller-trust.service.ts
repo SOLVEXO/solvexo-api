@@ -439,16 +439,29 @@ export class AdminSellerTrustService {
       throw new BadRequestException('Pass storeIds or filter');
     }
 
-    let sent = 0;
+    // First claim every store (fast, atomic: two admins clicking at once still send one reminder each), then send the
+    // notifications in the background. Sending 100+ emails one by one used to outlast the browser's 15 s wait.
     let skipped = 0;
+    const claimed: any[] = [];
     for (const store of stores) {
       if (store.verificationStatus === 'verified') { skipped++; continue; }
-      // Atomic claim — two admins clicking at once still send one reminder.
       const claim = await this.r.storeModel.updateOne(
         { _id: store._id, verificationStatus: { $ne: 'verified' }, $or: [{ lastTrustReminderAt: null }, { lastTrustReminderAt: { $lte: new Date(now.getTime() - REMINDER_INTERVAL_MS) } }] },
         { $set: { lastTrustReminderAt: now }, $push: { 'verification.history': { action: 'reminder_sent', note: null, actorId: meta.adminId, actorRole: 'admin', at: now } } },
       );
       if (!claim?.modifiedCount) { skipped++; continue; }
+      claimed.push(store);
+    }
+    const sent = claimed.length;
+    this.reminderRun = this.deliverReminders(claimed, now);
+    return { success: true, message: `${sent} reminder(s) on their way`, data: { sent, skipped } };
+  }
+
+  /** The background half of remind() (kept on the service so tests can await it). One failed send never stops the rest. */
+  reminderRun: Promise<void> = Promise.resolve();
+
+  private async deliverReminders(stores: any[], now: Date) {
+    for (const store of stores) {
       const due = store.verificationDueAt ? new Date(store.verificationDueAt) : null;
       const body = due
         ? (due.getTime() <= now.getTime()
@@ -459,10 +472,7 @@ export class AdminSellerTrustService {
         recipientId: store.sellerId, recipientRole: 'seller', storeId: String(store._id),
         type: NOTIFICATION_TYPES.VERIFICATION_REMINDER, title: 'Verify your business', body,
         data: { storeId: String(store._id) },
-      }).catch(() => {});
-      sent++;
+      }).catch((e: any) => this.logger.warn(`Verification reminder for store ${String(store._id)} failed: ${e?.message}`));
     }
-    this.log('seller_trust_reminders_sent', `Verification reminders sent: ${sent} (skipped ${skipped})`, meta, undefined, { sent, skipped, storeIds: dto.storeIds ?? null });
-    return { success: true, message: `${sent} reminder(s) sent`, data: { sent, skipped } };
   }
 }
