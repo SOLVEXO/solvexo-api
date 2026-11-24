@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { StorefrontCachePurgeService } from '../../storefront/storefront-cache-purge.service';
 import { ConflictException, Injectable } from '@nestjs/common';
 import { Types, type ClientSession, type Model } from 'mongoose';
 
@@ -72,7 +73,7 @@ export class ContentVersioningService {
     fieldMap: FieldExpressionMap,
     extraSet: Record<string, unknown> = {},
   ): Promise<T | null> {
-    return model.findOneAndUpdate(
+    const published = await model.findOneAndUpdate(
       filter,
       [{ $set: { ...fieldMap, ...extraSet } }],
       // Mongoose 9 requires this explicit opt-in before it will accept an
@@ -85,6 +86,9 @@ export class ContentVersioningService {
       // version bump).
       { new: true, updatePipeline: true },
     );
+    // Going live: the store's cached storefront pages must not keep showing the old version.
+    if (published) StorefrontCachePurgeService.purge((published as any).storeId ?? filter.storeId);
+    return published as T | null;
   }
 
   /** Publishes fields and appends the matching rollback snapshot in the same
@@ -100,7 +104,7 @@ export class ContentVersioningService {
     session?: ClientSession,
   ): Promise<T | null> {
     const snapshot = { _id: new Types.ObjectId(), ...versionMap };
-    return model.findOneAndUpdate(
+    const published = await model.findOneAndUpdate(
       filter,
       [
         { $set: { ...fieldMap, ...extraSet } },
@@ -115,6 +119,9 @@ export class ContentVersioningService {
       ],
       { new: true, updatePipeline: true, ...(session ? { session } : {}) },
     );
+    // The purge waits a moment (debounced), so a transaction that wraps this publish has committed by then.
+    if (published) StorefrontCachePurgeService.purge((published as any).storeId ?? filter.storeId);
+    return published as T | null;
   }
 
   /** Mirror-direction copy — live field(s) back into their draft counterparts (the "discard unsaved changes" action). */

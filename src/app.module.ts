@@ -71,6 +71,7 @@ import { QueueModule } from './queues/queue.module';
 import { HealthModule } from './health/health.module';
 import { PlatformPlansModule } from './platform-plans/platform-plans.module';
 import { PlatformTaxModule } from './platform-tax/platform-tax.module';
+import { StorefrontCachePurgeModule } from './storefront/storefront-cache-purge.service';
 import { SeoModule } from './seo/seo.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { CustomerSocialLoginModule } from './customer-social-login/customer-social-login.module';
@@ -218,6 +219,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     BookingsModule,
     PlatformPlansModule,
     PlatformTaxModule,
+    StorefrontCachePurgeModule,
     AiTextModule,
     SchedulerModule,
     MarketingModule,

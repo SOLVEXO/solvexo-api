@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { StorefrontCachePurgeService } from '@/storefront/storefront-cache-purge.service';
 import { compileSegmentFilter, normalizeSegmentFilter, type CompiledSegment } from '../customer-segments/segment-filter.util';
 import { normalizeFloatingContact } from './floating-contact.util';
 import {
@@ -1719,6 +1720,7 @@ export class StoreService {
 
     // The store's home title/description/logo/domain feed the crawler view: clear it so a rename shows up at once.
     void this.redisService.del(`seo:meta:store:${String(store._id)}`).catch(() => undefined);
+    StorefrontCachePurgeService.purge(String(store._id));
 
     // Who the seller says they are / what they sell drives setup guidance and admin views, so a change is recorded.
     const profileChanges: string[] = [];

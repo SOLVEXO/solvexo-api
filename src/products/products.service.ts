@@ -1,3 +1,4 @@
+import { StorefrontCachePurgeService } from '@/storefront/storefront-cache-purge.service';
 import { bundleAvailability } from '../common/bundle.util';
 import { preorderPublicView } from '../common/preorder.util';
 import { availableStock } from '../common/stock-availability.util';
@@ -1729,6 +1730,7 @@ export class ProductsService {
     }
 
     void this.redisService.del(`seo:meta:product:${String(productId)}`).catch(() => undefined); // crawler title/description/price follow the edit
+    StorefrontCachePurgeService.purge(product.storeId); // the store's cached pages (home, product, collections) show the edit within seconds
 
     return {
       success: true,
@@ -1764,6 +1766,7 @@ export class ProductsService {
     } as any);
 
     void this.redisService.del(`seo:meta:product:${String(productId)}`).catch(() => undefined);
+    StorefrontCachePurgeService.purge(product.storeId);
 
     return { success: true, message: 'Product deleted successfully', data: null };
   }

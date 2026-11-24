@@ -17,6 +17,9 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { Throttle } from '@nestjs/throttler';
+import { PublicCache, PublicCacheInterceptor } from '@/storefront/public-cache.interceptor';
+import { PUBLIC_BROWSE_LIMIT } from '@/storefront/public-throttle';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 
@@ -115,7 +118,13 @@ export class productController {
     return this.ProductsService.getCustomLevelSuggestions(q);
   }
 
+  // The answer depends only on the product (and the `locale` / `storeId` in the URL), never on who asks, so it is cached like the
+  // other public storefront reads: Redis for a few seconds and, for a plain public store, the CDN too (see PublicCacheInterceptor).
+  // A signed-in caller (Authorization header) is never served from the cache.
   @UseGuards(OptionalJwtAuthGuard)
+  @UseInterceptors(PublicCacheInterceptor)
+  @Throttle(PUBLIC_BROWSE_LIMIT)
+  @PublicCache(15)
   @Get('getProductById/:id')
   async getProductById(@Req() req: any, @Param('id') id: string, @Query('storeId') storeId?: string, @Query('locale') locale?: string) {
     return this.ProductsService.getProductById(id, req.user?.userId ?? null, storeId, locale);
