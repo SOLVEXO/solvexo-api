@@ -1,7 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { API_PUBLIC_ORIGIN } from '../common/api-origin';
-import { API_SCOPES, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, WEBHOOK_EVENTS } from './merchant-api.util';
-import { API_RATE_LIMIT_PER_MIN } from './api-tokens.service';
+import { API_RATE_LIMIT_PER_MIN, API_SCOPES, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, WEBHOOK_EVENTS } from './merchant-api.util';
 
 /**
  * The public description of the Solvexo Admin API (v1), served at GET /api/merchant/v1/openapi.json and rendered by
@@ -59,7 +58,7 @@ export function buildOpenApiSpec(serverUrl: string = API_PUBLIC_ORIGIN) {
         '',
         '**Money** is in major units of the record\'s currency (an order\'s `currency`, a variant\'s `currency`).',
         '',
-        '**Webhooks.** Instead of polling, subscribe to events in *Settings → API & webhooks*. Each delivery is a POST with headers `X-Solvexo-Event`, `X-Solvexo-Delivery` (unique id; use it to ignore repeats) and `X-Solvexo-Signature: t=<unix seconds>,v1=<hex>`, where v1 is HMAC-SHA256 of `"<t>.<raw body>"` with your webhook secret. Reject a signature older than 5 minutes. Answer 2xx within 10 seconds; failures are retried after 1 min, 5 min, 30 min, 2 h and 6 h.',
+        '**Webhooks.** Instead of polling, subscribe to events in *Settings → API & webhooks*. Each delivery is a POST whose JSON body is `{ id, event, created_at, store_id, data }` (each event below describes its `data`), with headers `X-Solvexo-Event`, `X-Solvexo-Delivery` (unique id; use it to ignore repeats) and `X-Solvexo-Signature: t=<unix seconds>,v1=<hex>`, where v1 is HMAC-SHA256 of `"<t>.<raw body>"` with your webhook secret. Reject a signature older than 5 minutes. Answer 2xx within 10 seconds; failures are retried after 1 min, 5 min, 30 min, 2 h and 6 h.',
       ].join('\n'),
       contact: { name: 'Solvexo developer support', email: 'sales@solvexo.store', url: 'https://www.solvexo.store/developers' },
       termsOfService: 'https://www.solvexo.store/terms',
@@ -134,7 +133,7 @@ export function buildOpenApiSpec(serverUrl: string = API_PUBLIC_ORIGIN) {
           { name: 'X-Solvexo-Delivery', in: 'header', schema: { type: 'string' }, description: 'Unique per event; ignore one you have already handled.' },
           { name: 'X-Solvexo-Signature', in: 'header', schema: { type: 'string' }, description: '`t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<raw body>">`' },
         ],
-        requestBody: { content: { 'application/json': { schema: { type: 'object', description: WEBHOOK_PAYLOADS[e] } } } },
+        requestBody: { content: { 'application/json': { schema: { type: 'object', description: WEBHOOK_PAYLOADS[e], properties: { id: { type: 'string' }, event: { type: 'string', const: e }, created_at: { type: 'string', format: 'date-time' }, store_id: { type: 'string' }, data: { type: 'object', description: WEBHOOK_PAYLOADS[e] } } } } } },
         responses: { '200': { description: 'Any 2xx answer marks the delivery done.' } },
       },
     }])),

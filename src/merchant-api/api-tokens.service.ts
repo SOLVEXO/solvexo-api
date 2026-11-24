@@ -5,7 +5,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { ActivityLogService } from '../activity-log/activity-log.service';
 import { ApiToken, ApiTokenDocument } from './merchant-api.schema';
-import { API_SCOPES, generateToken, hashToken, makeRateLimiterInfo, scopeAllows, validScopes, type ApiScope } from './merchant-api.util';
+import { API_SCOPES, generateToken, hashToken, makeRateLimiterInfo, API_RATE_LIMIT_PER_MIN, scopeAllows, validScopes, type ApiScope } from './merchant-api.util';
 
 const MAX_TOKENS = 20;
 
@@ -42,8 +42,6 @@ export class ApiTokensService {
 
 export const API_SCOPE_KEY = 'merchantApiScope';
 export const NeedsApiScope = (scope: ApiScope) => SetMetadata(API_SCOPE_KEY, scope);
-/** 120 requests a minute per token; every answer carries X-RateLimit-Limit / -Remaining / -Reset. */
-export const API_RATE_LIMIT_PER_MIN = 120;
 const limiter = makeRateLimiterInfo(API_RATE_LIMIT_PER_MIN, 60_000);
 
 /** Bearer `sxk_...` token auth for the merchant API. Sets `req.apiToken = { storeId, scopes }`; the store comes from the token, never from the client. */
@@ -61,7 +59,7 @@ export class ApiTokenGuard implements CanActivate {
     res?.setHeader?.('X-RateLimit-Limit', String(rl.limit));
     res?.setHeader?.('X-RateLimit-Remaining', String(rl.remaining));
     res?.setHeader?.('X-RateLimit-Reset', String(rl.resetS));
-    if (!rl.ok) { res?.setHeader?.('Retry-After', String(rl.resetS)); throw new HttpException('Too many requests: at most 120 a minute per token', 429); }
+    if (!rl.ok) { res?.setHeader?.('Retry-After', String(rl.resetS)); throw new HttpException(`Too many requests: at most ${API_RATE_LIMIT_PER_MIN} a minute per token`, 429); }
     const needed = this.reflector.get<ApiScope | undefined>(API_SCOPE_KEY, ctx.getHandler());
     if (needed && !scopeAllows(tok.scopes, needed)) throw new ForbiddenException(`This token does not have the "${needed}" permission`);
     if (!tok.lastUsedAt || Date.now() - new Date(tok.lastUsedAt).getTime() > 60_000) void this.svc.tokens.updateOne({ _id: tok._id }, { $set: { lastUsedAt: new Date() } }).catch(() => undefined);

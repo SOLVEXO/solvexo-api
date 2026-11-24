@@ -82,6 +82,8 @@ export function makeRateLimiter(limit: number, windowMs: number) {
 
 // ── Paging for the public API (v1) ──────────────────────────────────────────
 
+/** 120 requests a minute per token; every answer carries X-RateLimit-Limit / -Remaining / -Reset. */
+export const API_RATE_LIMIT_PER_MIN = 120;
 export const MAX_PAGE_SIZE = 100;
 export const DEFAULT_PAGE_SIZE = 50;
 
