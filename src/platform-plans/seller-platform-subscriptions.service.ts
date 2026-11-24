@@ -37,6 +37,11 @@ const DEFAULT_GRACE_PERIOD_DAYS = 3;
 // event (both flow through the same Stripe account/webhook endpoint).
 export const PLATFORM_PLAN_STRIPE_METADATA_KIND = 'platform_plan';
 
+/** A development store (a developer's free test store) has no plan to buy, change, cancel or pay for. */
+export function assertNotDevelopment(sub: { status?: string } | null | undefined): void {
+  if (sub?.status === 'development') throw new BadRequestException('This is a development store: it is free and can\'t be put on a paid plan. Create a normal store to sell.');
+}
+
 @Injectable()
 export class SellerPlatformSubscriptionsService {
   private readonly logger = new Logger(SellerPlatformSubscriptionsService.name);
@@ -946,6 +951,7 @@ export class SellerPlatformSubscriptionsService {
     if (review && (isNaN(review.getTime()) || review.getTime() <= Date.now())) throw new BadRequestException('The review date must be in the future');
 
     const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    assertNotDevelopment(sub);
     if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
     const plan = await this.planModel.findOne({ _id: planId, isDelete: false, status: 'active' });
     if (!plan) throw new NotFoundException('Target platform plan not found or inactive');
@@ -1179,6 +1185,7 @@ export class SellerPlatformSubscriptionsService {
 
     let sub = await this.subModel.findOne({ storeId, isDelete: false });
     if (!sub) sub = await this.ensureDefaultSubscription(storeId, sellerId) as any;
+    assertNotDevelopment(sub);
     if (!sub) throw new BadRequestException('No platform plans have been configured yet — contact support');
 
     const newPlanId = 'newPlatformPlanId' in dto ? dto.newPlatformPlanId : dto.platformPlanId;
@@ -1645,6 +1652,7 @@ export class SellerPlatformSubscriptionsService {
   async confirmPendingPlanChange(sellerId: string, storeId: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
     const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    assertNotDevelopment(sub);
     if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
     const pending = sub.pendingPlanChange;
     if (!pending) return { success: true, data: { subscription: sub, pending: false, applied: true } };
@@ -1720,6 +1728,7 @@ export class SellerPlatformSubscriptionsService {
     await this.verifyStoreOwnership(storeId, sellerId);
 
     const sub = await this.subModel.findOne({ storeId, isDelete: false }).lean();
+    assertNotDevelopment(sub);
     if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
 
     const newPlanId = 'newPlatformPlanId' in dto ? dto.newPlatformPlanId : dto.platformPlanId;
@@ -1808,6 +1817,7 @@ export class SellerPlatformSubscriptionsService {
     await this.verifyStoreOwnership(storeId, sellerId);
 
     const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    assertNotDevelopment(sub);
     if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
     if (sub.complimentary) throw new BadRequestException('Your plan is provided by Solvexo support and has no billing — contact support to change or end it');
     if ((sub.amountUSD ?? 0) === 0) throw new BadRequestException('You are already on the free plan — there is nothing to cancel');
@@ -1863,6 +1873,7 @@ export class SellerPlatformSubscriptionsService {
     await this.verifyStoreOwnership(storeId, sellerId);
 
     const sub = await this.subModel.findOne({ storeId, isDelete: false });
+    assertNotDevelopment(sub);
     if (!sub) throw new NotFoundException('This store has no platform-plan record yet');
     if (!sub.cancelAtPeriodEnd) {
       throw new BadRequestException('There is no pending cancellation to undo — choose a plan to subscribe instead.');
@@ -1890,6 +1901,7 @@ export class SellerPlatformSubscriptionsService {
   async createBillingPortalSession(sellerId: string, storeId: string, returnUrl: string) {
     await this.verifyStoreOwnership(storeId, sellerId);
     const sub = await this.subModel.findOne({ storeId, isDelete: false }).lean();
+    assertNotDevelopment(sub);
     if (!sub || !(sub as any).stripeCustomerId) {
       throw new BadRequestException('No Stripe billing profile exists yet for this store — subscribe to a paid plan first.');
     }

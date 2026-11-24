@@ -990,6 +990,9 @@ export class StoreService {
     if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
 
     const { privacyMode, password } = body;
+    if ((store as any).isDevelopment && privacyMode !== 'password') {
+      throw new BadRequestException('A development store always stays password-protected. You can change its password.');
+    }
     if (!['public', 'password', 'coming_soon'].includes(privacyMode)) {
       throw new BadRequestException('Invalid privacy mode');
     }
