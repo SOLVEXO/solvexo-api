@@ -8,6 +8,7 @@ const oid = () => (++seq).toString(16).padStart(24, '0');
 function matches(doc: any, f: any): boolean {
   return Object.entries(f ?? {}).every(([k, v]: [string, any]) => {
     if (k === '$or') return v.some((x: any) => matches(doc, x));
+    if (k === '$and') return v.every((x: any) => matches(doc, x));
     const d = k
       .split('.')
       .reduce((o: any, part) => (o == null ? undefined : o[part]), doc);
