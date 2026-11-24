@@ -180,8 +180,8 @@ export function buildOpenApiSpec(serverUrl: string = API_PUBLIC_ORIGIN) {
           },
         },
         FulfillmentInput: {
-          type: 'object', required: ['line_items'], properties: {
-            line_items: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', required: ['id', 'quantity'], properties: { id: { ...id, description: 'A line item id from the order.' }, quantity: { type: 'integer', minimum: 1, maximum: 999 } } } },
+          type: 'object', properties: {
+            line_items: { type: 'array', minItems: 1, maxItems: 100, description: 'Which lines to ship. Leave it out to ship everything not shipped yet.', items: { type: 'object', required: ['id', 'quantity'], properties: { id: { ...id, description: 'A line item id from the order.' }, quantity: { type: 'integer', minimum: 1, maximum: 999 } } } },
             carrier: { type: 'string', maxLength: 80 }, tracking_number: { type: 'string', maxLength: 120 }, tracking_url: { type: 'string', maxLength: 500, format: 'uri' },
             notify_customer: { type: 'boolean', default: true, description: 'Email the buyer that the items shipped.' },
           },

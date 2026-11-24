@@ -194,6 +194,26 @@ d('v1 reads and fulfil on a real MongoDB', () => {
     expect((await run()).replayed).toBe(true);
     expect(fulfilItems).toHaveBeenCalledTimes(1);
     expect(fulfilItems).toHaveBeenCalledWith(SELLER, A, String(o._id), { items: [{ itemId: String(line._id), quantity: 2 }], carrier: 'TCS', trackingNumber: 'T123', trackingUrl: 'https://tcs.example/T123', notifyCustomer: true }, undefined, 'Solvexo API');
+    // No line_items: everything not shipped yet.
+    fulfilItems.mockClear();
+    await writes.fulfilOrder(caller, String(o._id), { carrier: 'TCS' });
+    expect(fulfilItems).toHaveBeenCalledWith(SELLER, A, String(o._id), expect.objectContaining({ items: [{ itemId: String(line._id), quantity: 2 }], carrier: 'TCS' }), undefined, 'Solvexo API');
+    await M.orderModel.updateOne({ _id: o._id }, { $set: { 'sellerOrders.0.shipments': [{ items: [{ itemId: String(line._id), quantity: 2 }] }] } });
+    await expect(writes.fulfilOrder(caller, String(o._id), {})).rejects.toThrow(/already been shipped/);
+  });
+});
+
+describe('ship everything not shipped yet', () => {
+  it('leaves out cancelled and digital lines and what earlier shipments took', async () => {
+    const { unshippedLines } = await import('./api-writes.service');
+    const a = new Types.ObjectId(); const b = new Types.ObjectId(); const c = new Types.ObjectId(); const dgt = new Types.ObjectId();
+    const so = {
+      items: [{ _id: a, quantity: 3, type: 'physical' }, { _id: b, quantity: 1, type: 'physical' }, { _id: c, quantity: 2, type: 'physical', cancelledAt: new Date() }, { _id: dgt, quantity: 1, type: 'digital' }],
+      shipments: [{ items: [{ itemId: String(a), quantity: 1 }] }, { items: [{ itemId: String(b), quantity: 1 }] }],
+    };
+    expect(unshippedLines(so)).toEqual([{ itemId: String(a), quantity: 2 }]);
+    expect(unshippedLines({ items: [], shipments: [] })).toEqual([]);
+    expect(unshippedLines(undefined)).toEqual([]);
   });
 });
 

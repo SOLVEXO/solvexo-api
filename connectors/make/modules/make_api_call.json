@@ -1,0 +1,28 @@
+{
+  "name": "makeApiCall",
+  "label": "Make an API Call",
+  "description": "Calls any Solvexo Admin API endpoint with this connection. See https://www.solvexo.store/developers.",
+  "type": "action",
+  "communication": {
+    "url": "{{parameters.url}}",
+    "method": "{{parameters.method}}",
+    "headers": "{{toCollection(parameters.headers; 'key'; 'value')}}",
+    "qs": "{{toCollection(parameters.qs; 'key'; 'value')}}",
+    "body": "{{parameters.body}}",
+    "response": { "output": { "status": "{{statusCode}}", "headers": "{{headers}}", "body": "{{body}}" } }
+  },
+  "mappableParameters": [
+    { "name": "url", "label": "URL", "type": "text", "required": true, "help": "A path after /api/merchant/v1, for example /orders?limit=5" },
+    { "name": "method", "label": "Method", "type": "select", "required": true, "default": "GET", "options": [
+      { "label": "GET", "value": "GET" }, { "label": "POST", "value": "POST" }, { "label": "PATCH", "value": "PATCH" }, { "label": "DELETE", "value": "DELETE" }
+    ] },
+    { "name": "headers", "label": "Headers", "type": "array", "help": "Writes need an Idempotency-Key header.", "spec": [{ "name": "key", "label": "Key", "type": "text" }, { "name": "value", "label": "Value", "type": "text" }] },
+    { "name": "qs", "label": "Query string", "type": "array", "spec": [{ "name": "key", "label": "Key", "type": "text" }, { "name": "value", "label": "Value", "type": "text" }] },
+    { "name": "body", "label": "Body", "type": "any" }
+  ],
+  "interface": [
+    { "name": "status", "label": "Status code", "type": "number" },
+    { "name": "headers", "label": "Headers", "type": "collection" },
+    { "name": "body", "label": "Body", "type": "any" }
+  ]
+}

@@ -1,0 +1,19 @@
+[
+  {
+    "name": "event",
+    "label": "Event",
+    "type": "select",
+    "required": true,
+    "options": [
+      { "label": "New order", "value": "order.created" },
+      { "label": "Order paid", "value": "order.paid" },
+      { "label": "Order shipped", "value": "order.fulfilled" },
+      { "label": "Order cancelled", "value": "order.cancelled" },
+      { "label": "Order refunded", "value": "refund.created" },
+      { "label": "New customer", "value": "customer.created" },
+      { "label": "Product created or updated", "value": "product.updated" },
+      { "label": "Stock level changed", "value": "inventory.changed" },
+      { "label": "New form submission", "value": "form.submitted" }
+    ]
+  }
+]

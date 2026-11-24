@@ -11,6 +11,16 @@ import { OrdersService } from '../orders/orders.service';
 import { ApiIdempotency, ApiIdempotencyDocument } from './merchant-api.schema';
 
 export interface ApiCaller { id: string; storeId: string }
+
+/** This store's physical lines still to ship: ordered, minus cancelled lines, minus what earlier shipments took. */
+export function unshippedLines(so: any): { itemId: string; quantity: number }[] {
+  const shipped = new Map<string, number>();
+  for (const s of so?.shipments ?? []) for (const i of s.items ?? []) shipped.set(String(i.itemId), (shipped.get(String(i.itemId)) ?? 0) + Number(i.quantity || 0));
+  return (so?.items ?? [])
+    .filter((i: any) => !i.cancelledAt && i.type !== 'digital')
+    .map((i: any) => ({ itemId: String(i._id), quantity: Number(i.quantity || 0) - (shipped.get(String(i._id)) ?? 0) }))
+    .filter((l: { quantity: number }) => l.quantity > 0);
+}
 const KEY_RE = /^[A-Za-z0-9._:-]{8,100}$/;
 const isOid = (v: unknown) => typeof v === 'string' && Types.ObjectId.isValid(v) && /^[a-f0-9]{24}$/i.test(v);
 const hashBody = (o: unknown) => createHash('sha256').update(JSON.stringify(o ?? {})).digest('hex');
@@ -97,8 +107,10 @@ export class ApiWritesService {
   async fulfilOrder(caller: ApiCaller, orderId: string, body: any) {
     if (!isOid(orderId)) throw new NotFoundException('Order not found');
     const lines = body?.line_items;
-    if (!Array.isArray(lines) || lines.length < 1 || lines.length > 100) throw new BadRequestException('line_items must list 1 to 100 lines: [{ "id": "<line item id>", "quantity": 1 }]');
-    const items = lines.map((l: any) => {
+    // Leaving line_items out ships everything not shipped yet (what automation tools usually want).
+    const shipAll = lines === undefined || lines === null;
+    if (!shipAll && (!Array.isArray(lines) || lines.length < 1 || lines.length > 100)) throw new BadRequestException('line_items must list 1 to 100 lines: [{ "id": "<line item id>", "quantity": 1 }], or be left out to ship everything not shipped yet');
+    let items: { itemId: string; quantity: number }[] = shipAll ? [] : lines.map((l: any) => {
       const id = String(l?.id ?? '');
       const quantity = Number(l?.quantity);
       if (!isOid(id)) throw new BadRequestException('Each line item needs the id from the order\'s line_items');
@@ -109,8 +121,13 @@ export class ApiWritesService {
     const trackingUrl = str(body?.tracking_url, 500);
     if (trackingUrl && !/^https?:\/\//i.test(trackingUrl)) throw new BadRequestException('tracking_url must start with http:// or https://');
     const r = this.db.repositories as any;
-    const order: any = await r.orderModel.findOne({ _id: orderId, isDelete: false, 'sellerOrders.storeId': caller.storeId }).select('_id orderNumber').lean();
+    const order: any = await r.orderModel.findOne({ _id: orderId, isDelete: false, 'sellerOrders.storeId': caller.storeId }).select('_id orderNumber sellerOrders').lean();
     if (!order) throw new NotFoundException('Order not found');
+    if (shipAll) {
+      const so = (order.sellerOrders ?? []).find((x: any) => String(x.storeId) === caller.storeId);
+      items = unshippedLines(so);
+      if (!items.length) throw new BadRequestException('Every item on this order has already been shipped (or cancelled)');
+    }
     const store: any = await r.storeModel.findOne({ _id: caller.storeId, isDelete: false }).select('sellerId').lean();
     if (!store) throw new NotFoundException('Store not found');
     const orders = this.moduleRef.get(OrdersService, { strict: false });

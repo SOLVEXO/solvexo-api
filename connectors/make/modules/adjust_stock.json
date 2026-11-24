@@ -1,0 +1,31 @@
+{
+  "name": "adjustStock",
+  "label": "Adjust Stock",
+  "description": "Adds or removes stock for one product variant.",
+  "type": "action",
+  "communication": {
+    "url": "/inventory/adjust",
+    "method": "POST",
+    "headers": { "Idempotency-Key": "make:{{uuid}}" },
+    "body": {
+      "variantId": "{{parameters.variantId}}",
+      "delta": "{{parameters.delta}}",
+      "reason": "{{ifempty(parameters.reason; 'correction')}}",
+      "note": "{{parameters.note}}"
+    },
+    "response": { "output": "{{body}}" }
+  },
+  "mappableParameters": [
+    { "name": "variantId", "label": "Variant ID", "type": "text", "required": true },
+    { "name": "delta", "label": "Change", "type": "integer", "required": true, "help": "Units to add (10) or remove (-3)." },
+    { "name": "reason", "label": "Reason", "type": "select", "default": "correction", "options": [
+      { "label": "Restocked", "value": "restocked" }, { "label": "Correction", "value": "correction" }, { "label": "Other", "value": "other" }
+    ] },
+    { "name": "note", "label": "Note", "type": "text" }
+  ],
+  "interface": [
+    { "name": "variantId", "label": "Variant ID", "type": "text" },
+    { "name": "delta", "label": "Change", "type": "number" },
+    { "name": "reason", "label": "Reason", "type": "text" }
+  ]
+}

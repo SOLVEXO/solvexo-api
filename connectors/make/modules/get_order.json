@@ -1,0 +1,42 @@
+{
+  "name": "getOrder",
+  "label": "Get an Order",
+  "description": "Gets one order of your store with its items, address and shipments.",
+  "type": "action",
+  "communication": {
+    "url": "/orders/{{encodeURL(parameters.orderId)}}",
+    "method": "GET",
+    "response": { "output": "{{body}}" }
+  },
+  "mappableParameters": [
+    { "name": "orderId", "label": "Order ID", "type": "text", "required": true }
+  ],
+  "interface": [
+    { "name": "id", "label": "Order ID", "type": "text" },
+    { "name": "order_number", "label": "Order number", "type": "text" },
+    { "name": "created_at", "label": "Created at", "type": "date" },
+    { "name": "currency", "label": "Currency", "type": "text" },
+    { "name": "status", "label": "Status", "type": "text" },
+    { "name": "paid", "label": "Paid", "type": "boolean" },
+    { "name": "payment_method", "label": "Payment method", "type": "text" },
+    { "name": "customer_id", "label": "Customer ID", "type": "text" },
+    { "name": "shipping_address", "label": "Shipping address", "type": "collection", "spec": [
+      { "name": "name", "label": "Name", "type": "text" }, { "name": "phone", "label": "Phone", "type": "text" },
+      { "name": "address1", "label": "Address 1", "type": "text" }, { "name": "address2", "label": "Address 2", "type": "text" },
+      { "name": "city", "label": "City", "type": "text" }, { "name": "province", "label": "Province", "type": "text" },
+      { "name": "zip", "label": "Postcode", "type": "text" }, { "name": "country", "label": "Country", "type": "text" }
+    ] },
+    { "name": "line_items", "label": "Line items", "type": "array", "spec": { "type": "collection", "spec": [
+      { "name": "id", "label": "Line ID", "type": "text" }, { "name": "name", "label": "Name", "type": "text" },
+      { "name": "sku", "label": "SKU", "type": "text" }, { "name": "variant_id", "label": "Variant ID", "type": "text" },
+      { "name": "quantity", "label": "Quantity", "type": "number" }, { "name": "price", "label": "Price", "type": "number" },
+      { "name": "total", "label": "Line total", "type": "number" }
+    ] } },
+    { "name": "subtotal", "label": "Subtotal", "type": "number" },
+    { "name": "shipping", "label": "Shipping", "type": "number" },
+    { "name": "total", "label": "Total", "type": "number" },
+    { "name": "refunded_total", "label": "Refunded", "type": "number" },
+    { "name": "shipped_at", "label": "Shipped at", "type": "date" },
+    { "name": "cancelled_at", "label": "Cancelled at", "type": "date" }
+  ]
+}

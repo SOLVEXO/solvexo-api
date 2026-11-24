@@ -1,0 +1,30 @@
+{
+  "name": "searchCustomers",
+  "label": "Search Customers",
+  "description": "Lists your store's customers, newest first, with their per-store marketing consent.",
+  "type": "search",
+  "communication": {
+    "url": "/customers",
+    "method": "GET",
+    "qs": {
+      "limit": 100,
+      "updated_since": "{{formatDate(parameters.updatedSince; 'YYYY-MM-DDTHH:mm:ss[Z]'; 'UTC')}}"
+    },
+    "response": { "limit": "{{parameters.limit}}", "iterate": "{{body.items}}", "output": "{{item}}" },
+    "pagination": { "qs": { "cursor": "{{body.next_cursor}}" }, "condition": "{{body.has_more}}" }
+  },
+  "mappableParameters": [
+    { "name": "updatedSince", "label": "Changed since", "type": "date" },
+    { "name": "limit", "label": "Maximum number of results", "type": "uinteger", "default": 10, "required": true }
+  ],
+  "interface": [
+    { "name": "id", "label": "Customer ID", "type": "text" },
+    { "name": "name", "label": "Name", "type": "text" },
+    { "name": "email", "label": "Email", "type": "email" },
+    { "name": "phone", "label": "Phone", "type": "text" },
+    { "name": "guest", "label": "Guest", "type": "boolean" },
+    { "name": "tags", "label": "Tags", "type": "array", "spec": { "type": "text" } },
+    { "name": "email_marketing", "label": "Agreed to marketing email", "type": "boolean", "help": "Only send marketing to customers where this is true." },
+    { "name": "created_at", "label": "Created at", "type": "date" }
+  ]
+}
