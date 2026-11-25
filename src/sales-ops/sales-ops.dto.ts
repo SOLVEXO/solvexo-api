@@ -135,7 +135,7 @@ export class EmailDto {
   @IsString() @MaxLength(200) subject: string;
   @IsString() @MaxLength(10000) body: string;
   /** The email template used; required for a rep allowed templates only (its text is then used as saved). */
-  @OptStr(30) templateId?: string;
+  @IsOptional() @IsString() @MaxLength(30) templateId?: string;
 }
 
 export class TaskDto {
