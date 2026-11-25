@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { offlineLinkBaseOf } from './pos-receipt-link.util';
+import { productCoverImage } from './pos-cover-image.util';
 import { localDay, localHour, localKey, localRange } from './pos-day.util';
 import { bookActive, ModifierGroup, modifierSuffix, priceLine } from './pos-pricing.util';
 import { resolveStoreTimeZone } from '../common/store-timezone.util';
@@ -474,7 +475,7 @@ export class PosService {
           { name: { $regex: q, $options: 'i' } },
         ],
       })
-      .select('_id name type gallery coverImages')
+      .select('_id name type images gallery coverImages')
       .limit(20)
       .lean();
 
@@ -506,7 +507,7 @@ export class PosService {
     const extraProducts = skuMatchedProductIds.size > 0
       ? await this.r.productModel
           .find({ _id: { $in: [...skuMatchedProductIds] }, isDelete: false, status: 'active' })
-          .select('_id name type gallery coverImages')
+          .select('_id name type images gallery coverImages')
           .lean()
       : [];
 
@@ -519,7 +520,7 @@ export class PosService {
       productId: p._id,
       name: p.name,
       type: p.type,
-      image: p.gallery?.[0] ?? p.coverImages?.[0] ?? null,
+      image: productCoverImage(p),
       variants: (variantMap[p._id.toString()] || []).map((v: any) => ({
         variantId: v._id,
         sku: v.sku,
@@ -551,7 +552,7 @@ export class PosService {
     const total = await this.r.productModel.countDocuments(filter);
     const products = await this.r.productModel
       .find(filter)
-      .select('_id name type gallery coverImages categoryId')
+      .select('_id name type images gallery coverImages categoryId')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -572,7 +573,7 @@ export class PosService {
       productId: p._id,
       name: p.name,
       type: p.type,
-      image: p.gallery?.[0] ?? p.coverImages?.[0] ?? null,
+      image: productCoverImage(p),
       categoryId: p.categoryId,
       variants: (variantMap[p._id.toString()] || []).map((v: any) => ({
         variantId: v._id,
@@ -1009,7 +1010,7 @@ export class PosService {
       }
       if (item.sellExpired && !off.isOffline && !opts.expiredApproval) throw new ForbiddenException({ statusCode: 403, code: 'EXPIRED_LOT_APPROVAL_REQUIRED', message: 'Selling expired stock needs a manager' });
 
-      const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name gallery coverImages');
+      const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name images gallery coverImages');
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
 
       // Offline replay: the till collected `unitPrice`. Record THAT (money in the drawer must equal the sale) and judge it:
@@ -1031,7 +1032,7 @@ export class PosService {
         variantId: item.variantId,
         name: `${product.name}${formatOptionsSuffix(variant.options)}${modifierSuffix(priced?.modifiers ?? [])}`,
         sku: variant.sku,
-        image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
+        image: productCoverImage(product),
         price: charged,
         ...(priced && (priced.modifiers.length || priced.fromBook) ? { modifiers: priced.modifiers.length ? priced.modifiers : undefined, basePriceMinor: priced.baseMinor } : {}),
         listPrice,
@@ -3092,7 +3093,7 @@ export class PosService {
     let variant: any = null; let product: any = null;
     for (const c of candidates) {
       if (c.storeId && String(c.storeId) !== storeId) continue;
-      const p = await this.r.productModel.findOne({ _id: c.productId, storeId, isDelete: false, status: 'active' }).select('_id name type gallery coverImages').lean();
+      const p = await this.r.productModel.findOne({ _id: c.productId, storeId, isDelete: false, status: 'active' }).select('_id name type images gallery coverImages').lean();
       if (p) { variant = c; product = p; break; }
     }
     if (!product) throw new NotFoundException('Product not found in this store');
@@ -3103,7 +3104,7 @@ export class PosService {
         productId: (product as any)._id,
         name: (product as any).name,
         type: (product as any).type,
-        image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
+        image: productCoverImage(product),
         variant: {
           variantId: (variant as any)._id,
           sku: (variant as any).sku,
@@ -3229,7 +3230,7 @@ export class PosService {
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
 
-      const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name gallery coverImages');
+      const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name images gallery coverImages');
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
 
       saleItems.push({
@@ -3237,7 +3238,7 @@ export class PosService {
         variantId: item.variantId,
         name: `${(product as any).name}${formatOptionsSuffix((variant as any).options)}`,
         sku: variant.sku,
-        image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
+        image: productCoverImage(product),
         price: variant.price,
         qty: item.qty,
         lineTotal: 0,
