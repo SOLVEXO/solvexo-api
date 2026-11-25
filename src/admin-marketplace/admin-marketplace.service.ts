@@ -211,8 +211,10 @@ export class AdminMarketplaceService {
       this.r.storeModel.countDocuments(filter),
     ]);
 
-    const sellerIds = [...new Set(stores.map((s: any) => s.sellerId))];
-    const categoryIds = [...new Set(stores.map((s: any) => s.categoryId).filter(Boolean))];
+    // Only real ids: a category slug or blank on one store would otherwise throw a CastError and 500 the page.
+    const isId = (v: string) => /^[a-f0-9]{24}$/i.test(v);
+    const sellerIds = [...new Set(stores.map((s: any) => String(s.sellerId ?? '')))].filter(isId);
+    const categoryIds = [...new Set(stores.map((s: any) => String(s.categoryId ?? '')))].filter(isId);
     const [sellers, categories] = await Promise.all([
       this.r.sellerModel.find({ _id: { $in: sellerIds } }, { name: 1, email: 1, phone: 1, address: 1 }).lean(),
       this.r.categoryModel.find({ _id: { $in: categoryIds } }, { name: 1 }).lean(),

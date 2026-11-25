@@ -9,6 +9,8 @@ import { HAS_NTN_FILTER, storeTrustSnapshot } from '../seller-trust/seller-trust
 const VERIFICATION_WORST_FIRST = ['rejected', 'needs_info', 'not_started', 'pending', 'under_review', 'verified'];
 const RISK_RANK: Record<string, number> = { low: 0, medium: 1, high: 2 };
 const STORE_TRUST_FIELDS = { sellerId: 1, categoryId: 1, country: 1, createdAt: 1, taxId: 1, 'verification.taxId': 1, verificationStatus: 1, verificationDueAt: 1, riskLevel: 1, riskReasons: 1, payoutHold: 1 };
+/** Only real ids reach an `_id: { $in }` lookup: one store saved with a category slug (or a blank) would otherwise make Mongoose throw a CastError and the whole page 500. */
+const asIds = (vals: unknown[]) => [...new Set(vals.map((v) => String(v ?? '')).filter((v) => /^[a-f0-9]{24}$/i.test(v)))];
 const csvEsc = (v: unknown) => { const s = v === null || v === undefined ? '' : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
 
 interface AuditMeta {
@@ -89,7 +91,7 @@ export class AdminUsersService {
     if (query.risk) storeAnd.push(query.risk === 'low' ? { riskLevel: { $in: ['low', null] } } : { riskLevel: query.risk });
     if (storeAnd.length) {
       const sellerIds: string[] = await this.r.storeModel.distinct('sellerId', { isDelete: false, $and: storeAnd });
-      match._id = { $in: sellerIds.filter(Boolean) };
+      match._id = { $in: asIds(sellerIds) };
     }
     return match;
   }
@@ -99,7 +101,7 @@ export class AdminUsersService {
     const stores: any[] = sellerIds.length
       ? await this.r.storeModel.find({ sellerId: { $in: sellerIds }, isDelete: false }, STORE_TRUST_FIELDS).sort({ createdAt: 1 }).lean()
       : [];
-    const categoryIds = [...new Set(stores.map((s) => s.categoryId).filter(Boolean))];
+    const categoryIds = asIds(stores.map((s) => s.categoryId));
     const categories: any[] = categoryIds.length ? await this.r.categoryModel.find({ _id: { $in: categoryIds } }, { name: 1 }).lean() : [];
     const categoryById = new Map(categories.map((c) => [String(c._id), c.name as string]));
     const out = new Map<string, { storeCount: number; country: string | null; hasNtn: boolean; ntn: string | null; verificationStatus: string | null; riskLevel: string | null; dueAt: Date | null; sells: string | null }>();
