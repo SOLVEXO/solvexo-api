@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { SalesAccessService } from './sales-access.service';
 import {
   Body,
   Controller,
@@ -39,6 +40,7 @@ import {
   ConsentRequestsDto,
   WaConnectDto,
   WaTemplatesDto,
+  RepAccessDto,
   WaSendTemplateDto,
   WaListDto,
   WaSendDto,
@@ -96,6 +98,7 @@ export class SalesOpsController {
     private readonly partners: SalesPartnersService,
     private readonly agent: SalesAgentService,
     private readonly whatsapp: SalesWhatsAppService,
+    private readonly access: SalesAccessService,
     private readonly visits: SalesVisitsService,
     private readonly brevo: SalesBrevoService,
   ) {}
@@ -570,6 +573,7 @@ export class SalesOpsController {
       id,
       dto.subject,
       dto.body,
+      dto.templateId ?? null,
     );
   }
 
@@ -603,8 +607,26 @@ export class SalesOpsController {
   @Get('owners') owners() {
     return this.sales.owners();
   }
-  @Get('templates') templates() {
-    return this.sales.listTemplates();
+  @Get('templates') templates(@Req() req: any) {
+    return this.sales.listTemplates(salesActor(req.user));
+  }
+
+  /** What the signed-in person may send to clients (managers: everything). */
+  @Get('messaging/me') async myMessaging(@Req() req: any) {
+    return { success: true, data: await this.sales.rules(salesActor(req.user)) };
+  }
+
+  /** Sales Ops → Team: what each rep may send (reps without saved rules use the defaults). */
+  @RequirePermission('sales.manage')
+  @Get('team/messaging')
+  async teamMessaging() {
+    return { success: true, data: await this.access.list() };
+  }
+
+  @RequirePermission('sales.manage')
+  @Put('team/messaging/:adminId')
+  saveTeamMessaging(@Param('adminId') adminId: string, @Body() dto: RepAccessDto) {
+    return this.access.save(adminId, dto);
   }
 
   @RequirePermission('sales.manage')

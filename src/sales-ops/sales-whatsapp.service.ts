@@ -1,4 +1,6 @@
 /* eslint-disable prettier/prettier */
+import { SalesAccessService } from './sales-access.service';
+import { asReason } from './sales-ops.constants';
 import {
   BadRequestException,
   ForbiddenException,
@@ -393,6 +395,7 @@ export class SalesWhatsAppService {
   }
 
   async getConversation(actor: SalesActor, id: string) {
+    const rules = await this.sales.rules(actor);
     const c = await this.mustFind(actor, id);
     const msgs: any[] = await this.messages
       .find({ conversationId: id })
@@ -430,7 +433,10 @@ export class SalesWhatsAppService {
         aiDraft: c.aiDraft ?? null,
         // The first one stays as `template` for older screens.
         template: templatesOf(s)[0] ? { name: templatesOf(s)[0].name, lang: templatesOf(s)[0].lang } : null,
-        templates: templatesOf(s).map((t) => ({ key: t.key, label: t.label, name: t.name, lang: t.lang, body: t.body })),
+        // Only the templates this person may send; reps allowed templates only cannot write their own text.
+        templates: rules.whatsapp === 'off' ? [] : templatesOf(s).filter((t) => SalesAccessService.allows(rules.waTemplateKeys, t.key))
+          .map((t) => ({ key: t.key, label: t.label, name: t.name, lang: t.lang, body: t.body, reason: t.reason })),
+        canWriteText: rules.whatsapp === 'full',
         messages: msgs
           .reverse()
           .map((x) => ({
@@ -456,6 +462,7 @@ export class SalesWhatsAppService {
         'WhatsApp messages can be up to 4,000 characters.',
       );
     const c = await this.mustFind(actor, id);
+    SalesAccessService.require(await this.sales.rules(actor), 'whatsapp', 'text');
     if (!windowOpen(c.lastInboundAt))
       throw new BadRequestException(
         'It has been more than 24 hours since they last wrote, so WhatsApp only allows your approved template. Send the template to restart the chat.',
@@ -483,11 +490,11 @@ export class SalesWhatsAppService {
    * Business Account): it must exist in that language, be approved, and need nothing but {{1}} (the first name),
    * or Meta would refuse it at send time. Its approved body is kept for the picker's preview.
    */
-  async saveTemplates(input: { label?: string; name: string; lang: string }[]) {
+  async saveTemplates(input: { label?: string; name: string; lang: string; reason?: string }[]) {
     const s = await this.load();
     if (!Array.isArray(input) || input.length > MAX_WA_TEMPLATES)
       throw new BadRequestException(`Up to ${MAX_WA_TEMPLATES} templates.`);
-    const rows = input.map((t) => ({ label: String(t?.label ?? '').trim().slice(0, 60), name: String(t?.name ?? '').trim(), lang: String(t?.lang ?? '').trim() }));
+    const rows = input.map((t) => ({ label: String(t?.label ?? '').trim().slice(0, 60), name: String(t?.name ?? '').trim(), lang: String(t?.lang ?? '').trim(), reason: asReason(t?.reason) }));
     const seen = new Set<string>();
     for (const r of rows) {
       if (!WA_TEMPLATE_NAME_RE.test(r.name))
@@ -520,7 +527,7 @@ export class SalesWhatsAppService {
           throw new BadRequestException(`Template ${r.name} (${r.lang}) is ${String(t.status ?? 'not approved').toLowerCase()}; only approved templates can be sent.`);
         const c = checkMetaTemplate(t.components);
         if (!c.ok) throw new BadRequestException(`Template ${r.name} (${r.lang}) can't be sent from Solvexo: ${c.problem}.`);
-        return { key: waTemplateKey(r.name, r.lang), label: r.label || `${r.name} (${r.lang})`, name: r.name, lang: r.lang, usesName: c.usesName, body: c.body || null };
+        return { key: waTemplateKey(r.name, r.lang), label: r.label || `${r.name} (${r.lang})`, name: r.name, lang: r.lang, usesName: c.usesName, body: c.body || null, reason: r.reason };
       });
     }
     const first = saved[0];
@@ -542,8 +549,12 @@ export class SalesWhatsAppService {
       throw new BadRequestException(
         'Add an approved template in Sales Ops → WhatsApp → Templates first.',
       );
-    const t = key ? list.find((x) => x.key === key) : list[0];
-    if (!t) throw new BadRequestException('That template is no longer in the list. Pick another one.');
+    const rules = await this.sales.rules(actor);
+    SalesAccessService.require(rules, 'whatsapp', 'template');
+    const mine = list.filter((x) => SalesAccessService.allows(rules.waTemplateKeys, x.key));
+    const t = key ? list.find((x) => x.key === key) : mine[0];
+    if (!t) throw new BadRequestException(mine.length ? 'That template is no longer in the list. Pick another one.' : 'You have no WhatsApp templates you are allowed to send. Ask a manager.');
+    if (!SalesAccessService.allows(rules.waTemplateKeys, t.key)) throw new ForbiddenException('You are not allowed to send this template.');
     const { token, phoneNumberId } = await this.credentials();
     const lead: any = c.leadId
       ? await this.leads.findById(c.leadId).select('name').lean()
@@ -602,6 +613,7 @@ export class SalesWhatsAppService {
 
   /** Start a WhatsApp chat from a lead's page: finds or opens the conversation for the lead's number. */
   async openForLead(actor: SalesActor, leadId: string) {
+    SalesAccessService.require(await this.sales.rules(actor), 'whatsapp', 'template');
     const { data } = await this.sales.get(actor, leadId);
     const waId = toWaId(data.lead.phone);
     if (!waId)

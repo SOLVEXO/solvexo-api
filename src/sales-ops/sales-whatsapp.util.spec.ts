@@ -146,8 +146,10 @@ describe('WhatsApp templates Solvexo can send', () => {
   it('reads the list, or the single template saved before lists existed', () => {
     expect(templatesOf({})).toEqual([]);
     expect(templatesOf({ waTemplateName: 'sales_followup', waTemplateLang: 'ur', waTemplateUsesName: true }))
-      .toEqual([{ key: 'sales_followup:ur', label: 'sales_followup', name: 'sales_followup', lang: 'ur', usesName: true, body: null }]);
-    const list = [{ key: 'a:en', label: 'A', name: 'a', lang: 'en', usesName: false, body: 'x' }];
-    expect(templatesOf({ waTemplates: list, waTemplateName: 'old' })).toBe(list);
+      .toEqual([{ key: 'sales_followup:ur', label: 'sales_followup', name: 'sales_followup', lang: 'ur', usesName: true, body: null, reason: 'follow_up' }]);
+    const list = [{ key: 'a:en', label: 'A', name: 'a', lang: 'en', usesName: false, body: 'x', reason: 'demo_reminder' }];
+    expect(templatesOf({ waTemplates: list, waTemplateName: 'old' })).toEqual(list);
+    // Saved before reasons existed: treated as a follow-up.
+    expect(templatesOf({ waTemplates: [{ ...list[0], reason: undefined }] })[0].reason).toBe('follow_up');
   });
 });
