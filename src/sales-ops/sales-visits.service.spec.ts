@@ -74,6 +74,18 @@ describe('SalesVisitsService', () => {
     expect(r.data.visit).toMatchObject({ adminName: 'Ali Raza', interest: 'hot', taskId: String(t[0]._id) });
   });
 
+  it('keeps "Not found" answers on the visit but gives the lead the shop name and no phone', async () => {
+    const { svc, leads } = setup();
+    const r = await svc.create(REP, base({ clientId: 'v-nf', storeName: 'Cambridge Clothing', contactName: 'Not Found', whatsapp: 'Not Found', waPermission: true }) as any, NOW);
+    const lead: any = await leads.findOne({ _id: r.data.leadId });
+    expect(lead).toMatchObject({ name: 'Cambridge Clothing', businessName: 'Cambridge Clothing', phone: null, phoneKey: null });
+    expect(r.data.visit).toMatchObject({ contactName: 'Not Found', whatsapp: 'Not Found', waPermission: false });
+    for (const none of ['n/a', 'NA', '-', 'nahi mila', 'unknown']) {
+      const r2 = await svc.create(REP, base({ clientId: `v-${none}`, storeName: `Shop ${none}`, contactName: none, whatsapp: null }) as any, NOW);
+      expect(((await leads.findOne({ _id: r2.data.leadId })) as any).name).toBe(`Shop ${none}`);
+    }
+  });
+
   it('stores a visit synced twice (offline retry) only once', async () => {
     const { svc, visits, tasks } = setup();
     const input = base({ clientId: 'phone-uuid-1' });

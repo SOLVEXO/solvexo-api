@@ -32,6 +32,12 @@ export interface VisitListQuery {
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const txt = (v?: string | null) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+/**
+ * What a rep types when they have no answer ("Not found", "N/A", "-", "nahi mila"). The visit keeps it as typed, but
+ * it is not a name for the lead: the lead is then named after the shop.
+ */
+const NO_ANSWER = /^(not\s*found|n\s*\/?\s*a|none|no|nil|null|unknown|not\s*(given|available|shared|known)|nahi(\s*mila)?|-+|\.+|\?+|x+)$/i;
+const realName = (v?: string | null) => { const t = txt(v); return t && !NO_ANSWER.test(t) ? t : null; };
 /** Answer fields copied from the form onto the visit as they are (already validated by VisitDto). */
 const ANSWER_FIELDS = [
   'unit', 'floor', 'area', 'category', 'categoryOther', 'priceRange', 'wholesale', 'contactName', 'contactRole', 'whatsapp',
@@ -80,10 +86,11 @@ export class SalesVisitsService {
     const answers: Record<string, unknown> = { storeName, interest: input.interest, nextStep: input.nextStep, nextStepAt };
     for (const k of ANSWER_FIELDS) answers[k] = txt(input[k] as string | null | undefined);
     for (const k of LIST_FIELDS) answers[k] = [...new Set((input[k] ?? []).filter(Boolean))];
-    answers.waPermission = !!input.waPermission && !!answers.whatsapp;
     if (answers.category !== 'other') answers.categoryOther = null;
     if (answers.billing !== 'software') answers.billingSoftware = null;
     const waKey = phoneKey(answers.whatsapp as string | null);
+    // Permission to message needs a number to message.
+    answers.waPermission = !!input.waPermission && !!waKey;
 
     const photo = await this.storePhoto(input.photoDataUrl);
     const lead = await this.findOrCreateLead(actor, answers as unknown as VisitAnswers, waKey);
@@ -121,7 +128,7 @@ export class SalesVisitsService {
       tags: [...(lead.tags ?? []).filter((t: string) => !(INTEREST_TAGS as readonly string[]).includes(t)), optionLabel('interest', input.interest).toLowerCase()],
     };
     // Fill gaps on the lead from what the rep learnt, never overwriting what is already there.
-    if (!lead.phone && answers.whatsapp) Object.assign(set, { phone: answers.whatsapp, phoneKey: waKey });
+    if (!lead.phone && waKey) Object.assign(set, { phone: answers.whatsapp, phoneKey: waKey });
     if (!lead.businessName) set.businessName = storeName;
     if (!lead.city && answers.area) set.city = answers.area;
     if (!lead.businessType && answers.category) set.businessType = optionLabel('category', answers.category as string);
@@ -282,9 +289,10 @@ export class SalesVisitsService {
       }
     }
     const lead: any = await this.leads.create({
-      name: txt(v.contactName) ?? v.storeName,
+      name: realName(v.contactName) ?? v.storeName,
       businessName: v.storeName,
-      phone: txt(v.whatsapp),
+      // Only a real number (7+ digits) becomes the lead's phone; "Not found" stays on the visit only.
+      phone: waKey ? txt(v.whatsapp) : null,
       phoneKey: waKey,
       city: txt(v.area),
       businessType: v.category ? (v.category === 'other' ? txt(v.categoryOther) : optionLabel('category', v.category)) : null,
