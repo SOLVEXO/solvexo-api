@@ -210,14 +210,35 @@ describe('SalesWhatsAppService', () => {
   });
 
   it('uses a WhatsApp Business Account ID the admin types, and refuses one that does not own the number', async () => {
-    const { wa, calls } = setup();
+    const { wa, calls, setReply } = setup();
     const r = await wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: ' 70002 ' });
     expect(r.data.wabaId).toBe('70002');
     expect(calls.some((c) => c.url.includes('/debug_token'))).toBe(false);
-    await expect(wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: '70001' }))
-      .rejects.toThrow('has no number with ID');
+    // A typed account that owns another number: the token's own accounts find the right one.
+    expect((await wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: '70001' })).data.wabaId).toBe('70002');
     await expect(wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: 'abc' }))
       .rejects.toThrow('digits only');
+    // A typed ID that does not own the number: the token's own accounts are tried before giving up.
+    calls.length = 0;
+    setReply((url) => url.includes('/debug_token')
+      ? { json: { data: { granular_scopes: [{ scope: 'whatsapp_business_management', target_ids: ['70002'] }] } } }
+      : url.includes('/99999/phone_numbers')
+        ? { status: 400, json: { error: { message: '(#100) Unsupported get request' } } }
+        : url.includes('/70002/phone_numbers') ? { json: { data: [{ id: NUMBER }] } }
+          : url.includes('subscribed_apps') ? { json: { success: true } }
+            : { json: { id: NUMBER, display_phone_number: '+92 300 0000000', verified_name: 'Solvexo' } });
+    const r2 = await wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: '99999' });
+    expect(r2.data.wabaId).toBe('70002');
+    setReply((url) => url.includes('/debug_token') ? { json: { data: { granular_scopes: [] } } }
+      : url.includes('/70001/phone_numbers') ? { json: { data: [{ id: '5550001', display_phone_number: '+92 300 1111111' }] } }
+        : { json: { id: NUMBER, display_phone_number: '+92 300 0000000', verified_name: 'Solvexo' } });
+    await expect(wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: '70001' }))
+      .rejects.toThrow('WhatsApp Business Account 70001 lists +92 300 1111111 (ID 5550001), not ID 1234567890');
+    setReply((url) => url.includes('/debug_token') ? { json: { data: { granular_scopes: [] } } }
+      : url.includes('/99999/phone_numbers') ? { status: 400, json: { error: { message: '(#100) Unsupported get request' } } }
+        : { json: { id: NUMBER, display_phone_number: '+92 300 0000000', verified_name: 'Solvexo' } });
+    await expect(wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: '99999' }))
+      .rejects.toThrow('Meta refused to list the numbers of WhatsApp Business Account 99999: (#100) Unsupported get request');
   });
 
   it('asks for the account ID when the token does not reveal it, and stops when Meta refuses the subscription', async () => {
@@ -226,7 +247,7 @@ describe('SalesWhatsAppService', () => {
       ? { status: 400, json: { error: { message: 'Not allowed' } } }
       : { json: { id: NUMBER, display_phone_number: '+92 300 0000000', verified_name: 'Solvexo' } });
     await expect(wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890' }))
-      .rejects.toThrow('Enter the WhatsApp Business Account ID');
+      .rejects.toThrow('Copy the WhatsApp Business Account ID from your Meta app');
     setReply((url) => url.includes('subscribed_apps')
       ? { status: 403, json: { error: { message: 'Permissions error' } } }
       : url.includes('/phone_numbers')

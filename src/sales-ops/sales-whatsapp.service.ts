@@ -151,16 +151,16 @@ export class SalesWhatsAppService {
       throw new BadRequestException(
         'The WhatsApp Business Account ID is digits only.',
       );
-    const wabaId = await this.findWabaId(
+    const { wabaId, detail } = await this.findWabaId(
       phoneNumberId,
       token,
       givenWaba ?? (s.waPhoneNumberId === phoneNumberId ? s.waWabaId : null),
     );
     if (!wabaId)
       throw new BadRequestException(
-        givenWaba
-          ? `WhatsApp Business Account ${givenWaba} has no number with ID ${phoneNumberId} that this token can see. Check both IDs, and that the system user has full control of that WhatsApp account.`
-          : 'Could not find which WhatsApp Business Account this number belongs to. Enter the WhatsApp Business Account ID (Business settings → Accounts → WhatsApp accounts) and try again.',
+        detail
+          ? `${detail}. Copy the WhatsApp Business Account ID from your Meta app → WhatsApp → API Setup (shown under the phone number), or leave it empty, and check the system user has full control of that WhatsApp account.`
+          : 'Could not find which WhatsApp Business Account this number belongs to. Copy the WhatsApp Business Account ID from your Meta app → WhatsApp → API Setup (shown under the phone number) and try again.',
       );
     // Without this subscription Meta sends the number's messages to no app, so a failure stops the connect.
     const sub = await this.graph('POST', `/${wabaId}/subscribed_apps`, token);
@@ -712,25 +712,33 @@ export class SalesWhatsAppService {
   }
 
   /**
-   * The WhatsApp Business Account that owns the number. Candidates are an ID the admin typed (or the one saved
-   * before), then the accounts the token was granted (debug_token's granular scopes); the first one whose
-   * phone_numbers include this number wins. Null when none can be confirmed.
+   * The WhatsApp Business Account that owns the number, confirmed by `/{waba}/phone_numbers` listing it.
+   * Candidates: an ID the admin typed (or the one saved before) first, then the accounts the token was granted
+   * (debug_token's granular scopes). `detail` explains a typed ID that did not work, with Meta's own answer.
    */
-  private async findWabaId(phoneNumberId: string, token: string, hint: string | null): Promise<string | null> {
-    const owns = async (waba: string) => {
-      const r = await this.graph('GET', `/${waba}/phone_numbers?fields=id&limit=100`, token);
-      return r.ok && Array.isArray(r.data?.data) && r.data.data.some((n: any) => String(n?.id) === phoneNumberId);
+  private async findWabaId(phoneNumberId: string, token: string, hint: string | null): Promise<{ wabaId: string | null; detail: string | null }> {
+    const check = async (waba: string) => {
+      const r = await this.graph('GET', `/${waba}/phone_numbers?fields=id,display_phone_number&limit=100`, token);
+      const nums: any[] = r.ok && Array.isArray(r.data?.data) ? r.data.data : [];
+      return { owns: nums.some((n) => String(n?.id) === phoneNumberId), error: r.ok ? null : r.error ?? 'refused', nums };
     };
-    if (hint) return (await owns(hint)) ? hint : null;
+    let detail: string | null = null;
+    if (hint) {
+      const c = await check(hint);
+      if (c.owns) return { wabaId: hint, detail: null };
+      detail = c.error
+        ? `Meta refused to list the numbers of WhatsApp Business Account ${hint}: ${c.error}`
+        : `WhatsApp Business Account ${hint} lists ${c.nums.length ? c.nums.map((n) => `${n.display_phone_number ?? '?'} (ID ${n.id})`).join(', ') : 'no numbers this token can see'}, not ID ${phoneNumberId}`;
+    }
     const dbg = await this.graph('GET', `/debug_token?input_token=${encodeURIComponent(token)}`, token);
     const scopes: any[] = Array.isArray(dbg.data?.data?.granular_scopes) ? dbg.data.data.granular_scopes : [];
     const ids = [...new Set(scopes
       .filter((x) => x?.scope === 'whatsapp_business_management' || x?.scope === 'whatsapp_business_messaging')
       .flatMap((x) => (Array.isArray(x?.target_ids) ? x.target_ids.map(String) : [])))]
-      .filter((id) => /^\d{5,30}$/.test(id))
+      .filter((id) => /^\d{5,30}$/.test(id) && id !== hint)
       .slice(0, 20);
-    for (const id of ids) if (await owns(id)) return id;
-    return null;
+    for (const id of ids) if ((await check(id)).owns) return { wabaId: id, detail: null };
+    return { wabaId: null, detail };
   }
 
   private async graph(
