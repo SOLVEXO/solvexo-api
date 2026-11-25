@@ -5,6 +5,7 @@ process.env.INTEGRATIONS_CREDENTIALS_ENCRYPTION_KEY =
 import { SalesOpsService } from './sales-ops.service';
 import { SalesCaptureService } from './sales-capture.service';
 import { SalesWhatsAppService } from './sales-whatsapp.service';
+import { SalesAccessService } from './sales-access.service';
 import { salesActor } from './sales-ops.util';
 import { model } from './sales-ops.fakes.testspec';
 
@@ -58,6 +59,7 @@ function setup() {
       async () => 'Ji, COD available hai! Demo ke liye kab call karein?',
     ),
   };
+  const access = new SalesAccessService(model() as any);
   const sales = new SalesOpsService(
     db,
     redis as any,
@@ -66,6 +68,7 @@ function setup() {
     activities as any,
     tasks as any,
     templates as any,
+    access,
   );
   const capture = new SalesCaptureService(
     db,
@@ -136,6 +139,9 @@ function setup() {
     agent,
     notifications,
     calls,
+    access,
+    email,
+    templates,
     setReply: (f: typeof reply) => {
       reply = f;
     },
@@ -421,8 +427,8 @@ describe('SalesWhatsAppService', () => {
       { label: '', name: 'sales_follow_up', lang: 'ur' },
     ]);
     expect(r.data.templates).toEqual([
-      { key: 'sales_follow_up:en', label: 'Follow-up (English)', name: 'sales_follow_up', lang: 'en', usesName: true, body: 'Hi {{1}}, following up from Solvexo.' },
-      { key: 'sales_follow_up:ur', label: 'sales_follow_up (ur)', name: 'sales_follow_up', lang: 'ur', usesName: true, body: 'السلام علیکم {{1}}' },
+      { key: 'sales_follow_up:en', label: 'Follow-up (English)', name: 'sales_follow_up', lang: 'en', usesName: true, body: 'Hi {{1}}, following up from Solvexo.', reason: 'other' },
+      { key: 'sales_follow_up:ur', label: 'sales_follow_up (ur)', name: 'sales_follow_up', lang: 'ur', usesName: true, body: 'السلام علیکم {{1}}', reason: 'other' },
     ]);
     // One lookup per template name, however many languages are picked.
     expect(calls.slice(before).filter((c) => c.url.includes('/70002/message_templates?name=sales_follow_up'))).toHaveLength(1);
@@ -440,6 +446,59 @@ describe('SalesWhatsAppService', () => {
 
     expect((await wa.saveTemplates([])).data.templates).toEqual([]);
     await expect(wa.sendTemplate(SUPER, id)).rejects.toThrow('Add an approved template');
+  });
+
+  it("holds a rep to the messaging level and templates a manager set; managers are never limited", async () => {
+    const { wa, sales, access, conversations, leads, settings, calls, email, templates } = setup();
+    await wa.connect({ phoneNumberId: NUMBER, accessToken: 'tok-1234567890' });
+    await wa.onWebhook(inbound('wamid.1', 'Hi'));
+    await flush();
+    const id = String(conversations.rows[0]._id);
+    leads.rows[0].ownerAdminId = REP.adminId;
+    leads.rows[0].email = 'sara@example.com';
+    settings.rows[0].waTemplates = [
+      { key: 'follow:en', label: 'Follow-up', name: 'follow', lang: 'en', usesName: false, body: 'Hello', reason: 'follow_up' },
+      { key: 'pay:en', label: 'Payment', name: 'pay', lang: 'en', usesName: false, body: 'Pay', reason: 'payment_reminder' },
+    ];
+
+    // No saved rules: as before, own text and every template.
+    expect((await wa.getConversation(REP, id)).data).toMatchObject({ canWriteText: true, templates: [{ key: 'follow:en' }, { key: 'pay:en' }] });
+
+    await access.save(REP.adminId, { whatsapp: 'templates', waTemplateKeys: ['follow:en'], email: 'templates', emailTemplateIds: [] });
+    const conv = (await wa.getConversation(REP, id)).data;
+    expect(conv.canWriteText).toBe(false);
+    expect(conv.templates.map((t: any) => [t.key, t.reason])).toEqual([['follow:en', 'follow_up']]);
+    await expect(wa.send(REP, id, 'my own text')).rejects.toThrow('only send approved WhatsApp templates');
+    await expect(wa.sendTemplate(REP, id, 'pay:en')).rejects.toThrow('not allowed to send this template');
+    await wa.sendTemplate(REP, id, 'follow:en');
+    expect(calls.at(-1)!.body).toMatchObject({ template: { name: 'follow' } });
+    // Without a key, the first template the rep may use.
+    await wa.sendTemplate(REP, id);
+    expect(calls.at(-1)!.body).toMatchObject({ template: { name: 'follow' } });
+    // A manager is never limited.
+    await wa.send(SUPER, id, 'manager reply');
+
+    // Email: templates only, and only the allowed ones; the template is sent as saved.
+    const list = (await sales.listTemplates({ adminId: REP.adminId, canSeeAll: false })).data;
+    expect(list).toEqual([]);
+    const all = (await sales.listTemplates()).data;
+    await access.save(REP.adminId, { emailTemplateIds: [all[0]._id] });
+    expect((await sales.listTemplates({ adminId: REP.adminId, canSeeAll: false })).data.map((t: any) => t._id)).toEqual([all[0]._id]);
+    const leadId = String(leads.rows[0]._id);
+    await expect(sales.sendEmail(REP, leadId, 'Hi', 'my words')).rejects.toThrow('only send approved email templates');
+    await expect(sales.sendEmail(REP, leadId, 'x', 'y', all[1]._id)).rejects.toThrow('not allowed to send this email template');
+    await sales.sendEmail(REP, leadId, 'edited subject', 'edited body', all[0]._id);
+    const sent = (email.sendMail as jest.Mock).mock.calls.at(-1) as any[];
+    expect(sent[1]).not.toBe('edited subject');
+    expect(sent[1]).toContain(String(templates.rows.find((t: any) => String(t._id) === all[0]._id).subject).slice(0, 5));
+
+    // Off: nothing at all on that channel.
+    await access.save(REP.adminId, { whatsapp: 'off', email: 'off' });
+    expect((await wa.getConversation(REP, id)).data.templates).toEqual([]);
+    await expect(wa.sendTemplate(REP, id, 'follow:en')).rejects.toThrow('not allowed to send WhatsApp');
+    await expect(wa.openForLead(REP, leadId)).rejects.toThrow('not allowed to send WhatsApp');
+    await expect(sales.sendEmail(REP, leadId, 'x', 'y', all[0]._id)).rejects.toThrow('not allowed to send email');
+    await expect(access.save(REP.adminId, { whatsapp: 'sometimes' as any })).rejects.toThrow('Choose off, templates or full');
   });
 
   it('shows a rep only conversations with their own leads, and reports a refused send', async () => {

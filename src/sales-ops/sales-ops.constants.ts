@@ -62,3 +62,12 @@ export const ACTIVITY_TYPES = [
   'system',
 ] as const;
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];
+
+/** Why a template is sent; reps pick a reason first, then a template. */
+export const MESSAGE_REASONS = ['follow_up', 'demo_reminder', 'payment_reminder', 'onboarding', 'win_back', 'other'] as const;
+export type MessageReason = (typeof MESSAGE_REASONS)[number];
+export const MESSAGE_REASON_LABELS: Record<MessageReason, string> = {
+  follow_up: 'Follow-up', demo_reminder: 'Demo reminder', payment_reminder: 'Payment reminder',
+  onboarding: 'Onboarding', win_back: 'Win-back', other: 'Other',
+};
+export const asReason = (v: unknown): MessageReason => ((MESSAGE_REASONS as readonly string[]).includes(String(v)) ? (v as MessageReason) : 'other');
