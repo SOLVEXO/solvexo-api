@@ -434,6 +434,7 @@ export class WaConnectDto {
   @OptStr(100) templateName?: string | null;
   @IsOptional() @IsString() @MaxLength(10) templateLang?: string;
   @IsOptional() @IsBoolean() templateUsesName?: boolean;
+  @OptStr(30) wabaId?: string | null;
 }
 
 export class WaSendDto {

@@ -52,6 +52,8 @@ export interface WaConnectInput {
   templateName?: string | null;
   templateLang?: string;
   templateUsesName?: boolean;
+  /** Optional: the WhatsApp Business Account the number belongs to. Found from the token when left empty. */
+  wabaId?: string | null;
 }
 
 /**
@@ -133,24 +135,39 @@ export class SalesWhatsAppService {
         'Paste the permanent access token (System User token) from Meta.',
       );
 
+    // A phone number has no field for its WhatsApp Business Account (asking for one fails with #100), so only
+    // ask for what it has; the account is found separately below.
     const info = await this.graph(
       'GET',
-      `/${phoneNumberId}?fields=id,display_phone_number,verified_name,whatsapp_business_account`,
+      `/${phoneNumberId}?fields=id,display_phone_number,verified_name`,
       token,
     );
     if (!info.ok || info.data?.id !== phoneNumberId)
       throw new BadRequestException(
         `Meta did not accept this number and token: ${info.error ?? 'check both and try again'}.`,
       );
-    const wabaId: string | null =
-      info.data?.whatsapp_business_account?.id ?? null;
-    if (wabaId) {
-      const sub = await this.graph('POST', `/${wabaId}/subscribed_apps`, token);
-      if (!sub.ok)
-        this.logger.warn(
-          `Could not subscribe the app to WABA ${wabaId}: ${sub.error}`,
-        );
-    }
+    const givenWaba = input.wabaId?.trim() || null;
+    if (givenWaba && !/^\d{5,30}$/.test(givenWaba))
+      throw new BadRequestException(
+        'The WhatsApp Business Account ID is digits only.',
+      );
+    const wabaId = await this.findWabaId(
+      phoneNumberId,
+      token,
+      givenWaba ?? (s.waPhoneNumberId === phoneNumberId ? s.waWabaId : null),
+    );
+    if (!wabaId)
+      throw new BadRequestException(
+        givenWaba
+          ? `WhatsApp Business Account ${givenWaba} has no number with ID ${phoneNumberId} that this token can see. Check both IDs, and that the system user has full control of that WhatsApp account.`
+          : 'Could not find which WhatsApp Business Account this number belongs to. Enter the WhatsApp Business Account ID (Business settings → Accounts → WhatsApp accounts) and try again.',
+      );
+    // Without this subscription Meta sends the number's messages to no app, so a failure stops the connect.
+    const sub = await this.graph('POST', `/${wabaId}/subscribed_apps`, token);
+    if (!sub.ok)
+      throw new BadRequestException(
+        `Meta did not let the app receive this number's messages: ${sub.error}. Check that the system user has full control of the WhatsApp account and the app.`,
+      );
     const lang =
       (input.templateLang ?? s.waTemplateLang ?? 'en').trim().slice(0, 10) ||
       'en';
@@ -692,6 +709,28 @@ export class SalesWhatsAppService {
       phoneNumberId: s.waPhoneNumberId as string,
       token: decryptCredential(s.waAccessTokenEnc, 'INTEGRATIONS'),
     };
+  }
+
+  /**
+   * The WhatsApp Business Account that owns the number. Candidates are an ID the admin typed (or the one saved
+   * before), then the accounts the token was granted (debug_token's granular scopes); the first one whose
+   * phone_numbers include this number wins. Null when none can be confirmed.
+   */
+  private async findWabaId(phoneNumberId: string, token: string, hint: string | null): Promise<string | null> {
+    const owns = async (waba: string) => {
+      const r = await this.graph('GET', `/${waba}/phone_numbers?fields=id&limit=100`, token);
+      return r.ok && Array.isArray(r.data?.data) && r.data.data.some((n: any) => String(n?.id) === phoneNumberId);
+    };
+    if (hint) return (await owns(hint)) ? hint : null;
+    const dbg = await this.graph('GET', `/debug_token?input_token=${encodeURIComponent(token)}`, token);
+    const scopes: any[] = Array.isArray(dbg.data?.data?.granular_scopes) ? dbg.data.data.granular_scopes : [];
+    const ids = [...new Set(scopes
+      .filter((x) => x?.scope === 'whatsapp_business_management' || x?.scope === 'whatsapp_business_messaging')
+      .flatMap((x) => (Array.isArray(x?.target_ids) ? x.target_ids.map(String) : [])))]
+      .filter((id) => /^\d{5,30}$/.test(id))
+      .slice(0, 20);
+    for (const id of ids) if (await owns(id)) return id;
+    return null;
   }
 
   private async graph(
