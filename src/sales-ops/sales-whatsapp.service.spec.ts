@@ -388,6 +388,60 @@ describe('SalesWhatsAppService', () => {
     });
   });
 
+  it('saves several templates after Meta confirms each, and a rep sends the one they pick', async () => {
+    const { wa, conversations, settings, calls, setReply } = setup();
+    await wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: '70002' });
+    await wa.onWebhook(inbound('wamid.1', 'Hi'));
+    await flush();
+    const id = String(conversations.rows[0]._id);
+    const meta: Record<string, any[]> = {
+      sales_follow_up: [
+        { name: 'sales_follow_up', language: 'en', status: 'APPROVED', components: [{ type: 'BODY', text: 'Hi {{1}}, following up from Solvexo.' }] },
+        { name: 'sales_follow_up', language: 'ur', status: 'APPROVED', components: [{ type: 'BODY', text: 'السلام علیکم {{1}}' }] },
+      ],
+      demo_reminder: [{ name: 'demo_reminder', language: 'en', status: 'PENDING', components: [{ type: 'BODY', text: 'Your demo is tomorrow.' }] }],
+      order_update: [{ name: 'order_update', language: 'en', status: 'APPROVED', components: [{ type: 'BODY', text: 'Order {{1}} is {{2}}' }] }],
+    };
+    const base = (url: string) => url.includes('/messages') ? { json: { messages: [{ id: 'wamid.out' }] } } : { json: { id: NUMBER } };
+    setReply((url) => {
+      const m = url.match(/message_templates\?name=([a-z_]+)/);
+      return m ? { json: { data: meta[m[1]] ?? [] } } : base(url);
+    });
+
+    await expect(wa.saveTemplates([{ name: 'demo_reminder', lang: 'en' }])).rejects.toThrow('is pending; only approved templates');
+    await expect(wa.saveTemplates([{ name: 'sales_follow_up', lang: 'en_US' }])).rejects.toThrow('has no en_US version in WhatsApp Manager (it has: en, ur)');
+    await expect(wa.saveTemplates([{ name: 'nope', lang: 'en' }])).rejects.toThrow('There is no template named nope');
+    await expect(wa.saveTemplates([{ name: 'order_update', lang: 'en' }])).rejects.toThrow("can't be sent from Solvexo");
+    await expect(wa.saveTemplates([{ name: 'Sales Follow', lang: 'en' }])).rejects.toThrow('is not a template name');
+    await expect(wa.saveTemplates([{ name: 'a', lang: 'en' }, { name: 'a', lang: 'en' }])).rejects.toThrow('listed twice');
+
+    const before = calls.length;
+    const r = await wa.saveTemplates([
+      { label: 'Follow-up (English)', name: 'sales_follow_up', lang: 'en' },
+      { label: '', name: 'sales_follow_up', lang: 'ur' },
+    ]);
+    expect(r.data.templates).toEqual([
+      { key: 'sales_follow_up:en', label: 'Follow-up (English)', name: 'sales_follow_up', lang: 'en', usesName: true, body: 'Hi {{1}}, following up from Solvexo.' },
+      { key: 'sales_follow_up:ur', label: 'sales_follow_up (ur)', name: 'sales_follow_up', lang: 'ur', usesName: true, body: 'السلام علیکم {{1}}' },
+    ]);
+    // One lookup per template name, however many languages are picked.
+    expect(calls.slice(before).filter((c) => c.url.includes('/70002/message_templates?name=sales_follow_up'))).toHaveLength(1);
+    expect(settings.rows[0]).toMatchObject({ waTemplateName: 'sales_follow_up', waTemplateLang: 'en' });
+
+    const conv = (await wa.getConversation(SUPER, id)).data;
+    expect(conv.templates.map((t: any) => t.key)).toEqual(['sales_follow_up:en', 'sales_follow_up:ur']);
+    conversations.rows[0].lastInboundAt = new Date(Date.now() - 25 * 3_600_000);
+    const after = await wa.sendTemplate(SUPER, id, 'sales_follow_up:ur');
+    expect(calls.at(-1)!.body).toMatchObject({ type: 'template', template: { name: 'sales_follow_up', language: { code: 'ur' },
+      components: [{ type: 'body', parameters: [{ type: 'text', text: 'Sara' }] }] } });
+    // The chat shows what the person received.
+    expect(after.data.messages.at(-1)!.text).toBe('السلام علیکم Sara');
+    await expect(wa.sendTemplate(SUPER, id, 'gone:en')).rejects.toThrow('no longer in the list');
+
+    expect((await wa.saveTemplates([])).data.templates).toEqual([]);
+    await expect(wa.sendTemplate(SUPER, id)).rejects.toThrow('Add an approved template');
+  });
+
   it('shows a rep only conversations with their own leads, and reports a refused send', async () => {
     const { wa, conversations, leads, setReply } = setup();
     await wa.connect({ phoneNumberId: NUMBER, accessToken: 'tok-1234567890' });

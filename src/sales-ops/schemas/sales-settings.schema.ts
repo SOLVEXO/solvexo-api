@@ -48,6 +48,15 @@ export class SalesSettings {
   @Prop({ type: String, default: 'en' }) waTemplateLang: string;
   /** The template's body has {{1}} for the person's first name. */
   @Prop({ type: Boolean, default: false }) waTemplateUsesName: boolean;
+  /**
+   * Approved templates a rep can pick from (max 20), each checked with Meta when saved. When empty, the single
+   * template above (saved before lists existed) is used.
+   */
+  @Prop({
+    type: [{ _id: false, key: String, label: String, name: String, lang: String, usesName: Boolean, body: { type: String, default: null } }],
+    default: [],
+  })
+  waTemplates: { key: string; label: string; name: string; lang: string; usesName: boolean; body: string | null }[];
   @Prop({ type: Date, default: null }) waConnectedAt: Date | null;
   @Prop({ type: Date, default: null }) waLastEventAt: Date | null;
 

@@ -137,3 +137,57 @@ export function nextStatus(current: string, incoming: string): string {
   if (current === 'failed') return current;
   return (RANK[incoming] ?? 0) > (RANK[current] ?? 0) ? incoming : current;
 }
+
+// ── Approved templates (restart a chat after the 24-hour window) ────────────
+
+export interface WaTemplate {
+  /** `name:lang`, unique in the list. */
+  key: string;
+  label: string;
+  name: string;
+  lang: string;
+  /** The body has {{1}}, filled with the person's first name. */
+  usesName: boolean;
+  /** The approved body text, for the picker's preview. */
+  body: string | null;
+}
+
+export const MAX_WA_TEMPLATES = 20;
+export const WA_TEMPLATE_NAME_RE = /^[a-z0-9_]{1,512}$/;
+export const WA_TEMPLATE_LANG_RE = /^[a-z]{2,3}(_[A-Z]{2})?$/;
+export const waTemplateKey = (name: string, lang: string) => `${name}:${lang}`;
+
+/** The saved list, or the one template saved before lists existed. */
+export function templatesOf(s: any): WaTemplate[] {
+  if (Array.isArray(s?.waTemplates) && s.waTemplates.length) return s.waTemplates;
+  if (!s?.waTemplateName) return [];
+  const lang = s.waTemplateLang || 'en';
+  return [{ key: waTemplateKey(s.waTemplateName, lang), label: s.waTemplateName, name: s.waTemplateName, lang, usesName: !!s.waTemplateUsesName, body: null }];
+}
+
+/**
+ * Whether Solvexo can send this Meta template as it is: it fills only {{1}} in the body (the person's first name),
+ * so a template needing anything else (other body variables, a header variable or media, a button parameter)
+ * would be refused by Meta at send time. Returns the body text and whether it uses {{1}}, or the problem.
+ */
+export function checkMetaTemplate(components: any[]): { ok: true; body: string; usesName: boolean } | { ok: false; problem: string } {
+  const list = Array.isArray(components) ? components : [];
+  const vars = (t: unknown) => [...String(t ?? '').matchAll(/\{\{\s*([^}]+?)\s*\}\}/g)].map((m) => m[1]);
+  const header = list.find((c) => String(c?.type).toUpperCase() === 'HEADER');
+  if (header) {
+    const format = String(header.format ?? 'TEXT').toUpperCase();
+    if (format !== 'TEXT') return { ok: false, problem: `its header is ${format.toLowerCase()}, which needs a file for every send` };
+    if (vars(header.text).length) return { ok: false, problem: 'its header has a variable' };
+  }
+  const bodyC = list.find((c) => String(c?.type).toUpperCase() === 'BODY');
+  const body = String(bodyC?.text ?? '');
+  const bodyVars = [...new Set(vars(body))];
+  if (bodyVars.some((v) => v !== '1'))
+    return { ok: false, problem: `its body uses ${bodyVars.map((v) => `{{${v}}}`).join(', ')}; Solvexo fills only {{1}} (the first name)` };
+  for (const b of list.find((c) => String(c?.type).toUpperCase() === 'BUTTONS')?.buttons ?? []) {
+    const type = String(b?.type ?? '').toUpperCase();
+    if (!['QUICK_REPLY', 'URL', 'PHONE_NUMBER'].includes(type)) return { ok: false, problem: `it has a ${type.toLowerCase().replace(/_/g, ' ')} button` };
+    if (type === 'URL' && vars(b?.url).length) return { ok: false, problem: 'a button link has a variable' };
+  }
+  return { ok: true, body: body.slice(0, 1024), usesName: bodyVars.includes('1') };
+}
