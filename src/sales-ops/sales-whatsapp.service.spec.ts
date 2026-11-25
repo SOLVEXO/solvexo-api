@@ -94,14 +94,25 @@ function setup() {
       ? { json: { messages: [{ id: `wamid.out${calls.length}` }] } }
       : url.includes('subscribed_apps')
         ? { json: { success: true } }
-        : {
-            json: {
-              id: NUMBER,
-              display_phone_number: '+92 300 0000000',
-              verified_name: 'Solvexo',
-              whatsapp_business_account: { id: 'waba1' },
-            },
-          };
+        : url.includes('/debug_token')
+          ? { json: { data: { granular_scopes: [
+              { scope: 'whatsapp_business_messaging', target_ids: ['70001', '70002'] },
+              { scope: 'whatsapp_business_management', target_ids: ['70002'] },
+            ] } } }
+          : url.includes('/70001/phone_numbers')
+            ? { json: { data: [{ id: '5550001' }] } }
+            : url.includes('/70002/phone_numbers')
+              ? { json: { data: [{ id: NUMBER }] } }
+              : url.includes('whatsapp_business_account')
+                // Real Meta: a phone number has no such field.
+                ? { status: 400, json: { error: { code: 100, message: '(#100) Tried accessing nonexisting field (whatsapp_business_account)' } } }
+                : {
+                    json: {
+                      id: NUMBER,
+                      display_phone_number: '+92 300 0000000',
+                      verified_name: 'Solvexo',
+                    },
+                  };
   wa.fetchImpl = (async (url: any, init: any) => {
     calls.push({
       url: String(url),
@@ -181,16 +192,49 @@ describe('SalesWhatsAppService', () => {
     expect(r.data).toMatchObject({
       connected: true,
       displayNumber: '+92 300 0000000',
-      wabaId: 'waba1',
+      wabaId: '70002',
       templateName: 'sales_followup',
       webhookUrl: expect.stringContaining('/webhooks/whatsapp'),
     });
     expect(r.data.tokenHint).not.toContain('secret');
     expect(settings.rows[0].waAccessTokenEnc).not.toContain('EAAG');
+    // Finds the account that owns the number among the ones the token was granted, then subscribes the app to it.
     expect(calls.map((c) => c.url)).toEqual([
-      expect.stringContaining(`/${NUMBER}?fields=`),
-      expect.stringContaining('/waba1/subscribed_apps'),
+      expect.stringContaining(`/${NUMBER}?fields=id,display_phone_number,verified_name`),
+      expect.stringContaining('/debug_token?input_token='),
+      expect.stringContaining('/70001/phone_numbers'),
+      expect.stringContaining('/70002/phone_numbers'),
+      expect.stringContaining('/70002/subscribed_apps'),
     ]);
+    expect(calls[0].url).not.toContain('whatsapp_business_account');
+  });
+
+  it('uses a WhatsApp Business Account ID the admin types, and refuses one that does not own the number', async () => {
+    const { wa, calls } = setup();
+    const r = await wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: ' 70002 ' });
+    expect(r.data.wabaId).toBe('70002');
+    expect(calls.some((c) => c.url.includes('/debug_token'))).toBe(false);
+    await expect(wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: '70001' }))
+      .rejects.toThrow('has no number with ID');
+    await expect(wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: 'abc' }))
+      .rejects.toThrow('digits only');
+  });
+
+  it('asks for the account ID when the token does not reveal it, and stops when Meta refuses the subscription', async () => {
+    const { wa, settings, setReply } = setup();
+    setReply((url) => url.includes('/debug_token')
+      ? { status: 400, json: { error: { message: 'Not allowed' } } }
+      : { json: { id: NUMBER, display_phone_number: '+92 300 0000000', verified_name: 'Solvexo' } });
+    await expect(wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890' }))
+      .rejects.toThrow('Enter the WhatsApp Business Account ID');
+    setReply((url) => url.includes('subscribed_apps')
+      ? { status: 403, json: { error: { message: 'Permissions error' } } }
+      : url.includes('/phone_numbers')
+        ? { json: { data: [{ id: NUMBER }] } }
+        : { json: { id: NUMBER, display_phone_number: '+92 300 0000000', verified_name: 'Solvexo' } });
+    await expect(wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: '70002' }))
+      .rejects.toThrow("Meta did not let the app receive this number's messages: Permissions error");
+    expect(settings.rows[0]?.waAccessTokenEnc ?? null).toBeNull();
   });
 
   it('turns an incoming message into a conversation and a lead, once, with an AI draft for a person to send', async () => {
