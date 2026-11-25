@@ -437,6 +437,21 @@ export class WaConnectDto {
   @OptStr(30) wabaId?: string | null;
 }
 
+export class WaTemplateItemDto {
+  @OptStr(60) label?: string;
+  @IsString() @MaxLength(512) name: string;
+  @IsString() @MaxLength(10) lang: string;
+}
+
+export class WaTemplatesDto {
+  @IsArray() @ArrayMaxSize(20) @ValidateNested({ each: true }) @Type(() => WaTemplateItemDto)
+  templates: WaTemplateItemDto[];
+}
+
+export class WaSendTemplateDto {
+  @OptStr(600) key?: string;
+}
+
 export class WaSendDto {
   @IsString() @MaxLength(4000) text: string;
   @IsOptional() @IsBoolean() fromAiDraft?: boolean;

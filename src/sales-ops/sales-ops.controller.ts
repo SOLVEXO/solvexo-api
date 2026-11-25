@@ -38,6 +38,8 @@ import {
   BrevoConnectDto,
   ConsentRequestsDto,
   WaConnectDto,
+  WaTemplatesDto,
+  WaSendTemplateDto,
   WaListDto,
   WaSendDto,
   AgentPreviewDto,
@@ -175,6 +177,14 @@ export class SalesOpsController {
     return this.whatsapp.connect(dto);
   }
 
+  /** The approved templates reps can pick from; each is checked with Meta. */
+  @RequirePermission('sales.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Put('whatsapp/templates')
+  waTemplates(@Body() dto: WaTemplatesDto) {
+    return this.whatsapp.saveTemplates(dto.templates);
+  }
+
   @RequirePermission('sales.manage')
   @Delete('whatsapp/connection')
   waDisconnect() {
@@ -207,8 +217,8 @@ export class SalesOpsController {
 
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('whatsapp/conversations/:id/template')
-  waTemplate(@Req() req: any, @Param('id') id: string) {
-    return this.whatsapp.sendTemplate(salesActor(req.user), id);
+  waTemplate(@Req() req: any, @Param('id') id: string, @Body() dto: WaSendTemplateDto) {
+    return this.whatsapp.sendTemplate(salesActor(req.user), id, dto?.key ?? null);
   }
 
   @Throttle({ default: { limit: 10, ttl: 60_000 } })

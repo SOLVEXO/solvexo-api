@@ -40,6 +40,13 @@ import {
   parseWebhook,
   toWaId,
   windowOpen,
+  MAX_WA_TEMPLATES,
+  WA_TEMPLATE_LANG_RE,
+  WA_TEMPLATE_NAME_RE,
+  checkMetaTemplate,
+  templatesOf,
+  waTemplateKey,
+  type WaTemplate,
 } from './sales-whatsapp.util';
 
 const GRAPH = 'https://graph.facebook.com/v21.0';
@@ -111,6 +118,7 @@ export class SalesWhatsAppService {
         templateName: s.waTemplateName ?? null,
         templateLang: s.waTemplateLang || 'en',
         templateUsesName: !!s.waTemplateUsesName,
+        templates: templatesOf(s),
         connectedAt: s.waConnectedAt ?? null,
         lastEventAt: s.waLastEventAt ?? null,
         webhookUrl: `${API_PUBLIC_ORIGIN}/webhooks/whatsapp`,
@@ -420,9 +428,9 @@ export class SalesWhatsAppService {
           ? new Date(new Date(c.lastInboundAt).getTime() + 24 * 3_600_000)
           : null,
         aiDraft: c.aiDraft ?? null,
-        template: s.waTemplateName
-          ? { name: s.waTemplateName, lang: s.waTemplateLang || 'en' }
-          : null,
+        // The first one stays as `template` for older screens.
+        template: templatesOf(s)[0] ? { name: templatesOf(s)[0].name, lang: templatesOf(s)[0].lang } : null,
+        templates: templatesOf(s).map((t) => ({ key: t.key, label: t.label, name: t.name, lang: t.lang, body: t.body })),
         messages: msgs
           .reverse()
           .map((x) => ({
@@ -470,13 +478,72 @@ export class SalesWhatsAppService {
   }
 
   /** Restart a chat outside the 24-hour window with the approved template. */
-  async sendTemplate(actor: SalesActor, id: string) {
+  /**
+   * Replaces the list of templates reps can pick from. Each one is looked up in Meta (the number's WhatsApp
+   * Business Account): it must exist in that language, be approved, and need nothing but {{1}} (the first name),
+   * or Meta would refuse it at send time. Its approved body is kept for the picker's preview.
+   */
+  async saveTemplates(input: { label?: string; name: string; lang: string }[]) {
+    const s = await this.load();
+    if (!Array.isArray(input) || input.length > MAX_WA_TEMPLATES)
+      throw new BadRequestException(`Up to ${MAX_WA_TEMPLATES} templates.`);
+    const rows = input.map((t) => ({ label: String(t?.label ?? '').trim().slice(0, 60), name: String(t?.name ?? '').trim(), lang: String(t?.lang ?? '').trim() }));
+    const seen = new Set<string>();
+    for (const r of rows) {
+      if (!WA_TEMPLATE_NAME_RE.test(r.name))
+        throw new BadRequestException(`"${r.name}" is not a template name: use the exact name from WhatsApp Manager (lowercase letters, numbers and _).`);
+      if (!WA_TEMPLATE_LANG_RE.test(r.lang))
+        throw new BadRequestException(`"${r.lang}" is not a language code: use the code Meta shows, e.g. en, en_US, ur.`);
+      const key = waTemplateKey(r.name, r.lang);
+      if (seen.has(key)) throw new BadRequestException(`${r.name} (${r.lang}) is listed twice.`);
+      seen.add(key);
+    }
+    let saved: WaTemplate[] = [];
+    if (rows.length) {
+      if (!s.waWabaId || !s.waAccessTokenEnc)
+        throw new BadRequestException('Connect Solvexo’s WhatsApp number first.');
+      const { token } = await this.credentials();
+      const byName = new Map<string, any[]>();
+      for (const name of new Set(rows.map((r) => r.name))) {
+        const r = await this.graph('GET', `/${s.waWabaId}/message_templates?name=${encodeURIComponent(name)}&fields=name,language,status,components&limit=100`, token);
+        if (!r.ok) throw new BadRequestException(`Meta did not list the templates: ${r.error}.`);
+        byName.set(name, (Array.isArray(r.data?.data) ? r.data.data : []).filter((t: any) => t?.name === name));
+      }
+      saved = rows.map((r) => {
+        const found = byName.get(r.name) ?? [];
+        const t = found.find((x: any) => x?.language === r.lang);
+        if (!t)
+          throw new BadRequestException(found.length
+            ? `Template ${r.name} has no ${r.lang} version in WhatsApp Manager (it has: ${found.map((x: any) => x.language).join(', ')}).`
+            : `There is no template named ${r.name} in this WhatsApp account.`);
+        if (String(t.status).toUpperCase() !== 'APPROVED')
+          throw new BadRequestException(`Template ${r.name} (${r.lang}) is ${String(t.status ?? 'not approved').toLowerCase()}; only approved templates can be sent.`);
+        const c = checkMetaTemplate(t.components);
+        if (!c.ok) throw new BadRequestException(`Template ${r.name} (${r.lang}) can't be sent from Solvexo: ${c.problem}.`);
+        return { key: waTemplateKey(r.name, r.lang), label: r.label || `${r.name} (${r.lang})`, name: r.name, lang: r.lang, usesName: c.usesName, body: c.body || null };
+      });
+    }
+    const first = saved[0];
+    await this.settings.updateOne(
+      { key: 'default' },
+      // The single-template fields follow the first entry, so anything still reading them stays right.
+      { $set: { waTemplates: saved, waTemplateName: first?.name ?? null, waTemplateLang: first?.lang ?? 'en', waTemplateUsesName: !!first?.usesName } },
+      { upsert: true },
+    );
+    return this.getConnection();
+  }
+
+  /** Sends one of the approved templates (the first when no key is given), with {{1}} = the person's first name. */
+  async sendTemplate(actor: SalesActor, id: string, key?: string | null) {
     const c = await this.mustFind(actor, id);
     const s = await this.load();
-    if (!s.waTemplateName)
+    const list = templatesOf(s);
+    if (!list.length)
       throw new BadRequestException(
-        'Set the name of your approved template in Sales Ops → WhatsApp first.',
+        'Add an approved template in Sales Ops → WhatsApp → Templates first.',
       );
+    const t = key ? list.find((x) => x.key === key) : list[0];
+    if (!t) throw new BadRequestException('That template is no longer in the list. Pick another one.');
     const { token, phoneNumberId } = await this.credentials();
     const lead: any = c.leadId
       ? await this.leads.findById(c.leadId).select('name').lean()
@@ -490,9 +557,9 @@ export class SalesWhatsAppService {
       to: c.waId,
       type: 'template',
       template: {
-        name: s.waTemplateName,
-        language: { code: s.waTemplateLang || 'en' },
-        ...(s.waTemplateUsesName
+        name: t.name,
+        language: { code: t.lang },
+        ...(t.usesName
           ? {
               components: [
                 {
@@ -506,7 +573,8 @@ export class SalesWhatsAppService {
     });
     await this.record(actor, c, {
       type: 'template',
-      text: `[Template: ${s.waTemplateName}]`,
+      // What the person actually received, when the approved body is known.
+      text: t.body ? t.body.replace(/\{\{\s*1\s*\}\}/g, firstName) : `[Template: ${t.name}]`,
       fromAiDraft: false,
       result: r,
     });

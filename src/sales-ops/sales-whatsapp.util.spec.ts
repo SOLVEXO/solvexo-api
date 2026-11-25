@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
 import {
+  checkMetaTemplate,
+  templatesOf,
   nextStatus,
   parseWebhook,
   toWaId,
@@ -122,5 +124,30 @@ describe('WhatsApp webhook parsing', () => {
       nextStatus('read', 'failed'),
       nextStatus('failed', 'read'),
     ]).toEqual(['read', 'read', 'failed', 'failed']);
+  });
+});
+
+describe('WhatsApp templates Solvexo can send', () => {
+  const body = (text: string) => ({ type: 'BODY', text });
+  it('accepts a plain body, or one with {{1}} for the first name, with fixed buttons', () => {
+    expect(checkMetaTemplate([body('Hello from Solvexo')])).toEqual({ ok: true, body: 'Hello from Solvexo', usesName: false });
+    expect(checkMetaTemplate([{ type: 'HEADER', format: 'TEXT', text: 'Solvexo' }, body('Hi {{1}}, a quick follow-up'),
+      { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Book a demo' }, { type: 'URL', url: 'https://www.solvexo.store/book-demo' }] }]))
+      .toEqual({ ok: true, body: 'Hi {{1}}, a quick follow-up', usesName: true });
+  });
+  it('refuses what Solvexo cannot fill: more variables, named ones, header media or variables, button parameters', () => {
+    expect(checkMetaTemplate([body('Hi {{1}}, your order {{2}}')])).toMatchObject({ ok: false, problem: expect.stringContaining('{{1}}, {{2}}') });
+    expect(checkMetaTemplate([body('Hi {{first_name}}')])).toMatchObject({ ok: false });
+    expect(checkMetaTemplate([{ type: 'HEADER', format: 'IMAGE' }, body('Hi')])).toMatchObject({ ok: false, problem: expect.stringContaining('image') });
+    expect(checkMetaTemplate([{ type: 'HEADER', format: 'TEXT', text: 'Hi {{1}}' }, body('Hi')])).toMatchObject({ ok: false, problem: 'its header has a variable' });
+    expect(checkMetaTemplate([body('Hi'), { type: 'BUTTONS', buttons: [{ type: 'URL', url: 'https://x.pk/{{1}}' }] }])).toMatchObject({ ok: false });
+    expect(checkMetaTemplate([body('Hi'), { type: 'BUTTONS', buttons: [{ type: 'COPY_CODE' }] }])).toMatchObject({ ok: false, problem: 'it has a copy code button' });
+  });
+  it('reads the list, or the single template saved before lists existed', () => {
+    expect(templatesOf({})).toEqual([]);
+    expect(templatesOf({ waTemplateName: 'sales_followup', waTemplateLang: 'ur', waTemplateUsesName: true }))
+      .toEqual([{ key: 'sales_followup:ur', label: 'sales_followup', name: 'sales_followup', lang: 'ur', usesName: true, body: null }]);
+    const list = [{ key: 'a:en', label: 'A', name: 'a', lang: 'en', usesName: false, body: 'x' }];
+    expect(templatesOf({ waTemplates: list, waTemplateName: 'old' })).toBe(list);
   });
 });
