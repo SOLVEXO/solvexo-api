@@ -11,6 +11,30 @@
 export type PosTier = 'owner' | 'manager-with-limit' | 'cashier' | 'public';
 
 export const POS_ROUTE_TIERS: Readonly<Record<string, PosTier>> = {
+  'POST /api/pos/store/settings/:storeId/receipt-logo': 'owner', // G5.6: receipt logo upload (content-checked, resized, audited)
+  'POST /api/pos/store/settings/:storeId/receipt-logo/remove': 'owner',
+  'POST /api/pos/permissions/:storeId/preset': 'owner', // G5.6: apply a role preset (proposed presets; preview first; audited; version-guarded)
+  'GET /api/pos/connectors/:storeId': 'cashier',
+  'GET /api/pos/fiscal/:storeId/issues': 'manager-with-limit', // G6.1: fiscal documents that need attention
+  'POST /api/pos/fiscal/:storeId/retry': 'owner',
+  'GET /api/pos/capabilities': 'public', // G6.2: static feature list for the till's detection (no data)
+  // G5.7: store API keys — managed by the owner only; the secret shown once, hashed, expiring, revocable
+  'GET /api/pos/api-keys/:storeId': 'owner',
+  'POST /api/pos/api-keys/:storeId': 'owner',
+  'POST /api/pos/api-keys/:storeId/:keyId/revoke': 'owner',
+  // G5.7: the read-only external API — no PIN session: a store API key (X-Api-Key, scoped, rate-limited per key, every use audited); never cost data
+  'GET /api/pos/ext/v1/sales': 'public',
+  'GET /api/pos/ext/v1/inventory': 'public',
+  'GET /api/pos/ext/v1/accounting-export': 'public',
+  'GET /api/pos/reports/accounting-export/:storeId': 'manager-with-limit', // G5.7: accounting CSV (cost columns obey hide-costs; audited) // G5.4/G5.7: provider-dependent feature switches + provider status (read-only; switches change via owner store settings)
+  'POST /api/pos/receipt-delivery/:storeId/:saleId': 'cashier', // G5.3: the public link by e-mail / SMS (flags off by default; consent; rate-limited)
+  // G5.2: the product page (cost stripped for managers when hidden) and editing an existing product
+  'GET /api/pos/catalog-admin/products/:storeId/:productId': 'cashier',
+  'PATCH /api/pos/catalog-admin/products/:storeId/:productId': 'manager-with-limit',
+  'PATCH /api/pos/catalog-admin/products/:storeId/:productId/variants/:variantId': 'manager-with-limit',
+  'POST /api/pos/catalog-admin/products/:storeId/:productId/images': 'manager-with-limit',
+  'POST /api/pos/catalog-admin/products/:storeId/:productId/images/remove': 'manager-with-limit',
+  'POST /api/pos/catalog-admin/products/:storeId/:productId/images/primary': 'manager-with-limit',
   'POST /api/pos/employees/:storeId/:employeeId/unlock-pin': 'owner', // from main: the owner unlocks a locked-out PIN (owner session only)
   // public receipt links: no auth by design — trust is the unguessable token / client key; rate-limited, one 404 for anything unknown
   'GET /r/:token': 'public',

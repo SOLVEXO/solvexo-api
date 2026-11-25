@@ -79,10 +79,17 @@ describe('two instances, one database: payments jobs', () => {
     const intent: any = await x.intents.findById(v.id).lean();
     const stale = (await x.leases.tryAcquire(`payments:apply:${v.id}`, 150))!;      // instance A takes the lease … and stalls
     expect(await b.leases.tryAcquire(`payments:apply:${v.id}`, 5000)).toBeNull();
-    await sleep(300);                                                                  // … its lease expires; B takes over and finishes the job
-    const out = { providerEventId: 'late-1', providerRef: intent.providerRef, kind: 'confirmed' as const, amountMinor: 150000, occurredAt: new Date() };
-    expect((await b.core.applyOutcome(intent, out, 'webhook')).wrote).toBe('confirmed');
-    expect(await x.leases.renew(stale)).toBe(false);                                  // A finds out it lost the lease …
+    // … its lease expires (G6.4: time moves forward on the lease clock instead of a real sleep, so CI load cannot change the outcome);
+    // B takes over and finishes the job
+    const later = new Date(Date.now() + 60_000);
+    for (const l of [x.leases, b.leases]) l.clock = () => later;
+    try {
+      const out = { providerEventId: 'late-1', providerRef: intent.providerRef, kind: 'confirmed' as const, amountMinor: 150000, occurredAt: new Date() };
+      expect((await b.core.applyOutcome(intent, out, 'webhook')).wrote).toBe('confirmed');
+      expect(await x.leases.renew(stale)).toBe(false);                                // A finds out it lost the lease …
+    } finally {
+      for (const l of [x.leases, b.leases]) l.clock = null;
+    }
     // … but even if A now writes its (stale) result directly, bypassing every lease, the database refuses the duplicate
     await expect(x.events.collection.insertOne({ intentId: v.id, storeId: x.s.storeId, seq: 99, type: 'confirmed', onceKey: `${v.id}:confirmed`, source: 'poll', at: new Date() })).rejects.toMatchObject({ code: 11000 });
     const dup = await x.core.appendEvent(intent, 'confirmed', { source: 'poll' });

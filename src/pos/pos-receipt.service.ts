@@ -1,12 +1,14 @@
 /* eslint-disable prettier/prettier */
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { PosFiscalService } from './pos-fiscal.service';
 import { randomBytes } from 'crypto';
 import { DatabaseService } from '@/database/databaseservice';
-import { API_PUBLIC_ORIGIN } from '@/common/api-origin';
+import { RECEIPT_PUBLIC_ORIGIN } from '@/common/api-origin';
 import { PosService } from './pos.service';
 
 const esc = (v: unknown): string => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 import { CLIENT_KEY, CLIENT_LINK_WINDOW_MS, PUBLIC_SLUG } from './pos-receipt-link.util';
+import { receiptLinkDays } from './pos-store-settings.service';
 export { SYNCING_PAGE } from './pos-receipt-link.util';
 const METHOD_LABEL: Record<string, string> = { cash: 'Cash', card: 'Card', other: 'Bank / other', raast_qr: 'Raast' };
 
@@ -18,10 +20,10 @@ const METHOD_LABEL: Record<string, string> = { cash: 'Cash', card: 'Card', other
  */
 @Injectable()
 export class PosReceiptService {
-  constructor(private readonly db: DatabaseService, private readonly pos: PosService) {}
+  constructor(private readonly db: DatabaseService, private readonly pos: PosService, @Optional() private readonly fiscal?: PosFiscalService) {}
   private get r() { return this.db.repositories; }
 
-  linkOf(token: string) { return { path: `/r/${token}`, url: `${API_PUBLIC_ORIGIN}/r/${token}` }; }
+  linkOf(token: string) { return { path: `/r/${token}`, url: `${RECEIPT_PUBLIC_ORIGIN}/r/${token}` }; } // G5.2.0b: the web domain when RECEIPT_PUBLIC_URL is set
 
   /** The sale's receipt link — created on first use, the same link afterwards (until a manager revokes it; then a NEW one is made). */
   async getLink(sellerId: string, saleId: string) {
@@ -72,16 +74,36 @@ export class PosReceiptService {
     const m = CLIENT_KEY.exec(clientKey ?? '');
     if (!m) return null;
     const madeAt = Number(m[1]) / 1000;
-    if (!Number.isFinite(madeAt) || madeAt > now.getTime() + 86_400_000 || madeAt < now.getTime() - CLIENT_LINK_WINDOW_MS) return null;
+    if (!Number.isFinite(madeAt) || madeAt > now.getTime() + 86_400_000) return null;
     const store: any = await this.r.storeModel.findOne({ slug: storePublicId }).select('_id').lean();
     if (!store) return null;
+    // G5.3: the store's receipt-link lifetime (≥ 30 days; the return window by default) for sales made since it was set; older links keep 30 days
+    const ps: any = madeAt < now.getTime() - CLIENT_LINK_WINDOW_MS ? await this.r.posSettingsModel.findOne({ storeId: String(store._id) }).select('receiptLinkDays receiptLinkDaysSince returnApprovalAfterDays').lean() : null;
+    const since = ps?.receiptLinkDaysSince ? new Date(ps.receiptLinkDaysSince).getTime() : null;
+    const windowMs = ps && since !== null && madeAt >= since ? receiptLinkDays(ps) * 86_400_000 : CLIENT_LINK_WINDOW_MS;
+    if (madeAt < now.getTime() - windowMs) return null;
     const sale: any = await this.r.saleModel.findOne({ storeId: String(store._id), idempotencyKey: clientKey }).lean();
     if (!sale) return 'syncing';
     if (sale.status === 'held' || sale.status === 'discarded' || sale.receipt?.revokedAt) return null;
     return this.receiptHtml(sale);
   }
 
+  /**
+   * G6.1 — the public page's fiscal block from the contract (FISCAL_CONTRACT.md): the provider's display lines as given (a G5.5 row without lines
+   * shows just the number), only once confirmed. Pending / failed / rejected show nothing to the customer here.
+   */
+  static fiscalHtml(f: any, esc: (s: string) => string): string {
+    if (!f || f.status !== 'confirmed') return '';
+    const lines: Array<{ label: string; value: string }> = Array.isArray(f.displayLines) ? f.displayLines : [];
+    const body = lines.length ? lines.map((l) => `<div>${esc(String(l.label))} ${esc(String(l.value))}</div>`).join('') : f.externalInvoiceNumber ? `<div>${esc(String(f.externalInvoiceNumber))}</div>` : '';
+    return body ? `<div class="fiscal sub">${body}</div>` : '';
+  }
+
   private async receiptHtml(sale: any): Promise<string> {
+    if (sale.invoice && this.fiscal) { // G5.5: the confirmed fiscal number / QR, once there is one
+      const b = (await this.fiscal.blocks([{ type: 'invoice', id: String(sale._id) }])).get(`invoice:${sale._id}`);
+      if (b) sale = { ...sale, invoice: { ...sale.invoice, fiscal: PosFiscalService.view(sale.invoice.fiscal, b, true) } };
+    }
     const [store, settings]: any[] = await Promise.all([
       this.r.storeModel.findById(sale.storeId).select('name logo').lean(),
       this.r.posSettingsModel.findOne({ storeId: sale.storeId }).select('businessName businessAddress businessTaxId receiptHeader receiptFooter').lean(),
@@ -142,7 +164,7 @@ body{margin:0;background:#f4f1ee;font:16px/1.45 -apple-system,BlinkMacSystemFont
 <table><tr><th>Item</th><th class="r">Value excl. tax</th><th class="r">Tax</th></tr>${rows}</table>
 <table><tr><td>Subtotal</td><td class="r">${m(sale.subtotalMinor)}</td></tr>${Number(sale.discountMinor) > 0 ? `<tr><td>Discount</td><td class="r">−${m(sale.discountMinor)}</td></tr>` : ''}<tr><td>Sales tax</td><td class="r">${m(sale.taxMinor)}</td></tr><tr class="tot"><td>Total</td><td class="r">${m(sale.totalMinor)}</td></tr></table>
 <h2>Paid by</h2><table>${pays}</table>${notes}
-<!-- fiscal block (FBR invoice number, QR, logo) is reserved here: rendered only once a fiscal number exists -->${sale.invoice.fiscal?.externalInvoiceNumber ? `<div class="fiscal sub">FBR invoice no. ${esc(sale.invoice.fiscal.externalInvoiceNumber)}</div>` : ''}`;
+${PosReceiptService.fiscalHtml(sale.invoice.fiscal, esc)}`;
     return this.pageShell(`Tax invoice ${sale.invoice.number}`, name, logo, body);
   }
 
@@ -176,6 +198,11 @@ body{margin:0;background:#f4f1ee;font:16px/1.45 -apple-system,BlinkMacSystemFont
     const n = (t: string, d: string) => counts.find((c) => c._id.t === t && c._id.d === d)?.n ?? 0;
     // G4.9: `printed` = the document has been printed at least once (its original is out) — the next print is a reprint
     const p = (t: string, d: string) => (counts.find((c) => c._id.t === t && c._id.d === d)?.prints ?? 0) > 0;
+    // G5.5: the fiscal block of each document = its latest fiscal attempt (append-only `posfiscalrecords`); the stored placeholder otherwise
+    const fiscalOn = this.fiscal ? await this.fiscal.enabled(String(sale.storeId)) : false;
+    const fb = this.fiscal ? await this.fiscal.blocks([...(sale.invoice ? [{ type: 'invoice' as const, id: String(saleId) }] : []), ...creditNotes.map((c: any) => ({ type: 'credit_note' as const, id: String(c._id) }))]) : new Map();
+    if (sale.invoice) sale.invoice = { ...sale.invoice, fiscal: PosFiscalService.view(sale.invoice.fiscal, fb.get(`invoice:${saleId}`), fiscalOn) };
+    for (const c of creditNotes as any[]) c.fiscal = PosFiscalService.view(c.fiscal, fb.get(`credit_note:${c._id}`), fiscalOn);
     return {
       success: true,
       data: {

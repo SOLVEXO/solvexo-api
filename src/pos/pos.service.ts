@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { offlineLinkBaseOf } from './pos-receipt-link.util';
+import { productCoverImage } from './pos-cover-image.util';
 import { localDay, localHour, localKey, localRange } from './pos-day.util';
 import { bookActive, ModifierGroup, modifierSuffix, priceLine } from './pos-pricing.util';
 import { resolveStoreTimeZone } from '../common/store-timezone.util';
@@ -474,7 +475,7 @@ export class PosService {
           { name: { $regex: q, $options: 'i' } },
         ],
       })
-      .select('_id name type gallery coverImages')
+      .select('_id name type images gallery coverImages')
       .limit(20)
       .lean();
 
@@ -506,7 +507,7 @@ export class PosService {
     const extraProducts = skuMatchedProductIds.size > 0
       ? await this.r.productModel
           .find({ _id: { $in: [...skuMatchedProductIds] }, isDelete: false, status: 'active' })
-          .select('_id name type gallery coverImages')
+          .select('_id name type images gallery coverImages')
           .lean()
       : [];
 
@@ -519,7 +520,7 @@ export class PosService {
       productId: p._id,
       name: p.name,
       type: p.type,
-      image: p.gallery?.[0] ?? p.coverImages?.[0] ?? null,
+      image: productCoverImage(p),
       variants: (variantMap[p._id.toString()] || []).map((v: any) => ({
         variantId: v._id,
         sku: v.sku,
@@ -551,7 +552,7 @@ export class PosService {
     const total = await this.r.productModel.countDocuments(filter);
     const products = await this.r.productModel
       .find(filter)
-      .select('_id name type gallery coverImages categoryId')
+      .select('_id name type images gallery coverImages categoryId')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -572,7 +573,7 @@ export class PosService {
       productId: p._id,
       name: p.name,
       type: p.type,
-      image: p.gallery?.[0] ?? p.coverImages?.[0] ?? null,
+      image: productCoverImage(p),
       categoryId: p.categoryId,
       variants: (variantMap[p._id.toString()] || []).map((v: any) => ({
         variantId: v._id,
@@ -836,6 +837,12 @@ export class PosService {
           totalSalesMinor: (session as any).totalSalesMinor ?? toMinor((session as any).totalSales || 0, exp),
           refundsTotalMinor: toMinor(refundsTotal, exp),
           byPaymentMethod: Object.fromEntries(Object.entries(byPayment).map(([k, v]) => [k, { ...v, totalMinor: toMinor(v.total, exp) }])), // G1b minor twin per tender
+          // G5.4 (additive): card payments taken on a separate bank terminal, as their own line for the close (also inside byPaymentMethod.card)
+          cardExternalTerminal: (() => {
+            const lines = sales.flatMap((s: any) => (s.payments ?? []).filter((p: any) => p.method === 'card' && p.terminal?.approvalCode));
+            const totalMinor = lines.reduce((n: number, p: any) => n + (p.amountMinor ?? toMinor(p.amount ?? 0, exp)), 0);
+            return { count: lines.length, totalMinor, approvalCodes: lines.map((p: any) => p.terminal.approvalCode), terminals: [...new Set(lines.map((p: any) => p.terminal.label).filter(Boolean))] };
+          })(),
           cashFlow: {
             openingCash: (session as any).openingCash,
             cashSales: (session as any).cashSales,
@@ -1003,7 +1010,7 @@ export class PosService {
       }
       if (item.sellExpired && !off.isOffline && !opts.expiredApproval) throw new ForbiddenException({ statusCode: 403, code: 'EXPIRED_LOT_APPROVAL_REQUIRED', message: 'Selling expired stock needs a manager' });
 
-      const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name gallery coverImages');
+      const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name images gallery coverImages');
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
 
       // Offline replay: the till collected `unitPrice`. Record THAT (money in the drawer must equal the sale) and judge it:
@@ -1025,7 +1032,7 @@ export class PosService {
         variantId: item.variantId,
         name: `${product.name}${formatOptionsSuffix(variant.options)}${modifierSuffix(priced?.modifiers ?? [])}`,
         sku: variant.sku,
-        image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
+        image: productCoverImage(product),
         price: charged,
         ...(priced && (priced.modifiers.length || priced.fromBook) ? { modifiers: priced.modifiers.length ? priced.modifiers : undefined, basePriceMinor: priced.baseMinor } : {}),
         listPrice,
@@ -1109,6 +1116,8 @@ export class PosService {
     let settled = isHeld
       ? null
       : settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference }, { allowShort: off.isOffline });
+    // G5.4: "card (external terminal)" on → every card line needs the approval code from the bank terminal's slip (live sales; an offline replay is flagged, never refused)
+    if (settled) await this.assertCardApprovals(dto.storeId, settled.lines, off.isOffline);
     // G2.3: every digital (QR) line must point at a CONFIRMED, unused payment of this shift for exactly its amount — before stock is touched
     let digital: Array<{ intentId: string; providerRef: string }> = [];
     if (settled) {
@@ -1355,6 +1364,7 @@ export class PosService {
     assertClientTotal(dto.clientTotal, totals);
     if (!(dto.payments?.length) && isDigitalTender(String(dto.paymentMethod))) throw moneyError('QR_REQUIRES_PAYMENT_LINES', 'A Raast QR sale must send its payment as a payment line carrying the confirmed payment (payments[].intentId)');
     let settled = settlePayments(totals.minor.total, money.exp, { payments: dto.payments, paymentMethod: dto.paymentMethod, amountTendered: dto.amountTendered, reference: dto.paymentReference });
+    await this.assertCardApprovals(String((sale as any).storeId), settled.lines, false); // G5.4
     const verifiedDigital = await this.verifyDigitalLines(String((sale as any).storeId), String((sale as any).sessionId), settled.lines, money, false);
     settled = { ...settled, lines: verifiedDigital.lines };
     const digital = verifiedDigital.digital;
@@ -1678,6 +1688,9 @@ export class PosService {
       const existingCredit = keep.filter((t: any) => t.method === 'store_credit').reduce((s2: number, t: any) => s2 + toMinor(t.amount, exp), 0);
       tenders = [...keep.filter((t: any) => t.method !== 'store_credit'), { method: 'store_credit', amount: fromMinor(existingCredit + convertMinor, exp) }];
     }
+    // G5.4: a card refund goes back as "card (external terminal)" referencing the original slip's approval code(s)
+    const cardCodes = ((sale as any).payments ?? []).filter((p: any) => p.method === 'card' && p.terminal?.approvalCode).map((p: any) => p.terminal.approvalCode as string);
+    if (cardCodes.length) tenders = tenders.map((t: any) => (t.method === 'card' ? { ...t, approvalCodeRef: cardCodes.join(', '), externalTerminal: true } : t));
     const creditBackMinor = tenders.filter((t: any) => t.method === 'store_credit').reduce((s2: number, t: any) => s2 + toMinor(t.amount, exp), 0);
     if (creditBackMinor > 0) {
       if (!this.customers) throw businessConflict('STORE_CREDIT_NOT_ENABLED', 'Store credit is not switched on');
@@ -2615,7 +2628,7 @@ export class PosService {
       kind: a.kind, scope: a.scope, refundId: a.refundId, reasonCode: a.reason.code, reason: a.reason.note,
       lines, grossMinor: sum('grossMinor'), discountMinor: sum('discountMinor'), netMinor: sum('netMinor'), taxMinor: sum('taxMinor'), totalMinor: sum('totalMinor'),
       currency: a.currency, currencyExponent: a.exp,
-      tenders: a.tenders.map((t) => ({ method: t.method, amountMinor: t.amountMinor ?? toMinor(t.amount ?? 0, a.exp) })),
+      tenders: a.tenders.map((t: any) => ({ method: t.method, amountMinor: t.amountMinor ?? toMinor(t.amount ?? 0, a.exp), ...(t.approvalCodeRef ? { approvalCodeRef: t.approvalCodeRef } : {}) })),
       seller: a.sale.invoice?.seller ?? (await this.sellerSnapshot(String(a.sale.storeId), tx)), customerName: a.sale.customerName ?? null,
       employeeId: a.actorId, approvedBy: a.approvedBy, approvalReasons: a.approvalReasons,
       // the REFUNDING till / shift (whose drawer paid) …
@@ -2835,7 +2848,7 @@ export class PosService {
   /** One immutable PosPayment per tender line. (saleId, lineNo) and (store, idempotencyKey, lineNo) are unique → a retry cannot add a second row. */
   private async recordPayments(
     sale: any,
-    lines: Array<{ method: string; amount: number; tendered?: number | null; reference?: string | null; intentId?: string | null }>,
+    lines: Array<{ method: string; amount: number; tendered?: number | null; reference?: string | null; intentId?: string | null; terminal?: { approvalCode: string | null; last4: string | null; label: string | null } }>,
     ctx: { sessionId: string | null; registerId: string | null; shiftId: string | null; employeeId: string | null },
     tx?: ClientSession,
   ): Promise<void> {
@@ -2847,7 +2860,7 @@ export class PosService {
         tender: l.method, amount: l.amount, tendered: l.tendered ?? null,
         amountMinor: toMinor(l.amount, sale.currencyExponent ?? 2), ...(l.tendered !== undefined && l.tendered !== null ? { tenderedMinor: toMinor(l.tendered, sale.currencyExponent ?? 2) } : {}),
         currency: sale.currency ?? null, currencyExponent: sale.currencyExponent ?? null,
-        reference: l.reference ?? null, status: this.paymentStatus(l.method), confirmationSource: isDigitalTender(l.method) ? 'raast' : null, confirmedAt: isDigitalTender(l.method) ? new Date() : null,
+        reference: l.reference ?? null, ...(l.terminal ? { terminal: l.terminal } : {}), status: this.paymentStatus(l.method), confirmationSource: isDigitalTender(l.method) ? 'raast' : l.terminal?.approvalCode ? 'external_terminal' : null, confirmedAt: isDigitalTender(l.method) ? new Date() : null,
         paymentIntentId: isDigitalTender(l.method) ? (l.intentId ?? null) : null,
         storeId: sale.storeId, registerId: ctx.registerId, sessionId: ctx.sessionId, shiftId: ctx.shiftId, deviceId, employeeId: ctx.employeeId,
         ...(sale.idempotencyKey ? { idempotencyKey: sale.idempotencyKey } : {}),
@@ -3080,7 +3093,7 @@ export class PosService {
     let variant: any = null; let product: any = null;
     for (const c of candidates) {
       if (c.storeId && String(c.storeId) !== storeId) continue;
-      const p = await this.r.productModel.findOne({ _id: c.productId, storeId, isDelete: false, status: 'active' }).select('_id name type gallery coverImages').lean();
+      const p = await this.r.productModel.findOne({ _id: c.productId, storeId, isDelete: false, status: 'active' }).select('_id name type images gallery coverImages').lean();
       if (p) { variant = c; product = p; break; }
     }
     if (!product) throw new NotFoundException('Product not found in this store');
@@ -3091,7 +3104,7 @@ export class PosService {
         productId: (product as any)._id,
         name: (product as any).name,
         type: (product as any).type,
-        image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
+        image: productCoverImage(product),
         variant: {
           variantId: (variant as any)._id,
           sku: (variant as any).sku,
@@ -3217,7 +3230,7 @@ export class PosService {
       const variant = await this.r.productVariantModel.findOne({ _id: item.variantId, productId: item.productId, isDelete: false });
       if (!variant) throw new BadRequestException(`Variant not found: ${item.variantId}`);
 
-      const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name gallery coverImages');
+      const product = await this.r.productModel.findOne({ _id: item.productId, isDelete: false }).select('name images gallery coverImages');
       if (!product) throw new BadRequestException(`Product not found: ${item.productId}`);
 
       saleItems.push({
@@ -3225,7 +3238,7 @@ export class PosService {
         variantId: item.variantId,
         name: `${(product as any).name}${formatOptionsSuffix((variant as any).options)}`,
         sku: variant.sku,
-        image: (product as any).gallery?.[0] ?? (product as any).coverImages?.[0] ?? null,
+        image: productCoverImage(product),
         price: variant.price,
         qty: item.qty,
         lineTotal: 0,
@@ -3423,6 +3436,24 @@ export class PosService {
 
   // ── POS SETTINGS ──────────────────────────────────────────────────────────
 
+  /** G5.5: the store a credit note belongs to (for fiscalising it after a refund). */
+  async creditNoteStore(creditNoteId: string): Promise<string | null> {
+    if (!Types.ObjectId.isValid(creditNoteId)) return null;
+    const cn: any = await this.r.posCreditNoteModel.findById(creditNoteId).select('storeId').lean();
+    return cn ? String(cn.storeId) : null;
+  }
+
+  /** G5.4: with the store's "card (external terminal)" switched on, a live card line must carry the terminal slip's approval code. */
+  private async assertCardApprovals(storeId: string, lines: Array<{ method: string; terminal?: { approvalCode: string | null } }>, offline: boolean) {
+    if (!lines.some((l) => l.method === 'card')) return;
+    const s: any = await this.r.posSettingsModel.findOne({ storeId }).select('connectorPrefs').lean();
+    if (s?.connectorPrefs?.cardExternalTerminal !== true) return;
+    const missing = lines.filter((l) => l.method === 'card' && !l.terminal?.approvalCode).length;
+    if (!missing) return;
+    if (offline) { await this.writeAuditLog({ storeId, employeeId: null, action: 'card_approval_missing_offline', targetId: null, targetType: 'sale', metadata: { cardLines: missing } }); return; }
+    throw moneyError('CARD_APPROVAL_REQUIRED', 'Enter the approval code from the card terminal slip');
+  }
+
   /** G4.9: `loyaltyBalanceAfterPoints` on the sale — the customer's points after this sale, read from the ledger inside the sale's transaction. */
   private async stampPointsAfter(tx: any, sale: any, storeId: string, ledgerId: string, known?: number) {
     const after = known ?? (await this.customers!.pointsBalanceInTx(tx, storeId, ledgerId));
@@ -3441,6 +3472,8 @@ export class PosService {
     // The authoritative selling currency comes from the store, not from the free-text `currencySymbol`.
     await this.ensureVersionRow(storeId);
     const { currency, exp } = await this.moneyContext(storeId);
+    // G5.3: the per-store receipt-link lifetime starts counting from the first settings read after it shipped (older links keep 30 days)
+    if (!settings.receiptLinkDaysSince) await this.r.posSettingsModel.updateOne({ storeId, receiptLinkDaysSince: null }, { $set: { receiptLinkDaysSince: new Date() } });
     // G4.9: the store's public id + the base of the receipt link a till builds offline (`<base><sale client key>`), cached with the settings
     const store: any = await this.r.storeModel.findById(storeId).select('slug').lean();
     return { success: true, data: { ...settings, autoLockMinutes: settings.autoLockMinutes ?? 5, settingsVersion: settings.settingsVersion || 1, currency, currencyExponent: exp, ...offlineLinkBaseOf(store?.slug) } };

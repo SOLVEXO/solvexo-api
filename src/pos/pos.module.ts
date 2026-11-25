@@ -36,6 +36,20 @@ import { PosPermissionsStoreController } from './pos-permissions-store.controlle
 import { PosAuditSealService } from './pos-audit-seal.service';
 import { PosAuditController } from './pos-audit.controller';
 import { PosStoreSettingsService } from './pos-store-settings.service';
+import { PosProductEditController } from './pos-product-edit.controller';
+import { PosReceiptDeliveryController } from './pos-receipt-delivery.controller';
+import { PosReceiptDeliveryService } from './pos-receipt-delivery.service';
+import { PosFiscalService } from './pos-fiscal.service';
+import { PosConnectorsService } from './pos-connectors.service';
+import { PosConnectorsController } from './pos-connectors.controller';
+import { PosFiscalController } from './pos-fiscal.controller';
+import { PosCapabilitiesController } from './pos-capabilities.controller';
+import { PosApiKeysService } from './pos-api-keys.service';
+import { PosApiKeysController } from './pos-api-keys.controller';
+import { PosExtController, PosApiKeyGuard, PosApiKeyAuditInterceptor } from './pos-ext.controller';
+import { EmailService } from '@/otp/services/email.service';
+import { MessagingChannelsModule } from '@/messaging-channels/messaging-channels.module';
+import { PosProductEditService } from './pos-product-edit.service';
 import { PosCatalogAdminService } from './pos-catalog-admin.service';
 import { PosCatalogAdminController } from './pos-catalog-admin.controller';
 import { ProductsModule } from '@/products/product.module';
@@ -48,9 +62,9 @@ import { PosSupplyController } from './pos-supply.controller';
 import { PurchaseOrdersModule } from '@/purchase-orders/purchase-orders.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, AdminConfigModule, FinanceModule, InventoryModule, PurchaseOrdersModule, UploadModule, ProductsModule, ProductVariantsModule, CategoriesModule, StockCountsModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
-  controllers: [PosController, PublicReceiptController, PosInventoryController, PosCustomersController, PosSupplyController, PosCashController, PosTeamController, PosReportsController, PosStoreController, PosPermissionsStoreController, PosAuditController, PosCatalogAdminController, PosReprintController],
-  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService, PosCustomerCore, PosCustomersService, PosSupplyService, PosCashService, PosTeamService, PosReportsService, PosPermissionsStoreService, PosAuditSealService, PosStoreSettingsService, PosCatalogAdminService, PosReprintService,
+  imports: [AuthModule, RedisModule, MessagingChannelsModule, AdminConfigModule, FinanceModule, InventoryModule, PurchaseOrdersModule, UploadModule, ProductsModule, ProductVariantsModule, CategoriesModule, StockCountsModule, PosPlansModule, KybModule, forwardRef(() => PaymentsCoreModule)],
+  controllers: [PosController, PublicReceiptController, PosInventoryController, PosCustomersController, PosSupplyController, PosCashController, PosTeamController, PosReportsController, PosStoreController, PosPermissionsStoreController, PosAuditController, PosCatalogAdminController, PosProductEditController, PosReceiptDeliveryController, PosConnectorsController, PosFiscalController, PosCapabilitiesController, PosApiKeysController, PosExtController, PosReprintController],
+  providers: [PosService, StoreLocationService, PosDeviceService, PosTokenRevocationService, PosReceiptService, PosCatalogService, PosAuthorizer, PosInventoryService, PosCustomerCore, PosCustomersService, PosSupplyService, PosCashService, PosTeamService, PosReportsService, PosPermissionsStoreService, PosAuditSealService, PosStoreSettingsService, PosCatalogAdminService, PosProductEditService, PosReceiptDeliveryService, PosFiscalService, PosConnectorsService, PosApiKeysService, PosApiKeyGuard, PosApiKeyAuditInterceptor, EmailService, PosReprintService,
     // G4.8: "hide costs from managers" for every POS response, in one place
     { provide: APP_INTERCEPTOR, useClass: CostVisibilityInterceptor }],
   exports: [PosService, PosAuthorizer, PosCashService, PosReportsService, PosSupplyService],

@@ -27,12 +27,33 @@ export class JobLeaseService {
 
   constructor(@InjectModel(JobLease.name) readonly model: Model<JobLeaseDocument>) {}
 
+  /**
+   * TESTS ONLY — never set in production code. When set, every expiry decision uses this clock (sent to MongoDB as a literal date) instead of
+   * the database's `$$NOW`, so a test can move time forward explicitly instead of sleeping against real clocks. Null (the default) = the
+   * database clock, which is what makes leases immune to server clock skew.
+   */
+  clock: (() => Date) | null = null;
+
+  /**
+   * How `withLease` schedules its heartbeat: `beat` every `everyMs`, returning a stop function. Tests may replace it to run beats explicitly
+   * (and await them); production uses a real, unref'd interval.
+   */
+  schedule: (beat: () => Promise<void>, everyMs: number) => () => void = (beat, everyMs) => {
+    const timer = setInterval(() => { void beat(); }, everyMs);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  };
+
+  /** `$$NOW` (the database's clock), or the test clock as a literal date. */
+  private now(): any { return this.clock ? this.clock() : '$$NOW'; }
+
   async tryAcquire(key: string, ttlMs: number): Promise<Lease | null> {
     const token = randomBytes(12).toString('hex');
     // ONE atomic statement per attempt; $$NOW is the database's clock. The row always matches by _id (upsert creates it); the pipeline
     // takes the lease over ONLY IF the current one is expired (or the row is new) and otherwise leaves the holder's fields untouched.
     // We own the lease iff the stored token is ours afterwards. (An upsert may not carry an $expr filter, hence the conditional pipeline.)
-    const expired = { $lte: [{ $ifNull: ['$expiresAt', new Date(0)] }, '$$NOW'] };
+    const now = this.now();
+    const expired = { $lte: [{ $ifNull: ['$expiresAt', new Date(0)] }, now] };
     const take = (mine: any, theirs: any) => ({ $cond: [expired, mine, theirs] });
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -41,8 +62,8 @@ export class JobLeaseService {
           [{ $set: {
             epoch: take({ $add: [{ $ifNull: ['$epoch', 0] }, 1] }, '$epoch'),
             owner: take(this.instance, '$owner'),
-            acquiredAt: take('$$NOW', '$acquiredAt'),
-            expiresAt: take({ $add: ['$$NOW', ttlMs] }, '$expiresAt'),
+            acquiredAt: take(now, '$acquiredAt'),
+            expiresAt: take({ $add: [now, ttlMs] }, '$expiresAt'),
             token: take(token, '$token'),
           } }],
           { upsert: true, returnDocument: 'after' },
@@ -59,7 +80,8 @@ export class JobLeaseService {
 
   /** Extends a lease we still hold. False = we lost it (expired and taken over, or released). */
   async renew(lease: Lease, ttlMs = lease.ttlMs): Promise<boolean> {
-    const r = await this.model.collection.updateOne({ _id: lease.key as any, token: lease.token, $expr: { $gt: ['$expiresAt', '$$NOW'] } }, [{ $set: { expiresAt: { $add: ['$$NOW', ttlMs] } } }]);
+    const now = this.now();
+    const r = await this.model.collection.updateOne({ _id: lease.key as any, token: lease.token, $expr: { $gt: ['$expiresAt', now] } }, [{ $set: { expiresAt: { $add: [now, ttlMs] } } }]);
     return r.matchedCount === 1;
   }
 
@@ -77,9 +99,9 @@ export class JobLeaseService {
     const lease = await this.tryAcquire(key, ttlMs);
     if (!lease) return BUSY;
     let valid = true;
-    const timer = setInterval(() => { this.renew(lease).then((ok) => { if (!ok) valid = false; }, () => { /* a transient DB error: try again next beat */ }); }, Math.max(100, Math.floor(ttlMs / 3)));
-    timer.unref?.();
+    const beat = () => this.renew(lease).then((ok) => { if (!ok) valid = false; }, () => { /* a transient DB error: try again next beat */ });
+    const stop = this.schedule(beat, Math.max(100, Math.floor(ttlMs / 3)));
     try { return await fn({ lease, isValid: () => valid }); }
-    finally { clearInterval(timer); await this.release(lease).catch((e) => this.logger.warn(`lease release failed for ${key}: ${e?.message}`)); }
+    finally { stop(); await this.release(lease).catch((e) => this.logger.warn(`lease release failed for ${key}: ${e?.message}`)); }
   }
 }

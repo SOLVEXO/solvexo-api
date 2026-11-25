@@ -479,6 +479,14 @@ export class DatabaseService {
     private posReprintEventModel: Model<schema.PosReprintEventDocument>,
     @InjectModel(schema.PosCashAttachment.name)
     private posCashAttachmentModel: Model<schema.PosCashAttachmentDocument>,
+    @InjectModel(schema.PosReceiptDelivery.name)
+    private posReceiptDeliveryModel: Model<schema.PosReceiptDeliveryDocument>,
+    @InjectModel(schema.PosFiscalRecord.name)
+    private posFiscalRecordModel: Model<schema.PosFiscalRecordDocument>,
+    @InjectModel(schema.PosApiKey.name)
+    private posApiKeyModel: Model<schema.PosApiKeyDocument>,
+    @InjectModel(schema.PosApiKeyWindow.name)
+    private posApiKeyWindowModel: Model<schema.PosApiKeyWindowDocument>,
     @InjectModel(schema.PosModifierGroup.name)
     private posModifierGroupModel: Model<schema.PosModifierGroupDocument>,
     @InjectModel(schema.PosPriceBook.name)
@@ -732,6 +740,10 @@ export class DatabaseService {
       posAuditSealModel: this.posAuditSealModel,
       posReprintEventModel: this.posReprintEventModel,
       posCashAttachmentModel: this.posCashAttachmentModel,
+      posReceiptDeliveryModel: this.posReceiptDeliveryModel,
+      posFiscalRecordModel: this.posFiscalRecordModel,
+      posApiKeyModel: this.posApiKeyModel,
+      posApiKeyWindowModel: this.posApiKeyWindowModel,
       posModifierGroupModel: this.posModifierGroupModel,
       posPriceBookModel: this.posPriceBookModel,
       posExpenseModel: this.posExpenseModel,

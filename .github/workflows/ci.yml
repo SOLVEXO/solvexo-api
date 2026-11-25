@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: package.json # engines.node — the same Node the production build (Railway) uses
           cache: npm
       # Redis: the POS device / PIN-session guards and the account-deletion flows use it. Without it those integration
       # suites time out in their setup and the client's reconnect loop keeps jest from exiting (same step as tests.yml).

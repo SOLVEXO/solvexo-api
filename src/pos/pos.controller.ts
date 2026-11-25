@@ -4,7 +4,7 @@ import {
   Controller, Get, Post, Patch, Delete,
   Body, Param, Query, Req, Res, UseGuards, Headers, UseInterceptors, UploadedFile,
 } from '@nestjs/common';
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, Optional } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { buildTemplatePayload, readUploadedCsv } from '../common/bulk-import/bulk-import.util';
@@ -41,6 +41,7 @@ import { CashAdjustmentDto } from './dto/cash-adjustment.dto';
 import { RefundSaleDto } from './dto/refund-sale.dto';
 import { PosCatalogService } from './pos-catalog.service';
 import { PosAuthorizer } from './pos-authorizer.service';
+import { PosFiscalService } from './pos-fiscal.service';
 import { PosInventoryService } from './pos-inventory.service';
 import { AdjustCatalogStockDto, UpdateCatalogVariantDto } from './dto/catalog.dto';
 import { ForceCloseSessionDto } from './dto/force-close-session.dto';
@@ -72,7 +73,22 @@ export class PosController {
     private readonly catalog: PosCatalogService,
     private readonly authorizer: PosAuthorizer,
     private readonly posInv: PosInventoryService,
+    @Optional() private readonly fiscal?: PosFiscalService, // G5.5
   ) {}
+
+  /** G5.5: a refund / void made a credit note → fiscalise it when the store's fiscal switch is on. Never fails the request (the sweep retries). */
+  private async fiscaliseCreditNoteOf(res: any): Promise<void> {
+    const id = res?.data?.creditNote?.id ? String(res.data.creditNote.id) : null;
+    if (!id || !this.fiscal) return;
+    try {
+      const storeId = await this.posService.creditNoteStore(id);
+      if (storeId && (await this.fiscal.enabled(storeId))) {
+        const b = await this.fiscal.fiscaliseCreditNote(storeId, id);
+        // G6.1: the refund / void response carries the credit note's fiscal block (contract shape) so the till prints it at once
+        res.data.creditNote.fiscal = PosFiscalService.view(res.data.creditNote.fiscal, b ?? undefined, true);
+      }
+    } catch { /* pending → sweep */ }
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // DEVICES (5D) — register/list/revoke need the OWNER's own session (re-auth in the app);
@@ -403,7 +419,9 @@ export class PosController {
       const a = await this.authorizer.authorize(req, { storeId: dto.storeId, action: 'inventory.lot.sellExpired', employeeToken, approverToken });
       expiredApproval = { employeeId: a.approvedBy?.employeeId ?? a.employeeId ?? req.user.userId, role: a.approvedBy ? 'manager' : a.role };
     }
-    return this.posService.createSale(req.user.userId, dto, employeeToken, { expiredApproval });
+    const res = await this.posService.createSale(req.user.userId, dto, employeeToken, { expiredApproval });
+    await this.fiscal?.afterSaleResponse(dto.storeId, res); // G5.5: fiscalise the new invoice (store flag on; never fails the sale)
+    return res;
   }
 
   // Price a cart without selling it — gated exactly like selling (it is part of ringing a sale), no side effects.
@@ -464,24 +482,30 @@ export class PosController {
   @UseGuards(PosAuthGuard, RolesGuard)
   @Roles('seller')
   @Get('sales/:saleId')
-  getSaleById(@Req() req: any, @Param('saleId') saleId: string) {
-    return this.posService.getSaleById(req.user.userId, saleId);
+  async getSaleById(@Req() req: any, @Param('saleId') saleId: string) {
+    const res: any = await this.posService.getSaleById(req.user.userId, saleId);
+    await this.fiscal?.overlaySale(res?.data); // G5.5: a reprint shows the confirmed fiscal block (same `invoice.fiscal` shape)
+    return res;
   }
 
   @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard)
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sales/:saleId/complete')
-  completeSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: CompleteSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
-    return this.posService.completeSale(req.user.userId, saleId, dto, employeeToken);
+  async completeSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: CompleteSaleDto, @Headers('x-pos-employee-token') employeeToken?: string) {
+    const res: any = await this.posService.completeSale(req.user.userId, saleId, dto, employeeToken);
+    await this.fiscal?.afterSaleResponse(res?.data?.storeId ? String(res.data.storeId) : undefined, res);
+    return res;
   }
 
   @UseGuards(PosAuthGuard, RolesGuard)
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sales/:saleId/refund')
-  refundSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: RefundSaleDto, @Headers('x-pos-employee-token') employeeToken?: string, @Headers('idempotency-key') idempotencyKey?: string) {
-    return this.posService.refundSale(req.user.userId, saleId, dto, employeeToken, idempotencyKey);
+  async refundSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: RefundSaleDto, @Headers('x-pos-employee-token') employeeToken?: string, @Headers('idempotency-key') idempotencyKey?: string) {
+    const res: any = await this.posService.refundSale(req.user.userId, saleId, dto, employeeToken, idempotencyKey);
+    await this.fiscaliseCreditNoteOf(res); // G5.5
+    return res;
   }
 
   @UseGuards(PosAuthGuard, RolesGuard)
@@ -619,8 +643,10 @@ export class PosController {
   @Roles('seller')
   @UseInterceptors(IdempotencyInterceptor)
   @Post('sales/:saleId/void')
-  voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string; reasonCode?: string; registerId?: string }, @Headers('x-pos-employee-token') employeeToken?: string) {
-    return this.posService.voidSale(req.user.userId, saleId, dto, employeeToken);
+  async voidSale(@Req() req: any, @Param('saleId') saleId: string, @Body() dto: { reason?: string; reasonCode?: string; registerId?: string }, @Headers('x-pos-employee-token') employeeToken?: string) {
+    const res: any = await this.posService.voidSale(req.user.userId, saleId, dto, employeeToken);
+    await this.fiscaliseCreditNoteOf(res); // G5.5
+    return res;
   }
 
   // ── G2.6 POS catalog edits (D3): a manager's PIN session; audited with before/after; the storefront reads the same documents ──

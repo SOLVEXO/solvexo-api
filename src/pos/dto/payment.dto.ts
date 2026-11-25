@@ -25,6 +25,18 @@ export class PaymentLineDto {
   @MaxLength(40)
   intentId?: string;
 
+  @ApiProperty({ required: false, example: '482913', description: 'G5.4 card on a separate bank terminal: the approval code from the terminal slip (required when the store has "card (external terminal)" on)' })
+  @IsOptional() @IsString() @MaxLength(40)
+  approvalCode?: string;
+
+  @ApiProperty({ required: false, example: '4242', description: 'G5.4: last 4 digits of the card (optional)' })
+  @IsOptional() @IsString() @MaxLength(4)
+  last4?: string;
+
+  @ApiProperty({ required: false, example: 'HBL terminal 1', description: 'G5.4: which bank terminal took it (optional)' })
+  @IsOptional() @IsString() @MaxLength(40)
+  terminalLabel?: string;
+
   @ApiProperty({ required: false, example: 'AUTH-123456', description: 'Card authorisation code / bank transfer reference' })
   @IsOptional()
   @IsString()

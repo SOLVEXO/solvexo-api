@@ -1,5 +1,8 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Headers, Param, Patch, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Patch, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Response } from 'express';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -9,7 +12,7 @@ import { PosAuthGuard } from './guards/pos-auth.guard';
 import { PosEntitlementGuard } from './guards/pos-entitlement.guard';
 import { PosDeviceScopeInterceptor } from './pos-device-scope';
 import { PosReportsService } from './pos-reports.service';
-import { PosStoreSettingsService } from './pos-store-settings.service';
+import { PosStoreSettingsService, RECEIPT_LOGO_MAX_BYTES } from './pos-store-settings.service';
 
 /** G4.0 / G4.1 — business pulse and the eight reports (read-only, live from the ledgers, store time zone). Reads stay available on a lapsed plan. */
 @ApiTags('POS reports')
@@ -20,6 +23,18 @@ import { PosStoreSettingsService } from './pos-store-settings.service';
 @Controller('api/pos/reports')
 export class PosReportsController {
   constructor(private readonly svc: PosReportsService) {}
+
+  /** G5.7: accounting export (CSV, store time zone, minor units + formatted amounts; cost columns obey hide-costs; audited). */
+  @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('accounting-export/:storeId')
+  async accountingExport(@Req() req: any, @Param('storeId') s: string, @Query() q: any, @Res() res: Response, @Headers('x-pos-employee-token') e?: string) {
+    const out = await this.svc.accountingCsv(req, s, q, { employee: e });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Export-Rows', String(out.rows));
+    res.setHeader('X-Costs-Included', String(out.costsIncluded));
+    res.send(out.csv);
+  }
   private t = (e?: string) => ({ employee: e });
 
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('pulse/:storeId')
@@ -65,6 +80,15 @@ export class PosStoreController {
 
   @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @Patch('settings/:storeId')
   setSettings(@Req() req: any, @Param('storeId') s: string, @Body() body: any, @Headers('x-pos-employee-token') e?: string) { return this.settings.update(req, s, body, { employee: e }); }
+
+  // G5.6: the receipt logo (owner only; content-checked image, resized; audited)
+  @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: RECEIPT_LOGO_MAX_BYTES } }))
+  @Post('settings/:storeId/receipt-logo')
+  uploadLogo(@Req() req: any, @Param('storeId') s: string, @UploadedFile() file: Express.Multer.File, @Headers('x-pos-employee-token') e?: string) { return this.settings.uploadReceiptLogo(req, s, file, { employee: e }); }
+
+  @UseGuards(PosAuthGuard, RolesGuard, PosEntitlementGuard) @Roles('seller') @Post('settings/:storeId/receipt-logo/remove')
+  removeLogo(@Req() req: any, @Param('storeId') s: string, @Headers('x-pos-employee-token') e?: string) { return this.settings.removeReceiptLogo(req, s, { employee: e }); }
 
   @UseGuards(PosAuthGuard, RolesGuard) @Roles('seller') @Get('sync-status/:storeId')
   syncStatus(@Req() req: any, @Param('storeId') s: string, @Headers('x-pos-employee-token') e?: string) { return this.settings.syncStatus(req, s, { employee: e }); }

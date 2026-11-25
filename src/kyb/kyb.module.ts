@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { PosSettings, PosSettingsSchema } from '../pos/schemas/pos-settings.schema';
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AuthModule } from '@/auth/auth.module';
@@ -22,6 +23,7 @@ import { KybAdminController } from './kyb-admin.controller';
       { name: KybAuditEvent.name, schema: KybAuditEventSchema },
       { name: KybSettings.name, schema: KybSettingsSchema },
       { name: Store.name, schema: StoreSchema },
+      { name: PosSettings.name, schema: PosSettingsSchema }, // G5.4: the store's own Raast on / off switch
     ]),
   ],
   controllers: [KybController, KybAdminController],

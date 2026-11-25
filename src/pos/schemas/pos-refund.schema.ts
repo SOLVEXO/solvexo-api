@@ -23,8 +23,8 @@ export class PosRefund {
   @Prop({ type: String, default: null }) currency: string | null;
   @Prop({ type: Number, default: null }) currencyExponent: number | null;
   /** Per-tender split of the refund. Card / other tenders are only recorded, never confirmed by a terminal today. */
-  @Prop({ type: [{ _id: false, method: String, amount: Number, amountMinor: { type: 'MinorMoney' } }], default: [] })
-  tenders: Array<{ method: string; amount: number; amountMinor?: number }>;
+  @Prop({ type: [{ _id: false, method: String, amount: Number, amountMinor: { type: 'MinorMoney' }, approvalCodeRef: { type: String, default: undefined }, externalTerminal: { type: Boolean, default: undefined } }], default: [] })
+  tenders: Array<{ method: string; amount: number; amountMinor?: number; approvalCodeRef?: string; externalTerminal?: boolean }>; // G5.4: a card refund names the original slip's approval code
   @Prop({ type: [{ _id: false, saleItemId: String, qty: Number }], default: [] })
   items: Array<{ saleItemId: string; qty: number }>;
   @Prop({ type: String, default: null }) reason: string | null;

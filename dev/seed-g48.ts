@@ -9,6 +9,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { Types } from 'mongoose';
 
 const schema = require('../dist/database/schema');
 const { PosAuditSealService, SEALED_COLLECTIONS } = require('../dist/pos/pos-audit-seal.service');
@@ -55,13 +56,21 @@ export async function seedG48(conn: any, storeId: string, sellerId: string) {
   return { supplierId, sealedNow: sealed, lastSealedDay: last?.day ?? null };
 }
 
-/** Edits one record of the latest sealed day (the app's integrity check must report the day as changed). */
+/** Edits one record of the latest sealed day that has records (the app's integrity check must report the day as changed). */
 export async function tamperSeal(conn: any, storeId: string) {
   const db = conn.db!;
-  const seal: any = await db.collection('posauditseals').find({ storeId }).sort({ day: -1 }).limit(1).next();
-  if (!seal) throw new Error('No sealed day — run the seed first');
-  const row: any = await db.collection('posauditlogs').findOne({ storeId, createdAt: { $gte: seal.from, $lt: seal.to } });
-  if (!row) throw new Error(`No activity-log record on ${seal.day}`);
+  // the newest sealed day that HAS a record (a quiet day — e.g. a Sunday with no e2e run — is sealed empty and has nothing to tamper with)
+  const seals: any[] = await db.collection('posauditseals').find({ storeId }).sort({ day: -1 }).limit(14).toArray();
+  if (!seals.length) throw new Error('No sealed day — run the seed first');
+  let seal: any = null;
+  let row: any = null;
+  for (const s of seals) {
+    // the same rule as PosAuditSealService.digest: a record belongs to a day by its _id's timestamp (createdAt can be backdated)
+    const idRange = { $gte: Types.ObjectId.createFromTime(Math.floor(new Date(s.from).getTime() / 1000)), $lt: Types.ObjectId.createFromTime(Math.floor(new Date(s.to).getTime() / 1000)) };
+    row = await db.collection('posauditlogs').findOne({ storeId, _id: idRange });
+    if (row) { seal = s; break; }
+  }
+  if (!row) throw new Error(`No activity-log record on any of the last ${seals.length} sealed days`);
   fs.mkdirSync(path.dirname(TAMPER_FILE), { recursive: true });
   fs.writeFileSync(TAMPER_FILE, JSON.stringify({ id: String(row._id), metadata: row.metadata ?? null, day: seal.day }));
   await db.collection('posauditlogs').updateOne({ _id: row._id }, { $set: { metadata: { ...(row.metadata ?? {}), tampered: 'dev e2e: this record was changed after the day was sealed' } } });

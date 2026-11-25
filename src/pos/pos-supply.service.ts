@@ -73,13 +73,14 @@ export class PosSupplyService {
   private supplierView(s: any, extra: object = {}) {
     return { id: String(s._id), name: s.name, contactName: s.contactName ?? null, phone: s.phone ?? null, email: s.email ?? null, address: s.address ?? null, ntn: s.ntn ?? null, strn: s.strn ?? null, paymentTerms: s.paymentTerms ?? null, leadTimeDays: s.leadTimeDays ?? null, notes: s.notes ?? null, status: s.status, ...extra };
   }
-  private poView(po: any, exp: number, costs: boolean, lotVariants?: Set<string>) {
+  private poView(po: any, exp: number, costs: boolean, lotVariants?: Set<string>, serialVariants?: Set<string>) {
     const items = (po.items ?? []).map((i: any) => {
       const unitCostMinor = i.unitCostMinor ?? toMinor(i.unitCost ?? 0, exp);
       const done = (i.quantityReceived ?? 0) + (i.quantityDamaged ?? 0);
       return {
         id: String(i._id), productId: i.productId, variantId: i.variantId, name: i.name, sku: i.sku ?? null, image: i.image ?? null, options: i.options ?? [],
         trackLots: lotVariants?.has(String(i.variantId)) ?? false,
+        trackSerials: serialVariants?.has(String(i.variantId)) ?? false, // G5.2: one serial per unit when received
         quantityOrdered: i.quantityOrdered, quantityReceived: i.quantityReceived ?? 0, quantityDamaged: i.quantityDamaged ?? 0, quantityReturned: i.quantityReturned ?? 0, quantityRemaining: Math.max(0, i.quantityOrdered - done),
         ...(costs ? { unitCostMinor, lineTotalMinor: unitCostMinor * i.quantityOrdered } : {}),
       };
@@ -205,9 +206,10 @@ export class PosSupplyService {
     if (!costs && !RECEIVABLE.includes(po.status)) throw err(404, 'PO_NOT_FOUND', 'Purchase order not found');
     const c = await this.cur(storeId);
     const receipts: any[] = await this.r.purchaseReceiptModel.find({ storeId, purchaseOrderId: id }).sort({ createdAt: 1 }).lean();
-    const lotRows: any[] = await this.r.productVariantModel.find({ _id: { $in: po.items.map((i: any) => i.variantId) }, trackLots: true }).select('_id').lean();
-    const lots = new Set(lotRows.map((v) => String(v._id)));
-    return { success: true, data: { ...c, order: this.poView(po.toObject ? po.toObject() : po, c.currencyExponent, costs, lots), receipts: receipts.map((x) => this.receiptView(x, costs)) } };
+    const flagRows: any[] = await this.r.productVariantModel.find({ _id: { $in: po.items.map((i: any) => i.variantId) }, $or: [{ trackLots: true }, { trackSerials: true }] }).select('_id trackLots trackSerials').lean();
+    const lots = new Set(flagRows.filter((v) => v.trackLots).map((v) => String(v._id)));
+    const serials = new Set(flagRows.filter((v) => v.trackSerials).map((v) => String(v._id)));
+    return { success: true, data: { ...c, order: this.poView(po.toObject ? po.toObject() : po, c.currencyExponent, costs, lots, serials), receipts: receipts.map((x) => this.receiptView(x, costs)) } };
   }
   private async resolveLines(storeId: string, items: any, exp: number) {
     if (!Array.isArray(items) || items.length === 0) throw err(400, 'ITEMS_REQUIRED', 'A purchase order needs at least one line');
@@ -404,7 +406,17 @@ export class PosSupplyService {
           if (!variant) throw err(404, 'VARIANT_NOT_FOUND', 'A product on this receipt no longer exists');
           const product: any = await this.r.productModel.findOne({ _id: variant.productId, storeId, isDelete: false }).select('name').session(tx).lean();
           if (!product) throw err(404, 'VARIANT_NOT_FOUND', 'A product on this receipt is not in your store');
-          if (variant.trackSerials) throw err(400, 'SERIALS_NOT_SUPPORTED', `${product.name} is serial-tracked — receive it from the dashboard so each serial number is recorded.`);
+          // G5.1→G5.2: serial-tracked items are received at the till too — one serial per unit (good or damaged), unique, none already on record
+          let serials: string[] = [];
+          if (variant.trackSerials) {
+            // an older till sends no serialNumbers at all: it keeps its old answer (and its own message), unchanged
+            if (!Array.isArray(l.serialNumbers)) throw err(400, 'SERIALS_NOT_SUPPORTED', `${product.name} is serial-tracked — receive it with each serial number (update the app) or from the dashboard.`);
+            serials = Array.isArray(l.serialNumbers) ? l.serialNumbers.map((x: any) => String(x ?? '').trim().slice(0, 120)).filter(Boolean) : [];
+            if (serials.length !== l.qtyGood + l.qtyDamaged) throw err(400, 'SERIALS_REQUIRED', `${product.name} is serial-tracked — scan or type one serial number per unit (${l.qtyGood + l.qtyDamaged} expected, ${serials.length} given).`, { expected: l.qtyGood + l.qtyDamaged, given: serials.length });
+            if (new Set(serials).size !== serials.length) throw err(400, 'SERIAL_DUPLICATE', `${product.name}: the same serial number appears twice on this receipt.`);
+            const taken: any[] = await this.r.stockUnitModel.find({ variantId, serialNumber: { $in: serials } }).select('serialNumber').session(tx).lean();
+            if (taken.length) throw err(409, 'SERIAL_EXISTS', `${product.name}: serial number(s) already on record: ${taken.map((x) => x.serialNumber).join(', ')}`, { serials: taken.map((x) => x.serialNumber) });
+          }
           if (variant.unlimitedStock) throw err(400, 'UNLIMITED_STOCK', `${product.name} has unlimited stock — nothing to receive`);
           const good = l.qtyGood, damaged = l.qtyDamaged, total = good + damaged;
           // strict per-line cap on a PO receipt (the dashboard path tolerates over-shipping and logs it; the till does not)
@@ -449,10 +461,14 @@ export class PosSupplyService {
               previousStock: onHand + good, newStock: onHand + total, delta: damaged, reason: 'damaged', note: `Damaged on arrival — ${receiptNumber}`, adjustedBy: a.employeeId ?? req.user.userId, adjustedByName: null,
             }], { session: tx });
           }
+          if (serials.length) {
+            // the same stock units the dashboard path writes (good → in_stock at the receiving location, damaged → damaged), in this transaction
+            await this.r.stockUnitModel.insertMany(serials.map((serialNumber, i) => ({ storeId, productId: variant.productId, variantId, locationId: i < good ? locationId : null, serialNumber, status: i < good ? 'in_stock' : 'damaged', purchaseOrderId: po ? String(po._id) : null })), { session: tx });
+          }
           if (item) { item.quantityReceived = (item.quantityReceived ?? 0) + good; item.quantityDamaged = (item.quantityDamaged ?? 0) + damaged; }
           const lineTotalMinor = total * unitMinor;
           totalMinor += lineTotalMinor;
-          docLines.push({ poItemId: item ? String(item._id) : null, productId: variant.productId, variantId, name: product.name, sku: variant.sku ?? null, qtyGood: good, qtyDamaged: damaged, unitCostMinor: unitMinor, lineTotalMinor, lotId, lotNumber: lotNumber ?? null, expiryDate: l.expiryDate ? new Date(l.expiryDate) : null });
+          docLines.push({ poItemId: item ? String(item._id) : null, productId: variant.productId, variantId, name: product.name, sku: variant.sku ?? null, qtyGood: good, qtyDamaged: damaged, unitCostMinor: unitMinor, lineTotalMinor, lotId, lotNumber: lotNumber ?? null, expiryDate: l.expiryDate ? new Date(l.expiryDate) : null, ...(serials.length ? { serialNumbers: serials } : {}) });
         }
         if (po) {
           const fully = (po.items as any[]).every((i) => (i.quantityReceived + i.quantityDamaged) >= i.quantityOrdered);

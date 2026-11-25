@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: package.json # engines.node — the same Node the production build (Railway) uses
           cache: npm
 
       # A real MongoDB REPLICA SET (the sale / payment code uses multi-document transactions) for test:di; the integration suites start
@@ -61,7 +61,7 @@ jobs:
       - name: Backend gate (2 workers)
         run: >
           npx jest src/pos src/pos-plans src/inventory src/product-variants src/common src/draft-orders src/markets src/auth src/scripts
-          src/payments-core src/kyb src/admin-team --maxWorkers=2 --workerIdleMemoryLimit=900MB
+          src/payments-core src/kyb src/admin-team src/upload/upload-dev-stub --maxWorkers=2 --workerIdleMemoryLimit=900MB
           --testPathIgnorePatterns=slug-transliteration.util.spec
 
       - name: AppModule resolves (test:di)

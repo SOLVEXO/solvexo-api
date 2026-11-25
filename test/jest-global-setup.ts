@@ -8,7 +8,17 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 export default async function globalSetup() {
   // A single-node REPLICA SET (not a standalone mongod): production is Atlas, so the transactional code paths (sale + payment +
   // audit written atomically) must run under real multi-document transactions in the tests too.
-  const server = await MongoMemoryReplSet.create({ replSet: { count: 1, args: ['--wiredTigerCacheSizeGB', '0.25'] } }) // capped: this machine has 8 GB shared with the simulator and the IDE;
+  // G6.4: a freshly picked port can still be held by the previous run's mongod for a moment ("already in use") — a harness race, never a
+  // test result, so retry a few times before giving up.
+  let server: MongoMemoryReplSet | undefined;
+  for (let attempt = 1; !server; attempt++) {
+    try {
+      server = await MongoMemoryReplSet.create({ replSet: { count: 1, args: ['--wiredTigerCacheSizeGB', '0.25'] } }); // capped: this machine has 8 GB shared with the simulator and the IDE
+    } catch (e: any) {
+      if (attempt >= 4 || !/already in use/i.test(String(e?.message ?? e))) throw e;
+      await new Promise((r) => setTimeout(r, 250 * attempt));
+    }
+  }
   process.env.TEST_MONGO_URI = server.getUri();
   (globalThis as any).__TEST_MONGO__ = server;
 }
