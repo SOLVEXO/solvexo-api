@@ -546,9 +546,12 @@ describe('SalesWhatsAppService', () => {
     expect(leads.rows[0].ownerAdminId).toBe(REP.adminId);
     // The rep now sees it, with its owner.
     expect((await wa.listConversations(REP)).data.map((c: any) => c._id)).toEqual([id]);
+    expect((await wa.getConversation(SUPER, id)).data).toMatchObject({ ownerId: REP.adminId, done: false, snoozedUntil: null });
     expect((await wa.listConversations(SUPER, { ownerId: REP.adminId })).data.length).toBe(1);
 
     settings.rows[0].waTemplates = [{ key: 'hello:en', label: 'Hello', name: 'hello', lang: 'en', usesName: false, body: 'Hello from Solvexo', reason: 'follow_up' }];
+    // What a rep may start a chat with.
+    expect((await wa.myTemplates(REP)).data.map((t: any) => t.key)).toEqual(['hello:en']);
     await expect(wa.start(SUPER, { phone: 'abc', templateKey: 'hello:en' })).rejects.toThrow('enter a WhatsApp number');
     await expect(wa.start(SUPER, { phone: '0333 1234567', templateKey: 'hello:en' })).rejects.toThrow('Enter the person');
     const started = await wa.start(SUPER, { phone: '0333 1234567', name: 'Bilal Traders', templateKey: 'hello:en' });

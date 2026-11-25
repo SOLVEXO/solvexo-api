@@ -229,6 +229,12 @@ export class SalesOpsController {
     return this.whatsapp.start(salesActor(req.user), dto);
   }
 
+  /** The approved templates the signed-in person may send. */
+  @Get('whatsapp/my-templates')
+  waMyTemplates(@Req() req: any) {
+    return this.whatsapp.myTemplates(salesActor(req.user));
+  }
+
   @Get('whatsapp/quick-replies')
   waQuickReplies() {
     return this.whatsapp.quickReplies();

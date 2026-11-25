@@ -487,6 +487,17 @@ export class SalesWhatsAppService {
     return { success: true, data: { conversationId } };
   }
 
+  /** The approved templates this person may send (for starting a chat); none when WhatsApp is off for them. */
+  async myTemplates(actor: SalesActor) {
+    const rules = await this.sales.rules(actor);
+    const s = await this.load();
+    return {
+      success: true,
+      data: rules.whatsapp === 'off' ? [] : templatesOf(s).filter((t) => SalesAccessService.allows(rules.waTemplateKeys, t.key))
+        .map((t) => ({ key: t.key, label: t.label, name: t.name, lang: t.lang, body: t.body, reason: t.reason })),
+    };
+  }
+
   /** Short saved answers for WhatsApp replies (everyone reads; managers edit). */
   async quickReplies() {
     const s = await this.load();
@@ -548,6 +559,11 @@ export class SalesWhatsAppService {
         templates: rules.whatsapp === 'off' ? [] : templatesOf(s).filter((t) => SalesAccessService.allows(rules.waTemplateKeys, t.key))
           .map((t) => ({ key: t.key, label: t.label, name: t.name, lang: t.lang, body: t.body, reason: t.reason })),
         canWriteText: rules.whatsapp === 'full',
+        // The chat's own state, so a screen showing one chat needs no list row.
+        done: !!c.doneAt,
+        snoozedUntil: c.snoozedUntil && new Date(c.snoozedUntil) > new Date() ? c.snoozedUntil : null,
+        ownerId: lead?.ownerAdminId ?? null,
+        ownerName: lead?.ownerAdminId ? (((await this.sales.owners()).data as any[]).find((o) => String(o._id) === String(lead.ownerAdminId))?.name ?? null) : null,
         messages: msgs
           .reverse()
           .map((x) => ({
