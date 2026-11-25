@@ -76,6 +76,7 @@ export class PublicSellingPlansController {
   constructor(private readonly svc: SellingPlansService, private readonly db: DatabaseService) {}
   @Get(':storeId')
   async plans(@Param('storeId') storeId: string, @Query('productId') productId: string, @Query('variantId') variantId?: string) {
+    if (!/^[a-f0-9]{24}$/i.test(String(storeId))) throw new NotFoundException('Store not found');
     const store: any = await this.db.repositories.storeModel.findOne({ _id: storeId, isDelete: false }).select('_id').lean();
     if (!store) throw new NotFoundException('Store not found');
     return this.svc.plansFor(storeId, String(productId ?? ''), variantId ? String(variantId) : undefined);
