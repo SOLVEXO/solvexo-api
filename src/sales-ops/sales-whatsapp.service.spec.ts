@@ -209,6 +209,32 @@ describe('SalesWhatsAppService', () => {
     expect(calls[0].url).not.toContain('whatsapp_business_account');
   });
 
+  it("asks Meta which accounts the token reaches with the app's own token, and names them when none has the number", async () => {
+    const { wa, calls, setReply } = setup();
+    process.env.META_APP_ID = '111'; process.env.META_APP_SECRET = 'app-secret';
+    const seen: string[] = [];
+    const fetchBefore = wa.fetchImpl;
+    wa.fetchImpl = (async (url: any, init: any) => { if (String(url).includes('/debug_token')) seen.push(init?.headers?.Authorization); return fetchBefore(url, init); }) as any;
+    try {
+      const r = await wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890' });
+      expect(r.data.wabaId).toBe('70002');
+      expect(seen).toEqual(['Bearer 111|app-secret']);
+      setReply((url) => url.includes('/debug_token')
+        ? { json: { data: { granular_scopes: [{ scope: 'whatsapp_business_management', target_ids: ['70001'] }] } } }
+        : url.includes('/70001/phone_numbers') ? { json: { data: [{ id: '5550001' }] } }
+          : { json: { id: NUMBER, display_phone_number: '+92 300 0000000', verified_name: 'Solvexo' } });
+      await expect(wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890' }))
+        .rejects.toThrow(`This token can reach WhatsApp Business Account 70001, but none lists number ${NUMBER}`);
+      setReply((url) => url.includes('/debug_token') ? { json: { data: { granular_scopes: [] } } }
+        : { json: { id: NUMBER, display_phone_number: '+92 300 0000000', verified_name: 'Solvexo' } });
+      await expect(wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890' }))
+        .rejects.toThrow('This token has no WhatsApp Business Account assigned');
+      expect(calls.length).toBeGreaterThan(0);
+    } finally {
+      delete process.env.META_APP_ID; delete process.env.META_APP_SECRET;
+    }
+  });
+
   it('uses a WhatsApp Business Account ID the admin types, and refuses one that does not own the number', async () => {
     const { wa, calls, setReply } = setup();
     const r = await wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890', wabaId: ' 70002 ' });
@@ -247,7 +273,7 @@ describe('SalesWhatsAppService', () => {
       ? { status: 400, json: { error: { message: 'Not allowed' } } }
       : { json: { id: NUMBER, display_phone_number: '+92 300 0000000', verified_name: 'Solvexo' } });
     await expect(wa.connect({ phoneNumberId: NUMBER, accessToken: 'EAAG-tok-1234567890' }))
-      .rejects.toThrow('Copy the WhatsApp Business Account ID from your Meta app');
+      .rejects.toThrow('Meta did not say which WhatsApp Business Accounts this token can reach (Not allowed)');
     setReply((url) => url.includes('subscribed_apps')
       ? { status: 403, json: { error: { message: 'Permissions error' } } }
       : url.includes('/phone_numbers')
