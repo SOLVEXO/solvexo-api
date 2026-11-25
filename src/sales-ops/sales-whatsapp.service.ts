@@ -730,7 +730,11 @@ export class SalesWhatsAppService {
         ? `Meta refused to list the numbers of WhatsApp Business Account ${hint}: ${c.error}`
         : `WhatsApp Business Account ${hint} lists ${c.nums.length ? c.nums.map((n) => `${n.display_phone_number ?? '?'} (ID ${n.id})`).join(', ') : 'no numbers this token can see'}, not ID ${phoneNumberId}`;
     }
-    const dbg = await this.graph('GET', `/debug_token?input_token=${encodeURIComponent(token)}`, token);
+    // debug_token answers reliably when asked with the app's own token (APP_ID|APP_SECRET, the same app the
+    // webhook uses); a system user's token may not be allowed to inspect itself.
+    const appId = process.env.META_APP_ID?.trim();
+    const appSecret = process.env.META_APP_SECRET?.trim();
+    const dbg = await this.graph('GET', `/debug_token?input_token=${encodeURIComponent(token)}`, appId && appSecret ? `${appId}|${appSecret}` : token);
     const scopes: any[] = Array.isArray(dbg.data?.data?.granular_scopes) ? dbg.data.data.granular_scopes : [];
     const ids = [...new Set(scopes
       .filter((x) => x?.scope === 'whatsapp_business_management' || x?.scope === 'whatsapp_business_messaging')
@@ -738,7 +742,13 @@ export class SalesWhatsAppService {
       .filter((id) => /^\d{5,30}$/.test(id) && id !== hint)
       .slice(0, 20);
     for (const id of ids) if ((await check(id)).owns) return { wabaId: id, detail: null };
-    return { wabaId: null, detail };
+    // Say what the token can reach, so the admin can tell a wrong ID from a missing permission.
+    const reach = !dbg.ok
+      ? `Meta did not say which WhatsApp Business Accounts this token can reach (${dbg.error ?? 'refused'})`
+      : ids.length
+        ? `This token can reach WhatsApp Business Account${ids.length > 1 ? 's' : ''} ${ids.join(', ')}, but none lists number ${phoneNumberId}`
+        : 'This token has no WhatsApp Business Account assigned: give the system user full control of the WhatsApp account, then generate a new token';
+    return { wabaId: null, detail: detail ? `${detail}. ${reach}` : reach };
   }
 
   private async graph(
