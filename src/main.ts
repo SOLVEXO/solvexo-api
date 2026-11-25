@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { NestFactory } from '@nestjs/core';
+import { CastErrorFilter } from './common/cast-error.filter';
 import { parsePortalOrigins } from './common/portal-origins.util';
 import { ValidationPipe } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -80,6 +81,8 @@ async function bootstrap() {
   // handlers must whitelist fields themselves.
   app.useGlobalPipes(new ValidationPipe({ transform: false }));
   app.useGlobalInterceptors(new RepairMojibakeInterceptor());
+  // A non-id value in a route/query (e.g. a storeId of "S1") is a 400, not a 500.
+  app.useGlobalFilters(new CastErrorFilter());
 
   const config = new DocumentBuilder()
     .setTitle('Solvexo API')
