@@ -16,7 +16,7 @@ jobs:
     runs-on: [self-hosted, solvexo-vps]
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Deploy staging on the VPS
         run: RESET_HARD=1 bash scripts/deploy.sh staging solvexo-api-staging
 
@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Deploy to VPS Staging over SSH
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}

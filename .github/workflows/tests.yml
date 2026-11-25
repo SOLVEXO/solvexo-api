@@ -22,8 +22,8 @@ jobs:
       JWT_SECRET: ci-only-jwt-secret
       NODE_OPTIONS: --max-old-space-size=4096
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version-file: package.json # engines.node — the same Node the production build (Railway) uses
           cache: npm
@@ -51,7 +51,7 @@ jobs:
           test -f dist/main.js && test ! -e dist/src/main.js
 
       - name: Cache the mongod binary used by the integration tests
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: node_modules/.cache/mongodb-memory-server
           key: mongod-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
