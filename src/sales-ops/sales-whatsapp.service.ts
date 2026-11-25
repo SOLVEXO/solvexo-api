@@ -259,6 +259,8 @@ export class SalesWhatsAppService {
               },
             },
           );
+        if (status !== msg.status)
+          await this.conversations.updateOne({ lastWaMessageId: st.waMessageId }, { $set: { lastStatus: status } });
       }
     } catch (e: any) {
       this.logger.error(`Sales WhatsApp webhook failed: ${e?.message}`);
@@ -331,6 +333,11 @@ export class SalesWhatsAppService {
         lastInboundAt: m.at,
         lastMessageAt: m.at,
         lastMessageText: m.text.slice(0, 200),
+        lastDirection: 'in',
+        lastStatus: null,
+        // A new message from them reopens a chat marked done or snoozed.
+        doneAt: null,
+        snoozedUntil: null,
         ...(m.name ? { profileName: m.name } : {}),
       },
       $inc: { unread: 1 },
@@ -346,52 +353,156 @@ export class SalesWhatsAppService {
 
   // ── Inbox (sales users) ─────────────────────────────────────────────────────
 
+  /**
+   * The inbox. `view`: all · needs_reply (they wrote last, not done, not snoozed) · unread · closing (free-reply
+   * window ends within 4 hours) · expired (template only) · done. `q` searches name, business and number.
+   * Counts are over everything this person can see, so the tabs show their size.
+   */
   async listConversations(
     actor: SalesActor,
-    q: { leadId?: string; unread?: boolean } = {},
+    q: { leadId?: string; unread?: boolean; view?: string; q?: string; ownerId?: string } = {},
+    now = new Date(),
   ) {
-    const filter: Record<string, unknown> = {};
-    if (q.leadId && isId(q.leadId)) filter.leadId = q.leadId;
-    if (q.unread) filter.unread = { $gt: 0 };
-    if (!actor.canSeeAll) {
-      const mine: any[] = await this.leads
-        .find({ ownerAdminId: actor.adminId, isDelete: false })
-        .select('_id')
-        .lean();
-      filter.leadId =
-        q.leadId && mine.some((l) => String(l._id) === q.leadId)
-          ? q.leadId
-          : { $in: mine.map((l) => String(l._id)) };
+    const base: Record<string, unknown> = {};
+    if (q.leadId && isId(q.leadId)) base.leadId = q.leadId;
+    const ownerOnly = !actor.canSeeAll ? actor.adminId : q.ownerId && isId(q.ownerId) ? q.ownerId : null;
+    if (ownerOnly) {
+      const mine: any[] = await this.leads.find({ ownerAdminId: ownerOnly, isDelete: false }).select('_id').lean();
+      const ids = mine.map((l) => String(l._id));
+      base.leadId = q.leadId && ids.includes(q.leadId) ? q.leadId : { $in: ids };
     }
-    const rows: any[] = await this.conversations
-      .find(filter)
-      .sort({ lastMessageAt: -1 })
-      .limit(200)
-      .lean();
+    const all: any[] = await this.conversations.find(base).sort({ lastMessageAt: -1 }).limit(500).lean();
     const leadRows: any[] = await this.leads
-      .find({ _id: { $in: rows.map((r) => r.leadId).filter(isId) } })
-      .select('name businessName stage ownerAdminId')
+      .find({ _id: { $in: all.map((r) => r.leadId).filter(isId) } })
+      .select('name businessName stage ownerAdminId phone city')
       .lean();
     const leadOf = new Map(leadRows.map((l) => [String(l._id), l]));
+    const ownerIds = [...new Set(leadRows.map((l) => l.ownerAdminId).filter(Boolean))];
+    const ownerName = new Map<string, string>();
+    if (ownerIds.length) for (const o of (await this.sales.owners()).data as any[]) ownerName.set(String(o._id), o.name);
+
+    const H = 3_600_000;
+    const rows = all.map((c) => {
+      const lead = c.leadId ? leadOf.get(c.leadId) : null;
+      const closesAt = c.lastInboundAt ? new Date(new Date(c.lastInboundAt).getTime() + 24 * H) : null;
+      const open = windowOpen(c.lastInboundAt);
+      const snoozed = !!c.snoozedUntil && new Date(c.snoozedUntil) > now;
+      return {
+        _id: String(c._id),
+        waId: c.waId,
+        name: lead?.name ?? c.profileName ?? `+${c.waId}`,
+        businessName: lead?.businessName ?? null,
+        city: lead?.city ?? null,
+        leadId: c.leadId ?? null,
+        stage: lead?.stage ?? null,
+        ownerId: lead?.ownerAdminId ?? null,
+        ownerName: lead?.ownerAdminId ? ownerName.get(String(lead.ownerAdminId)) ?? null : null,
+        unread: c.unread ?? 0,
+        lastMessageAt: c.lastMessageAt,
+        lastMessageText: c.lastMessageText,
+        lastDirection: c.lastDirection ?? (c.lastInboundAt && c.lastMessageAt && +new Date(c.lastInboundAt) === +new Date(c.lastMessageAt) ? 'in' : null),
+        lastStatus: c.lastStatus ?? null,
+        windowOpen: open,
+        windowClosesAt: open ? closesAt : null,
+        hasDraft: !!c.aiDraft,
+        done: !!c.doneAt,
+        snoozedUntil: snoozed ? c.snoozedUntil : null,
+      };
+    });
+    const needsReply = (r: (typeof rows)[number]) => r.lastDirection === 'in' && !r.done && !r.snoozedUntil;
+    const closing = (r: (typeof rows)[number]) => !!r.windowClosesAt && +new Date(r.windowClosesAt) - +now <= 4 * H;
+    const term = (q.q ?? '').trim().toLowerCase();
+    // A local number (0300 …) matches the stored international one (92300 …).
+    const digits = term.replace(/\D/g, '').replace(/^0+/, '');
+    const views: Record<string, (r: (typeof rows)[number]) => boolean> = {
+      needs_reply: needsReply,
+      unread: (r) => r.unread > 0,
+      closing: (r) => closing(r) && !r.done,
+      expired: (r) => !r.windowOpen,
+      done: (r) => r.done,
+    };
+    const view = q.unread ? 'unread' : q.view && views[q.view] ? q.view : 'all';
+    const items = rows
+      .filter((r) => view === 'all' || views[view](r))
+      .filter((r) => !term || [r.name, r.businessName, r.city].some((v) => String(v ?? '').toLowerCase().includes(term)) || (digits.length >= 3 && r.waId.includes(digits)))
+      .slice(0, 200);
     return {
       success: true,
-      data: rows.map((c) => {
-        const lead = c.leadId ? leadOf.get(c.leadId) : null;
-        return {
-          _id: String(c._id),
-          waId: c.waId,
-          name: lead?.name ?? c.profileName ?? `+${c.waId}`,
-          businessName: lead?.businessName ?? null,
-          leadId: c.leadId ?? null,
-          stage: lead?.stage ?? null,
-          unread: c.unread ?? 0,
-          lastMessageAt: c.lastMessageAt,
-          lastMessageText: c.lastMessageText,
-          windowOpen: windowOpen(c.lastInboundAt),
-          hasDraft: !!c.aiDraft,
-        };
-      }),
+      data: items,
+      counts: {
+        all: rows.length,
+        needsReply: rows.filter(needsReply).length,
+        unread: rows.filter((r) => r.unread > 0).length,
+        unreadMessages: rows.reduce((n, r) => n + r.unread, 0),
+        closing: rows.filter((r) => closing(r) && !r.done).length,
+        expired: rows.filter((r) => !r.windowOpen).length,
+        done: rows.filter((r) => r.done).length,
+      },
     };
+  }
+
+  /** Mark a chat handled (or not), or snooze it out of "Needs reply" until a time. A new message from them undoes both. */
+  async setStatus(actor: SalesActor, id: string, input: { done?: boolean; snoozeUntil?: string | null }) {
+    await this.mustFind(actor, id);
+    const set: Record<string, unknown> = {};
+    if (input.done !== undefined) set.doneAt = input.done ? new Date() : null;
+    if (input.snoozeUntil !== undefined) {
+      const at = input.snoozeUntil ? new Date(input.snoozeUntil) : null;
+      if (at && (Number.isNaN(at.getTime()) || at <= new Date())) throw new BadRequestException('Choose a time in the future to snooze until.');
+      set.snoozedUntil = at;
+    }
+    if (!Object.keys(set).length) throw new BadRequestException('Nothing to change.');
+    await this.conversations.updateOne({ _id: id }, { $set: set });
+    return this.getConversation(actor, id);
+  }
+
+  /** Managers: hand the chat (its lead) to another rep. Logged on the lead as an owner change. */
+  async assign(actor: SalesActor, id: string, adminId: string | null) {
+    if (!actor.canSeeAll) throw new ForbiddenException('Only a manager can hand a chat to someone else.');
+    const c = await this.mustFind(actor, id);
+    if (!c.leadId) throw new BadRequestException('This chat has no lead to assign.');
+    await this.sales.update(actor, c.leadId, { ownerAdminId: adminId } as any);
+    return this.getConversation(actor, id);
+  }
+
+  /** Start a chat: with a lead (by id) or a new number, by sending an approved template. */
+  async start(actor: SalesActor, input: { leadId?: string; phone?: string; name?: string; templateKey: string }) {
+    let leadId = input.leadId && isId(input.leadId) ? input.leadId : null;
+    if (!leadId) {
+      const waId = toWaId(input.phone ?? '');
+      if (!waId) throw new BadRequestException('Choose a lead, or enter a WhatsApp number with country code (e.g. 0300 1234567 or +92 300 1234567).');
+      const existing: any = await this.leads.findOne({ isDelete: false, phoneKey: waId.slice(-10) }).select('_id ownerAdminId').lean();
+      if (existing) {
+        if (!actor.canSeeAll && existing.ownerAdminId !== actor.adminId) throw new ForbiddenException('This number belongs to another rep’s lead.');
+        leadId = String(existing._id);
+      } else {
+        const name = (input.name ?? '').trim();
+        if (!name) throw new BadRequestException('Enter the person’s name.');
+        const created: any = await this.sales.create(actor, { name, phone: input.phone, source: 'whatsapp' } as any);
+        leadId = String(created.data?.lead?._id ?? created.data?._id);
+      }
+    }
+    const { conversationId } = (await this.openForLead(actor, leadId)).data;
+    await this.sendTemplate(actor, conversationId, input.templateKey);
+    return { success: true, data: { conversationId } };
+  }
+
+  /** Short saved answers for WhatsApp replies (everyone reads; managers edit). */
+  async quickReplies() {
+    const s = await this.load();
+    return { success: true, data: (s.waQuickReplies ?? []) as { id: string; title: string; text: string }[] };
+  }
+
+  async saveQuickReplies(input: { id?: string; title: string; text: string }[]) {
+    if (!Array.isArray(input) || input.length > 50) throw new BadRequestException('Up to 50 quick replies.');
+    const list = input.map((r, i) => {
+      const title = String(r?.title ?? '').trim().slice(0, 60);
+      const text = String(r?.text ?? '').trim().slice(0, 1000);
+      if (!title || !text) throw new BadRequestException(`Quick reply ${i + 1} needs a title and a text.`);
+      return { id: String(r?.id ?? '').trim().slice(0, 40) || `qr${Date.now().toString(36)}${i}`, title, text };
+    });
+    await this.settings.updateOne({ key: 'default' }, { $set: { waQuickReplies: list } }, { upsert: true });
+    return this.quickReplies();
   }
 
   async getConversation(actor: SalesActor, id: string) {
@@ -679,6 +790,9 @@ export class SalesWhatsAppService {
         $set: {
           lastMessageAt: now,
           lastMessageText: o.text.slice(0, 200),
+          lastDirection: 'out',
+          lastStatus: 'sent',
+          lastWaMessageId: o.result.data?.messages?.[0]?.id ?? null,
           unread: 0,
           ...(o.fromAiDraft || o.type === 'text' ? { aiDraft: null } : {}),
         },
