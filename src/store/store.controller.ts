@@ -77,9 +77,11 @@ export class StoreController {
     return this.storeService.getSellerProfiles();
   }
 
-  // Dashboard guidance for one store (owner or staff acting for the owner).
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  // Dashboard guidance for one store (owner or staff acting for the owner). Staff need the dashboard permission and are
+  // pinned to their own store by PermissionsGuard.
+  @UseGuards(JwtAuthGuard, RolesGuard, PermissionsGuard)
   @Roles('seller', 'staff')
+  @RequirePermission('home.view')
   @Get(':storeId/personalization')
   async getSellerPersonalization(@Req() req: any, @Param('storeId') storeId: string) {
     return this.storeService.getSellerPersonalization(actingSellerId(req.user), storeId);

@@ -770,6 +770,10 @@ export class Store {
   // underlying public product/category APIs are not separately locked down,
   // since this is a "hide the storefront from ordinary visitors" gate, not
   // a security boundary for the data itself.
+  /** A developer's free test store (see DevelopmentStoresService): always password-protected, never billed, never live. */
+  @Prop({ type: Boolean, default: false, index: true })
+  isDevelopment: boolean;
+
   @Prop({ type: String, enum: ['public', 'password', 'coming_soon'], default: 'public' })
   privacyMode: 'public' | 'password' | 'coming_soon';
 

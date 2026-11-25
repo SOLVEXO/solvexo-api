@@ -36,6 +36,12 @@ import {
   phoneKey,
   stageTotals,
 } from './sales-ops.util';
+import {
+  BREVO_SYNCED_FIELDS,
+  type ConsentStatus,
+  brevoView,
+  consentView,
+} from './sales-brevo.util';
 
 const CONTACT_TYPES = new Set(['call', 'whatsapp', 'meeting', 'email']);
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -72,6 +78,9 @@ export interface LeadInput {
   ownerAdminId?: string | null;
   dealValuePKR?: number | null;
   tags?: string[];
+  /** Set by hand: true = the lead agreed to marketing email (needs a note saying where/when), false = withdraw. */
+  marketingConsent?: boolean;
+  marketingConsentNote?: string | null;
 }
 export interface LeadListQuery {
   stage?: string;
@@ -79,6 +88,7 @@ export interface LeadListQuery {
   source?: string;
   q?: string;
   due?: 'overdue' | 'today';
+  consent?: ConsentStatus;
   page?: number;
   limit?: number;
 }
@@ -108,9 +118,12 @@ export class SalesOpsService {
 
   // ── Leads ────────────────────────────────────────────────────────────────
 
-  async list(actor: SalesActor, q: LeadListQuery, now = new Date()) {
-    const scope = { isDelete: false, ...leadScope(actor) };
-    const filter: Record<string, unknown> = { ...scope };
+  /** The Mongo filter behind the leads list (also used by the Brevo CSV export, so both show the same leads). */
+  leadFilter(actor: SalesActor, q: LeadListQuery, now = new Date()) {
+    const filter: Record<string, unknown> = {
+      isDelete: false,
+      ...leadScope(actor),
+    };
     if (q.stage) filter.stage = q.stage;
     if (q.source) filter.source = q.source;
     if (q.owner && actor.canSeeAll)
@@ -136,6 +149,17 @@ export class SalesOpsService {
       end.setHours(23, 59, 59, 999);
       filter.nextFollowUpAt = { $lte: end };
     }
+    if (q.consent)
+      filter['marketingConsent.status'] =
+        q.consent === 'none'
+          ? { $nin: ['asked', 'granted', 'withdrawn'] } // leads saved before consent existed have no status: they count as 'none'
+          : q.consent;
+    return filter;
+  }
+
+  async list(actor: SalesActor, q: LeadListQuery, now = new Date()) {
+    const scope = { isDelete: false, ...leadScope(actor) };
+    const filter = this.leadFilter(actor, q, now);
     const limit = Math.min(Math.max(Number(q.limit) || 50, 1), 200),
       page = Math.max(Number(q.page) || 1, 1);
     const [items, total, all] = await Promise.all([
@@ -196,6 +220,9 @@ export class SalesOpsService {
         'Add an email or a phone number so you can reach this lead.',
       );
     await this.assertNotDuplicate(email, pk);
+    const consentNote = input.marketingConsent
+      ? this.requireConsentNote(input.marketingConsentNote)
+      : null;
     const ownerAdminId = actor.canSeeAll
       ? input.ownerAdminId === undefined
         ? actor.adminId
@@ -210,6 +237,19 @@ export class SalesOpsService {
       createdByAdminId: actor.adminId,
       stage: 'new',
       stageChangedAt: new Date(),
+      ...(consentNote
+        ? {
+            marketingConsent: {
+              status: 'granted',
+              at: new Date(),
+              source: 'manual',
+              note: consentNote,
+              askedAt: null,
+              ip: null,
+            },
+            brevo: { syncedAt: null, error: null, pending: !!email },
+          }
+        : {}),
     });
     await this.log(
       String(lead._id),
@@ -217,6 +257,14 @@ export class SalesOpsService {
       `Lead added${input.source ? ` (source: ${input.source.replace(/_/g, ' ')})` : ''}.`,
       actor.adminId,
     );
+    if (consentNote)
+      await this.log(
+        String(lead._id),
+        'system',
+        `Marked as agreed to marketing emails: ${consentNote}`,
+        actor.adminId,
+        { consent: 'granted', source: 'manual' },
+      );
     await this.linkLead(lead);
     return this.get(actor, String(lead._id));
   }
@@ -277,6 +325,7 @@ export class SalesOpsService {
       set.email = email;
       set.phoneKey = pk;
     }
+    const consentLog = this.manualConsent(lead, input, set);
     if (
       input.ownerAdminId !== undefined &&
       input.ownerAdminId !== lead.ownerAdminId
@@ -296,8 +345,20 @@ export class SalesOpsService {
         actor.adminId,
       );
     }
+    const after = { ...lead, ...set };
+    const fieldChanged = BREVO_SYNCED_FIELDS.some(
+      (k) => set[k] !== undefined && set[k] !== lead[k],
+    );
+    if (
+      after.email &&
+      (consentLog ||
+        (fieldChanged && after.marketingConsent?.status === 'granted'))
+    )
+      set['brevo.pending'] = true;
     await this.leads.updateOne({ _id: id }, { $set: set });
-    if (set.email !== undefined) await this.linkLead({ ...lead, ...set });
+    if (consentLog)
+      await this.log(id, 'system', consentLog.text, actor.adminId, consentLog.meta);
+    if (set.email !== undefined) await this.linkLead(after);
     return this.get(actor, id);
   }
 
@@ -742,6 +803,68 @@ export class SalesOpsService {
       adminId,
       { from: lead.stage, to: stage },
     );
+    await this.markBrevoPending(String(lead._id));
+  }
+
+  /** Queues a Brevo re-sync for a consented lead with an email (no-op otherwise). Used by SalesCaptureService too. */
+  async markBrevoPending(leadId: string) {
+    await this.leads.updateOne(
+      {
+        _id: leadId,
+        email: { $ne: null },
+        'marketingConsent.status': 'granted',
+      },
+      { $set: { 'brevo.pending': true } },
+    );
+  }
+
+  /** A hand-set consent change from the lead form, written into `set`; returns the timeline entry to add (or null). */
+  private manualConsent(
+    lead: any,
+    input: LeadInput,
+    set: Record<string, unknown>,
+  ): { text: string; meta: Record<string, unknown> } | null {
+    if (input.marketingConsent === undefined) return null;
+    const current: string = lead.marketingConsent?.status ?? 'none';
+    if (input.marketingConsent === true) {
+      const note = this.requireConsentNote(input.marketingConsentNote);
+      if (current === 'granted') return null;
+      set.marketingConsent = {
+        ...consentView(lead.marketingConsent),
+        status: 'granted',
+        at: new Date(),
+        source: 'manual',
+        note,
+        ip: null,
+      };
+      return {
+        text: `Marked as agreed to marketing emails: ${note}`,
+        meta: { consent: 'granted', source: 'manual' },
+      };
+    }
+    if (current !== 'granted') return null;
+    const note = input.marketingConsentNote?.trim().slice(0, 300) || null;
+    set.marketingConsent = {
+      ...consentView(lead.marketingConsent),
+      status: 'withdrawn',
+      at: new Date(),
+      source: 'manual',
+      note,
+      ip: lead.marketingConsent?.ip ?? null,
+    };
+    return {
+      text: `Marked as no longer wanting marketing emails${note ? `: ${note}` : '.'}`,
+      meta: { consent: 'withdrawn', source: 'manual' },
+    };
+  }
+
+  private requireConsentNote(note?: string | null): string {
+    const n = note?.trim().slice(0, 300) ?? '';
+    if (n.length < 3)
+      throw new BadRequestException(
+        "Say where and when the lead agreed, e.g. 'Asked on call 24 Nov'",
+      );
+    return n;
   }
 
   /** First contact moves a New lead to Contacted. */
@@ -857,7 +980,12 @@ export class SalesOpsService {
 
   private view(l: any) {
     const { phoneKey: _pk, isDelete: _d, __v, ...rest } = l;
-    return { ...rest, _id: String(l._id) };
+    return {
+      ...rest,
+      _id: String(l._id),
+      marketingConsent: consentView(l.marketingConsent),
+      brevo: brevoView(l.brevo),
+    };
   }
 
   private label(stage: string) {

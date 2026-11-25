@@ -14,6 +14,17 @@ export interface ChromeQr {
   logoUrl: string;
   caption: string;
   frame: boolean;
+  /** No background fill at all behind the dots (the seller makes sure the contrast works). */
+  transparent: boolean;
+  /** Colour of the card around the QR (only when `frame`); empty = the QR's own background. */
+  frameBg: string;
+}
+
+export interface PopupLink {
+  label: string;
+  url: string;
+  icon: string;
+  bold: boolean;
 }
 
 export interface ChromePopup {
@@ -26,6 +37,38 @@ export interface ChromePopup {
   showShare: boolean;
   footnote: string;
   width: 'sm' | 'md' | 'lg';
+  /** 'below' = opens right under the strip item (default for the strip), 'center' = a centred window. */
+  placement: 'below' | 'center';
+  /** Exact width in px (overrides `width`); 0 = use `width`. */
+  widthPx: number;
+  /** 'side' = text with the QR/image beside it, 'stack' = everything in one column. */
+  layout: 'side' | 'stack';
+  /** Order of the parts; a part left out is hidden. */
+  order: string[];
+  bg: string;
+  fg: string;
+  /** Corner radius in px; -1 = the theme's own. */
+  radius: number;
+  /** Space inside in px; -1 = automatic. */
+  padding: number;
+  titleSize: number;
+  bodySize: number;
+  align: 'left' | 'center';
+  border: boolean;
+  shadow: boolean;
+  /** 'theme' = the active theme's own popup look; 'classic' = flat and attached (how popups looked before). */
+  style: 'theme' | 'classic';
+  /** auto = the theme's default (classic: the width above), custom = widthPx / width, content = as wide as the page container, full = edge to edge. */
+  widthMode: 'auto' | 'custom' | 'content' | 'full';
+  /** Max height in px with scrolling inside; 0 = automatic. */
+  maxHeight: number;
+  /** Space between the strip and the popup in px; -1 = the theme's own. */
+  gap: number;
+  /** Where image + QR go: beside the text (see `layout`), under it or above it. */
+  mediaPlacement: 'side' | 'below' | 'above';
+  linksTitle: string;
+  linksColumns: number;
+  links: PopupLink[];
 }
 
 export interface ChromeItem {
@@ -40,7 +83,20 @@ export interface ChromeItem {
   bg: string;
   fg: string;
   device: 'all' | 'desktop' | 'mobile';
+  /** Text size in px; 0 = the strip's. */
+  fontSize: number;
+  bold: boolean;
   popup: ChromePopup | null;
+}
+
+export const POPUP_PARTS = ['title', 'body', 'links', 'image', 'qr', 'button', 'share', 'footnote'] as const;
+export const MAX_POPUP_LINKS = 30;
+export const DEFAULT_POPUP_ORDER = [...POPUP_PARTS];
+
+function int(v: unknown, field: string, min: number, max: number, fallback: number): number {
+  if (v === undefined || v === null || v === '') return fallback;
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new BadRequestException(`${field} must be a number`);
+  return Math.min(max, Math.max(min, Math.round(v)));
 }
 
 export const MAX_CHROME_ITEMS = 12;
@@ -95,7 +151,39 @@ function sanitizeQr(v: unknown, field: string): ChromeQr | null {
     logoUrl: image(q.logoUrl, `${field}.logoUrl`),
     caption: text(q.caption, `${field}.caption`, 60),
     frame: q.frame !== false,
+    transparent: q.transparent === true,
+    frameBg: color(q.frameBg, `${field}.frameBg`),
   };
+}
+
+function sanitizeLinks(v: unknown, field: string): PopupLink[] {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) throw new BadRequestException(`${field} must be a list`);
+  if (v.length > MAX_POPUP_LINKS) throw new BadRequestException(`${field} can have at most ${MAX_POPUP_LINKS} links`);
+  const out: PopupLink[] = [];
+  v.forEach((raw, i) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new BadRequestException(`${field}[${i}] must be an object`);
+    const r = raw as Record<string, unknown>;
+    const label = text(r.label, `${field}[${i}].label`, 60);
+    const url = href(r.url, `${field}[${i}].url`);
+    if (!label && !url) return; // an empty row is simply dropped
+    if (!label) throw new BadRequestException(`${field}[${i}] needs a label`);
+    const icon = text(r.icon, `${field}[${i}].icon`, 32);
+    if (icon && !/^[a-z0-9-]+$/.test(icon)) throw new BadRequestException(`${field}[${i}].icon is not valid`);
+    out.push({ label, url, icon, bold: r.bold === true });
+  });
+  return out;
+}
+
+function sanitizeOrder(v: unknown, field: string): string[] {
+  if (v === undefined || v === null) return [...DEFAULT_POPUP_ORDER];
+  if (!Array.isArray(v) || v.length > POPUP_PARTS.length) throw new BadRequestException(`${field} is not valid`);
+  const out: string[] = [];
+  for (const k of v) {
+    if (typeof k !== 'string' || !(POPUP_PARTS as readonly string[]).includes(k)) throw new BadRequestException(`${field} has an unknown part`);
+    if (!out.includes(k)) out.push(k);
+  }
+  return out;
 }
 
 function sanitizePopup(v: unknown, field: string): ChromePopup | null {
@@ -112,6 +200,27 @@ function sanitizePopup(v: unknown, field: string): ChromePopup | null {
     showShare: p.showShare === true,
     footnote: text(p.footnote, `${field}.footnote`, 300),
     width: oneOf(p.width, ['sm', 'md', 'lg'], `${field}.width`, 'md'),
+    placement: oneOf(p.placement, ['below', 'center'], `${field}.placement`, 'below'),
+    widthPx: int(p.widthPx, `${field}.widthPx`, 0, 1600, 0),
+    layout: oneOf(p.layout, ['side', 'stack'], `${field}.layout`, 'side'),
+    order: sanitizeOrder(p.order, `${field}.order`),
+    bg: color(p.bg, `${field}.bg`),
+    fg: color(p.fg, `${field}.fg`),
+    radius: int(p.radius, `${field}.radius`, -1, 200, -1),
+    padding: int(p.padding, `${field}.padding`, -1, 200, -1),
+    titleSize: int(p.titleSize, `${field}.titleSize`, 0, 120, 0),
+    bodySize: int(p.bodySize, `${field}.bodySize`, 0, 48, 0),
+    align: oneOf(p.align, ['left', 'center'], `${field}.align`, 'left'),
+    border: p.border === true,
+    shadow: p.shadow !== false,
+    style: oneOf(p.style, ['theme', 'classic'], `${field}.style`, 'classic'),
+    widthMode: oneOf(p.widthMode, ['auto', 'custom', 'content', 'full'], `${field}.widthMode`, 'auto'),
+    maxHeight: int(p.maxHeight, `${field}.maxHeight`, 0, 2000, 0),
+    gap: int(p.gap, `${field}.gap`, -1, 200, -1),
+    mediaPlacement: oneOf(p.mediaPlacement, ['side', 'below', 'above'], `${field}.mediaPlacement`, 'side'),
+    linksTitle: text(p.linksTitle, `${field}.linksTitle`, 80),
+    linksColumns: int(p.linksColumns, `${field}.linksColumns`, 1, 6, 2),
+    links: sanitizeLinks(p.links, `${field}.links`),
   };
 }
 
@@ -142,6 +251,8 @@ export function sanitizeChromeItems(input: unknown, field: string): ChromeItem[]
       bg: color(r.bg, `${at}.bg`),
       fg: color(r.fg, `${at}.fg`),
       device: oneOf(r.device, ['all', 'desktop', 'mobile'], `${at}.device`, 'all'),
+      fontSize: int(r.fontSize, `${at}.fontSize`, 0, 60, 0),
+      bold: r.bold === true,
       popup: kind === 'popup' ? sanitizePopup(r.popup, `${at}.popup`) : null,
     };
     if (!item.label && !item.icon && !item.iconUrl) throw new BadRequestException(`${at} needs a label or an icon`);

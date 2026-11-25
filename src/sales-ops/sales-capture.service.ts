@@ -60,6 +60,8 @@ export interface CaptureInput {
   partnerId?: string | null;
   ownerAdminId?: string | null;
   createdByAdminId?: string | null;
+  /** The person ticked "send me tips and offers by email" on a public form. Unticked never takes an earlier yes away. */
+  marketingOptIn?: { source: 'demo_form' | 'contact_form'; ip?: string | null } | null;
 }
 export interface CaptureResult {
   leadId: string;
@@ -160,6 +162,18 @@ export class SalesCaptureService {
         null,
         { source: input.source },
       );
+      // Matched on the phone with a different email on file: the yes was for the address they typed, not the lead's.
+      const granted = await this.grantFormConsent(
+        id,
+        existing,
+        email && (existing.email ?? email) === email ? email : null,
+        input.marketingOptIn,
+      );
+      if (
+        !granted &&
+        ['email', 'phone', 'businessName', 'city'].some((k) => k in fill)
+      )
+        await this.sales.markBrevoPending(id);
       if (existing.stage === 'lost')
         await this.sales.setStage(
           existing,
@@ -204,6 +218,7 @@ export class SalesCaptureService {
       input.createdByAdminId ?? null,
       { source: input.source },
     );
+    await this.grantFormConsent(id, lead, email, input.marketingOptIn);
     if (autoOwner && this.growth) {
       const names = (await this.sales.owners()).data;
       await this.sales.log(
@@ -216,6 +231,45 @@ export class SalesCaptureService {
     }
     await this.sales.linkLead(lead).catch(() => false);
     return { leadId: id, created: true };
+  }
+
+  /**
+   * The person ticked the marketing box on a public form: their lead (with an email) is now 'granted' and queued for
+   * Brevo. Returns true when it changed anything. An unticked box never comes here, so it never takes a yes away.
+   */
+  private async grantFormConsent(
+    leadId: string,
+    lead: any,
+    email: string | null,
+    optIn: CaptureInput['marketingOptIn'],
+  ): Promise<boolean> {
+    if (!optIn || !email) return false;
+    if (lead.marketingConsent?.status === 'granted') return false;
+    const ip = typeof optIn.ip === 'string' ? optIn.ip.slice(0, 64) : null;
+    await this.leads.updateOne(
+      { _id: leadId },
+      {
+        $set: {
+          marketingConsent: {
+            status: 'granted',
+            at: new Date(),
+            source: optIn.source,
+            note: null,
+            askedAt: lead.marketingConsent?.askedAt ?? null,
+            ip,
+          },
+          'brevo.pending': true,
+        },
+      },
+    );
+    await this.sales.log(
+      leadId,
+      'system',
+      `Agreed to marketing emails (${optIn.source === 'demo_form' ? 'Book a demo form' : 'Contact Us form'})`,
+      null,
+      { consent: 'granted', source: optIn.source },
+    );
+    return true;
   }
 
   /** The public Book-a-demo form on solvexo.store. */
@@ -233,7 +287,8 @@ export class SalesCaptureService {
     utmCampaign?: string | null;
     page?: string | null;
     partnerCode?: string | null;
-  }) {
+    marketingOptIn?: boolean;
+  }, ip: string | null = null) {
     if (!phoneKey(dto.phone))
       throw new BadRequestException(
         'Enter a phone number we can call or WhatsApp.',
@@ -271,6 +326,8 @@ export class SalesCaptureService {
         medium: dto.utmMedium,
         campaign: dto.utmCampaign,
       },
+      marketingOptIn:
+        dto.marketingOptIn === true ? { source: 'demo_form', ip } : null,
     });
     void this.notifyManagers(
       `${r.created ? 'New demo request' : 'Demo request (returning lead)'}: ${dto.name.trim()}`,
@@ -321,18 +378,25 @@ export class SalesCaptureService {
   }
 
   /** A Contact Us message about selling on Solvexo becomes (or lands on) a lead. */
-  async fromContactMessage(c: {
-    name: string;
-    email: string;
-    topic: string;
-    message: string;
-  }) {
+  async fromContactMessage(
+    c: {
+      name: string;
+      email: string;
+      topic: string;
+      message: string;
+    },
+    opts: { marketingOptIn?: boolean; ip?: string | null } = {},
+  ) {
     const r = await this.capture({
       name: c.name,
       email: c.email,
       source: 'contact_message',
       sourceDetail: c.topic,
       note: c.message,
+      marketingOptIn:
+        opts.marketingOptIn === true
+          ? { source: 'contact_form', ip: opts.ip ?? null }
+          : null,
     });
     void this.notifyManagers(
       `${r.created ? 'New lead' : 'Returning lead'} from Contact Us: ${c.name.trim()}`,

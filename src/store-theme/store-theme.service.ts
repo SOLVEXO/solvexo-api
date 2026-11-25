@@ -835,10 +835,10 @@ export class StoreThemeService {
     if (dto.navAlignment !== undefined) set['draft.header.navAlignment'] = dto.navAlignment;
     if (dto.headerStyle !== undefined) set['draft.header.headerStyle'] = dto.headerStyle;
     if (dto.menuId !== undefined) set['draft.header.menuId'] = dto.menuId;
-    const headerKeys = ['logoPosition', 'menuPosition', 'logoWidth', 'mobileLogoWidth', 'sticky', 'showSearch', 'showAccount', 'showWishlist', 'showShopMenu',
+    const headerKeys = ['logoPosition', 'menuPosition', 'logoWidth', 'mobileLogoWidth', 'sticky', 'showSearch', 'showAccount', 'showWishlist', 'showCart', 'iconSet', 'iconSize', 'iconStroke', 'iconTooltips', 'iconLabels', 'iconTipStyle', 'iconTipPosition', 'iconTipSearch', 'iconTipAccount', 'iconTipWishlist', 'iconTipCart', 'dropdownBg', 'dropdownRadius', 'dropdownShadow', 'dropdownHover', 'showShopMenu',
       'shopMenuLabel', 'includePagesInNav', 'showDefaultBlogLink', 'blogLinkLabel', 'bgColor', 'textColor', 'paddingY', 'showDivider', 'stickyMode', 'transparentOnHome', 'transparentTextColor',
       'navFontSize', 'navUppercase', 'navHoverStyle', 'searchStyle', 'searchPosition', 'ctaLabel', 'ctaLink', 'topBarEnabled', 'topBarText', 'topBarPhone',
-      'topBarEmail', 'topBarBg', 'topBarTextColor', 'topBarSize', 'preset'] as const;
+      'topBarEmail', 'topBarBg', 'topBarTextColor', 'topBarSize', 'topBarFontSize', 'topBarPadY', 'menuOverflow', 'preset'] as const;
     if (dto.topBarItems !== undefined) set['draft.header.topBarItems'] = sanitizeChromeItems(dto.topBarItems, 'topBarItems');
     const trimmed = new Set(['shopMenuLabel', 'blogLinkLabel', 'ctaLabel', 'ctaLink', 'topBarText', 'topBarPhone', 'topBarEmail', 'preset']);
     for (const key of headerKeys) {

@@ -58,6 +58,17 @@ describe('variant bulk import', () => {
     expect(calls.upd[0].dto.images).toEqual(['https://cdn.example.com/s.jpg']);
   });
 
+  it('several Image URL links separated by | are all linked to the variant', async () => {
+    const { deps, calls } = setup();
+    const header = HEADER + ',Image URL';
+    const res = await importVariantsCsv(deps, 'SEL', 'S1', [
+      header,
+      'tee-s,,Size,M,,,,,TEE-M,12,,7,,https://cdn.example.com/1.jpg | https://cdn.example.com/2.jpg',
+    ].join('\n'));
+    expect(res.data).toMatchObject({ created: 1, failedCount: 0 });
+    expect(calls.add[0].dto.images).toEqual(['https://cdn.example.com/1.jpg', 'https://cdn.example.com/2.jpg']);
+  });
+
   it('falls back to a unique Product Name; ambiguous or unknown names fail', async () => {
     const { deps, calls } = setup();
     const res = await run(deps, [',Tee,Size,L,,,,,TEE-L,12,,,', ',Dup,Size,L,,,,,DUP-L,1,,,', ',Nope,Size,L,,,,,N-L,1,,,']);

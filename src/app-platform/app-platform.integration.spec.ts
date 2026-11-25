@@ -222,4 +222,96 @@ d('app platform service (real Mongo, direct calls)', () => {
     await svc.uninstall(A, owner, t.install_id);
     await expect(svc.sessionToken(A, owner, t.install_id)).rejects.toThrow(/not found/i);
   });
+
+  // ── developers: private apps, review, listing ─────────────────────────────
+  const DEV = 'dev1'; const OTHER_DEV = 'dev2';
+  const MINE = 'd4'.repeat(12);
+  const devApp = (extra: any = {}) => svc.devCreate(DEV, { name: 'My tool', redirectUrls: [CB], requestedScopes: ['read_orders'], ...extra });
+  const ownStore = async () => { await m.stores.create({ _id: MINE, isDelete: false, sellerId: DEV }); };
+
+  it('a developer\'s new app is private: installs on their own store with no review, nowhere else, invisible to others', async () => {
+    await ownStore(); await m.stores.updateOne({ _id: A }, { $set: { sellerId: 'someone-else' } });
+    const r = await devApp();
+    expect(r.clientSecret).toMatch(/^appsec_/);
+    const mine: any[] = await svc.listAvailable(MINE);
+    expect(mine.map((a) => [a.name, a.private])).toEqual([['My tool', true]]);
+    expect(await svc.listAvailable(A)).toHaveLength(0);
+    await expect(svc.authorize(A, owner, { client_id: r.clientId, redirect_uri: CB, scope: 'read_orders', state: 's1' })).rejects.toThrow(/not available/);
+    const t: any = await swap(r, (await consent(r, MINE)).code);
+    expect(t.store_id).toBe(MINE); expect(t.access_token).toMatch(/^sxk_/);
+    await expect(svc.devGet(OTHER_DEV, r.id)).rejects.toThrow(/not found/i);
+    await expect(svc.devUpdate(OTHER_DEV, r.id, { name: 'Hijack' })).rejects.toThrow(/not found/i);
+    await expect(svc.devSubmit(OTHER_DEV, r.id)).rejects.toThrow(/not found/i);
+    await expect(svc.devDelete(OTHER_DEV, r.id)).rejects.toThrow(/not found/i);
+    expect((await svc.devList(OTHER_DEV)).items).toEqual([]);
+    const list: any = await svc.devList(DEV);
+    expect(list.items[0]).toMatchObject({ name: 'My tool', listed: false, reviewStatus: 'none', installs: 1 });
+    expect(JSON.stringify(list)).not.toMatch(/appsec_|clientSecretHash|sessionSecretEnc/);
+  });
+
+  it('the code swap checks ownership again: a store that changed hands can\'t finish installing a private app', async () => {
+    await ownStore(); const r = await devApp();
+    const { code } = await consent(r, MINE);
+    await m.stores.updateOne({ _id: MINE }, { $set: { sellerId: 'new-owner' } });
+    await expect(swap(r, code)).rejects.toThrow(/not available for this store/);
+  });
+
+  it('listing: submit needs a description and email; Super Admin rejects with a note or approves; then every store sees it', async () => {
+    const r = await devApp();
+    await expect(svc.devSubmit(DEV, r.id)).rejects.toThrow(/description and a support email/);
+    await svc.devUpdate(DEV, r.id, { description: 'Daily sales report', developerEmail: 'dev@example.com' });
+    expect(await svc.devSubmit(DEV, r.id)).toMatchObject({ reviewStatus: 'submitted' });
+    await expect(svc.devSubmit(DEV, r.id)).rejects.toThrow(/already waiting/);
+    const plain = await reg({ name: 'Admin app' }, false);
+    expect((await svc.listApps())[0]).toMatchObject({ name: 'My tool', reviewStatus: 'submitted' }); // the queue comes first
+    await expect(svc.reject(admin, r.id, '  ')).rejects.toThrow(/what the developer needs/);
+    await expect(svc.reject(admin, plain.id, 'x')).rejects.toThrow(/not waiting/);
+    expect(await svc.reject(admin, r.id, 'Add a privacy policy link')).toMatchObject({ reviewStatus: 'rejected', reviewNote: 'Add a privacy policy link' });
+    expect(await svc.devGet(DEV, r.id)).toMatchObject({ reviewStatus: 'rejected', reviewNote: 'Add a privacy policy link', listed: false });
+    await svc.devSubmit(DEV, r.id);
+    await svc.approve(admin, r.id);
+    expect(await svc.devGet(DEV, r.id)).toMatchObject({ listed: true, reviewStatus: 'none', reviewNote: '' });
+    expect((await svc.listAvailable(A)).map((a: any) => [a.name, a.private])).toEqual([['My tool', false]]);
+    await expect(svc.devSubmit(DEV, r.id)).rejects.toThrow(/already listed/);
+    await expect(svc.devDelete(DEV, r.id)).rejects.toThrow(/can't be deleted/);
+  });
+
+  it('a listed app asking for a new permission goes back to review; stores that installed it keep working', async () => {
+    const r = await devApp({ description: 'x', developerEmail: 'dev@example.com', embedUrl: 'https://app.example.com/embed' });
+    await svc.devSubmit(DEV, r.id); await svc.approve(admin, r.id);
+    const t: any = await swap(r, (await consent(r)).code); // a stranger's store A installs the listed app
+    const same: any = await svc.devUpdate(DEV, r.id, { requestedScopes: ['read_orders'], name: 'My tool 2' });
+    expect(same).toMatchObject({ listed: true, relisting: false, name: 'My tool 2' });
+    const wider: any = await svc.devUpdate(DEV, r.id, { requestedScopes: ['read_orders', 'write_orders'] });
+    expect(wider).toMatchObject({ listed: false, reviewStatus: 'submitted', relisting: true });
+    expect(await svc.listAvailable(B)).toHaveLength(0);
+    await expect(svc.authorize(B, owner, { client_id: r.clientId, redirect_uri: CB, scope: 'read_orders', state: 's2' })).rejects.toThrow(/not available/);
+    expect((await svc.sessionToken(A, owner, t.install_id)).token).toBeTruthy();
+    expect((await m.tokens.findOne({ appInstallId: t.install_id }).lean()).revokedAt).toBeNull();
+  });
+
+  it('deleting a private app removes it from the developer\'s stores; the per-account limit holds', async () => {
+    await ownStore(); const r = await devApp();
+    const t: any = await swap(r, (await consent(r, MINE)).code);
+    expect(await svc.devDelete(DEV, r.id)).toEqual({ success: true, uninstalled: 1 });
+    expect((await m.tokens.findOne({ appInstallId: t.install_id }).lean()).revokedAt).toBeInstanceOf(Date);
+    expect(await m.apps.countDocuments({})).toBe(0);
+    for (let i = 0; i < 10; i++) await devApp({ name: `App ${i}` });
+    await expect(devApp({ name: 'One too many' })).rejects.toThrow(/At most 10 apps/);
+  });
+
+  it('a suspended developer app can\'t be edited, re-keyed or installed', async () => {
+    await ownStore(); const r = await devApp();
+    await svc.suspend(admin, r.id);
+    await expect(svc.devUpdate(DEV, r.id, { name: 'x' })).rejects.toThrow(/suspended/);
+    await expect(svc.devRotate(DEV, r.id)).rejects.toThrow(/suspended/);
+    await expect(svc.authorize(MINE, owner, { client_id: r.clientId, redirect_uri: CB, scope: 'read_orders', state: 's3' })).rejects.toThrow(/not available/);
+  });
+
+  it('the code swap is standard OAuth: grant_type authorization_code is accepted, any other grant is refused', async () => {
+    const r = await reg();
+    await expect(swap(r, (await consent(r)).code, { grant_type: 'client_credentials' })).rejects.toThrow(/unsupported_grant_type/);
+    const t: any = await swap(r, (await consent(r)).code, { grant_type: 'authorization_code' });
+    expect(t.access_token).toMatch(/^sxk_/);
+  });
 });

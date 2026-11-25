@@ -1,0 +1,20 @@
+{
+  "attach": {
+    "url": "/webhooks",
+    "method": "POST",
+    "body": {
+      "url": "{{webhook.url}}",
+      "events": ["{{parameters.event}}"],
+      "description": "Make: {{parameters.event}}"
+    },
+    "response": {
+      "data": {
+        "externalHookId": "{{body.id}}"
+      }
+    }
+  },
+  "detach": {
+    "url": "/webhooks/{{webhook.externalHookId}}",
+    "method": "DELETE"
+  }
+}

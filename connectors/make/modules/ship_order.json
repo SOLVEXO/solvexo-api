@@ -1,0 +1,33 @@
+{
+  "name": "shipOrder",
+  "label": "Ship an Order",
+  "description": "Marks everything not shipped yet as shipped, with tracking. The buyer gets the shipping email unless you turn it off.",
+  "type": "action",
+  "communication": {
+    "url": "/orders/{{encodeURL(parameters.orderId)}}/fulfillments",
+    "method": "POST",
+    "headers": {
+      "Idempotency-Key": "make:{{md5(parameters.orderId + ':' + ifempty(parameters.trackingNumber; ''))}}"
+    },
+    "body": {
+      "carrier": "{{parameters.carrier}}",
+      "tracking_number": "{{parameters.trackingNumber}}",
+      "tracking_url": "{{parameters.trackingUrl}}",
+      "notify_customer": "{{ifempty(parameters.notifyCustomer; true)}}"
+    },
+    "response": { "output": "{{body}}" }
+  },
+  "mappableParameters": [
+    { "name": "orderId", "label": "Order ID", "type": "text", "required": true },
+    { "name": "carrier", "label": "Courier", "type": "text", "help": "e.g. TCS, Leopards, DHL." },
+    { "name": "trackingNumber", "label": "Tracking number", "type": "text" },
+    { "name": "trackingUrl", "label": "Tracking link", "type": "url" },
+    { "name": "notifyCustomer", "label": "Email the buyer", "type": "boolean", "default": true }
+  ],
+  "interface": [
+    { "name": "id", "label": "Order ID", "type": "text" },
+    { "name": "order_number", "label": "Order number", "type": "text" },
+    { "name": "status", "label": "Status", "type": "text" },
+    { "name": "shipped_at", "label": "Shipped at", "type": "date" }
+  ]
+}

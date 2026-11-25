@@ -2,7 +2,11 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
 
-/** An app in Solvexo's registry. Registered and approved by a Solvexo admin; a store owner installs it with a consent screen. */
+/**
+ * An app in Solvexo's registry. Registered by a Solvexo admin or by a developer (any seller account, `ownerSellerId`).
+ * `approved` = listed for every store. A developer's own `draft` app is private: it installs only on stores the
+ * developer owns, with no review. Listing for everyone needs a Super Admin review (`reviewStatus`).
+ */
 @Schema({ timestamps: true, collection: 'appdefinitions' })
 export class AppDefinition {
   @Prop({ type: String, required: true, trim: true, maxlength: 80 }) name: string;
@@ -28,6 +32,12 @@ export class AppDefinition {
   @Prop({ type: String, default: null }) embedUrl: string | null;
   @Prop({ type: String, default: '', maxlength: 60 }) embedTitle: string;
   @Prop({ type: String, enum: ['draft', 'approved', 'suspended'], default: 'draft' }) status: 'draft' | 'approved' | 'suspended';
+  /** The developer (a seller account) who registered it; null for apps a Solvexo admin registered. */
+  @Prop({ type: String, default: null, index: true }) ownerSellerId: string | null;
+  /** Listing review: none (private / never asked), submitted (waiting for Super Admin), rejected (see reviewNote). */
+  @Prop({ type: String, enum: ['none', 'submitted', 'rejected'], default: 'none' }) reviewStatus: 'none' | 'submitted' | 'rejected';
+  @Prop({ type: String, default: '', maxlength: 1000 }) reviewNote: string;
+  @Prop({ type: Date, default: null }) submittedAt: Date | null;
   @Prop({ type: Date, default: null }) approvedAt: Date | null;
   @Prop({ type: String, default: null }) approvedBy: string | null;
 }

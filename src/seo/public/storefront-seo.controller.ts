@@ -92,6 +92,12 @@ export class StorefrontSeoController {
       return { title, description: '', canonicalUrl: url, url, ogTitle: title, ogDescription: '', ogImage: null, noindex: false, jsonLd: [] };
     }
 
+    if (routePath === '/collections') {
+      const url = `${getCanonicalOrigin(store)}/collections`;
+      const title = `Collections - ${(store as any).name}`;
+      return { title, description: '', canonicalUrl: url, url, ogTitle: title, ogDescription: '', ogImage: null, noindex: false, jsonLd: [] };
+    }
+
     const productMatch = routePath.match(/^\/product\/([^/]+)$/);
     if (productMatch) {
       const slug = productMatch[1];
@@ -157,6 +163,11 @@ export class StorefrontSeoController {
     const pageSlug = routePath.slice(1);
     if (!pageSlug.includes('/') && !BUILT_IN_STOREFRONT_PATHS.has(pageSlug)) {
       const page = await this.db.repositories.storePageModel.findOne({ storeId, type: 'custom', slug: pageSlug, status: 'published', isDelete: false }).select('title seo slug translations').lean() as any;
+      if (!page && pageSlug === 'faqs') {
+        const faqUrl = `${getCanonicalOrigin(store)}/faqs`;
+        const faqTitle = `FAQs - ${(store as any).name}`;
+        return { title: faqTitle, description: '', canonicalUrl: faqUrl, url: faqUrl, ogTitle: faqTitle, ogDescription: '', ogImage: null, noindex: false, jsonLd: [] };
+      }
       if (!page) throw new NotFoundException('Store page not found');
       const seo = page.seo ?? {};
       const url = seo.canonicalUrlOverride || `${getCanonicalOrigin(store)}/${encodeURIComponent(page.slug)}`;
@@ -339,6 +350,8 @@ const BUILT_IN_STOREFRONT_PATHS = new Set([
   'blog', 'cart', 'checkout', 'login', 'register', 'verify-otp', 'forgot-password', 'new-password',
   'account', 'wishlist', 'loyalty', 'messages', 'notifications', 'returns', 'gift-cards', 'store-credit',
   'orders', 'addresses', 'reviews', 'search',
+  // Customer area / digital pages the storefront router also owns (never a seller page; not for search engines).
+  'library', 'memberships', 'licenses', 'learn', 'wholesale', 'subscriptions', 'messaging-preferences',
 ]);
 
 function normalizeRoutePath(value: string | undefined): string {
@@ -352,8 +365,9 @@ function normalizeRoutePath(value: string | undefined): string {
 function isBuiltInStorefrontPath(path: string): boolean {
   const parts = path.split('/').filter(Boolean);
   if (parts.length === 1) return BUILT_IN_STOREFRONT_PATHS.has(parts[0]);
-  if (parts.length === 2 && ['orders', 'order-status', 'blog', 'blogs', 'category', 'collections', 'product'].includes(parts[0])) return true;
+  if (parts.length === 2 && ['orders', 'order-status', 'blog', 'blogs', 'category', 'collections', 'product', 'discount', 'cod-confirm'].includes(parts[0])) return true;
   if (parts.length === 3 && parts[0] === 'blogs') return true;
+  if (parts.length === 3 && parts[0] === 'gift-cards' && parts[1] === 'view') return true;
   if (parts.length === 3 && parts[0] === 'checkout' && parts[2] === 'return') return true;
   return false;
 }

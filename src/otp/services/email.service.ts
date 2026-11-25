@@ -54,6 +54,12 @@ export interface StoreMailHook {
   report(storeId: string, ok: boolean, error?: string): Promise<void>;
 }
 
+/** SMTP_REPLY_TO, when it is a plausible address. */
+export function platformReplyTo(env: NodeJS.ProcessEnv = process.env): string | null {
+  const v = env.SMTP_REPLY_TO?.trim();
+  return v && /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(v) ? v : null;
+}
+
 @Injectable()
 export class EmailService {
   private transporter: nodemailer.Transporter;
@@ -64,10 +70,14 @@ export class EmailService {
 
   constructor() {
     // Configure email transporter
+    const port = parseInt(process.env.SMTP_PORT as string) || 587;
     this.transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST || 'smtp.gmail.com',
-      port: parseInt(process.env.SMTP_PORT as string) || 587,
-      secure: false, // true for 465, false for other ports
+      port,
+      // 465 = TLS from the first byte (e.g. smtp.hostinger.com); any other port upgrades with STARTTLS and must not
+      // fall back to plain text.
+      secure: port === 465,
+      requireTLS: port !== 465,
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASSWORD,
@@ -171,7 +181,7 @@ export class EmailService {
     try {
       // `fromName` = the store's name for customer-facing mails (the mailbox
       // stays the platform's sender); omitted = the platform name.
-      const displayName = String(fromName || process.env.APP_NAME || 'Your App')
+      const displayName = String(fromName || process.env.APP_NAME || 'Solvexo')
         .replace(/["\r\n<>]/g, '')
         .trim();
       const info = await transporter.sendMail({
@@ -181,7 +191,9 @@ export class EmailService {
         html,
         // Plain-text part alongside the HTML — HTML-only mail is a spam signal.
         text: htmlToPlainText(html),
-        ...(replyTo ? { replyTo } : {}),
+        // The caller's reply-to (a store's contact address); else, for the platform's own mail only (no store name),
+        // SMTP_REPLY_TO, so a reply to noreply@ reaches a real mailbox. A store's mail never routes replies to Solvexo.
+        ...(replyTo ? { replyTo } : !fromName && !storeId && platformReplyTo() ? { replyTo: platformReplyTo()! } : {}),
         ...(headers ? { headers } : {}),
         ...(attachments?.length ? { attachments } : {}),
       });

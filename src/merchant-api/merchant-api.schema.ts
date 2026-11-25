@@ -16,6 +16,8 @@ export class WebhookSubscription {
   @Prop({ type: String, default: '' }) description: string;
   /** Set when this webhook belongs to an installed app (it dies with the install). */
   @Prop({ type: String, default: null, index: true }) appInstallId: string | null;
+  /** Set when an API token (e.g. Zapier, Make) made this webhook through the API: only that token can see or delete it, and it dies with the token. */
+  @Prop({ type: String, default: null, index: true }) apiTokenId: string | null;
 }
 export type WebhookSubscriptionDocument = HydratedDocument<WebhookSubscription>;
 export const WebhookSubscriptionSchema = SchemaFactory.createForClass(WebhookSubscription);

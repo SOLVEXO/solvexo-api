@@ -177,6 +177,7 @@ export const STOREFRONT_EN: Record<string, any> = {
   "sortBy": "Sort by:",
   "sortByAria": "Sort by",
   "sortByLabel": "Sort by",
+  "sortLabel": "Sort",
   "suggestions": "Search suggestions",
   "suggestionsGroup": "Suggestions",
   "suggestionsUnavailable": "Suggestions are unavailable. Press Enter to search.",
@@ -729,15 +730,21 @@ export const STOREFRONT_EN: Record<string, any> = {
  },
  "ld": {
   "addToCart": "Add to cart",
+  "allCategories": "All categories",
+  "callUs": "Call us",
   "datasheet": "Datasheet",
+  "exploreProducts": "Explore products",
+  "featured": "Featured",
   "invalidCredentials": "Invalid credentials. Check your email and password.",
   "newProducts": "New products",
   "noImage": "No image",
   "reference": "Reference",
   "relatedProducts": "Related products",
+  "searchPlaceholder": "Search by name, reference…",
   "tags": "Tags",
   "technicalSpecs": "Technical characteristics",
   "viewAll": "View all",
+  "viewAllIn": "View all in {{name}}",
   "viewAllProducts": "View all products"
  },
  "locale": {
@@ -753,9 +760,11 @@ export const STOREFRONT_EN: Record<string, any> = {
  "nav": {
   "account": "Account",
   "allProducts": "All products",
+  "cart": "Cart",
   "cartAria": "Cart, {{count}} items",
   "cartAria_one": "Cart, {{count}} item",
   "cartAria_other": "Cart, {{count}} items",
+  "cartTip": "Cart ({{count}})",
   "categories": "Categories",
   "closeMenu": "Close menu",
   "closeSearch": "Close search",
@@ -769,6 +778,7 @@ export const STOREFRONT_EN: Record<string, any> = {
   "searchProducts": "Search products…",
   "shop": "Shop",
   "shopMenuAria": "Shop categories and collections",
+  "signIn": "Sign in",
   "wishlist": "Wishlist",
   "wishlistAria_one": "Wishlist, {{count}} item",
   "wishlistAria_other": "Wishlist, {{count}} items"
@@ -1449,7 +1459,23 @@ export const STOREFRONT_EN: Record<string, any> = {
   "your_profile_is_not_available": "Your profile is not available.",
   "your_review": "Your review",
   "verified_business": "Verified business",
-  "verified_business_hint": "Business identity checked by Solvexo"
+  "verified_business_hint": "Business identity checked by Solvexo",
+  "set_add_all": "Add all {{n}} to cart",
+  "set_adding": "Adding…",
+  "set_added_all": "All {{ok}} added to your cart.",
+  "set_added_some": "{{ok}} added to your cart. {{skipped}} could not be added (sold out or unavailable).",
+  "set_count": "{{n}} products",
+  "set_subtotal": "Individual subtotal",
+  "set_failed": "We could not load these products. Please try again.",
+  "set_empty": "No products in this collection yet.",
+  "share_on_linkedin": "Share on LinkedIn",
+  "share_on_telegram": "Share on Telegram",
+  "powered_by_solvexo": "Powered by Solvexo",
+  "copy": "Copy",
+  "name": "Name",
+  "send": "Send",
+  "out_of_stock": "Out of stock",
+  "retry": "Retry"
  },
  "product": {
   "addToCart": "Add to Cart",
@@ -1519,7 +1545,22 @@ export const STOREFRONT_EN: Record<string, any> = {
   "description": "Description",
   "details": "Product details",
   "onSaleFrom": "On sale from",
-  "bundleBadge": "Bundle"
+  "bundleBadge": "Bundle",
+  "bundleIncludes": "This bundle includes",
+  "fbtHeading": "Frequently bought together",
+  "fbtAdd": "Add selected to cart",
+  "fbtThis": "this item",
+  "fbtTotal": "Total",
+  "qaHeading": "Questions & answers",
+  "qaEmpty": "No questions yet. Be the first to ask.",
+  "qaThanks": "Thanks! Your question was sent. It will appear here once the seller answers.",
+  "qaAsk": "Ask a question",
+  "qaQuestion": "Your question",
+  "qaName": "Your name",
+  "qaEmail": "Email (optional, never shown)",
+  "qaSending": "Sending…",
+  "qaSend": "Send question",
+  "preorderLeft": "{{count}} left"
  },
  "returns": {
   "approved": "Return approved",
@@ -1602,6 +1643,8 @@ export const STOREFRONT_EN: Record<string, any> = {
   "contactWaitFile": "Please wait until your file has finished uploading.",
   "goToSlide": "Go to slide {{n}}",
   "nextSlide": "Next slide",
+  "openImage": "Open this image",
+  "openSlide": "Open this slide",
   "pauseSlideshow": "Pause slideshow",
   "playSlideshow": "Play slideshow",
   "prevSlide": "Previous slide",
@@ -1618,6 +1661,7 @@ export const STOREFRONT_EN: Record<string, any> = {
   "city": "City",
   "completed": "Completed",
   "confirm_cancel": "Yes, cancel it",
+  "each_order": "Each order: {{amount}} (incl. shipping and tax, at today's prices)",
   "error": "Could not start the subscription",
   "error_action": "That did not work",
   "every_months": "Every {{n}} month(s)",
@@ -1638,6 +1682,8 @@ export const STOREFRONT_EN: Record<string, any> = {
   "pay_note": "Each delivery is an order you pay like any other (bank transfer or on delivery). Skip, pause or cancel any time from your account.",
   "phone": "Phone",
   "plan": "Plan",
+  "products": "Products in this subscription",
+  "qty": "Qty {{n}}",
   "resume": "Resume",
   "retry": "Try again",
   "save": "save {{p}}%",
@@ -1649,6 +1695,7 @@ export const STOREFRONT_EN: Record<string, any> = {
   "subscribe_save": "Subscribe & save",
   "title": "Purchase options",
   "trial": "Your first order is placed in {{d}} days.",
+  "unavailable": "No longer available",
   "working": "Please wait...",
   "zip": "Postal code"
  },
@@ -1710,5 +1757,9 @@ export const STOREFRONT_EN: Record<string, any> = {
   "signin_link": "Sign in",
   "terms_notice": "Your order is placed now and your invoice is due on your payment terms{{terms}}. The store will record your payments.",
   "your_price": "Your wholesale price: {{price}} each"
+ },
+ "card": {
+  "badgeBest": "Best seller",
+  "badgeNew": "New"
  }
 };

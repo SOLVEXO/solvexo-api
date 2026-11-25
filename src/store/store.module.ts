@@ -4,6 +4,8 @@ import { StoreService } from './store.service';
 import { CustomDomainsController } from './custom-domains.controller';
 import { CustomDomainsService } from './custom-domains.service';
 import { StoreTaxRegionsImportController } from './store-tax-regions-import.controller';
+import { DeveloperStoresController } from './developer-stores.controller';
+import { DevelopmentStoresService } from './development-stores.service';
 import { VercelDomainsService } from './vercel-domains.service';
 import { DomainDnsGuideService } from './domain-dns-guide.service';
 import { AuthModule } from '@/auth/auth.module';
@@ -24,8 +26,8 @@ import { SellerTrustModule } from '../seller-trust/seller-trust.module';
 
 @Module({
   imports: [SearchDiscoveryModule, SellerTrustModule, AuthModule, RedisModule, AdminConfigModule, MarketingModule, UploadModule, StoreThemeModule, StorePagesModule, CollectionsModule, ExchangeRateModule, MarketsModule],
-  controllers: [StoreController, CustomDomainsController, StoreTaxRegionsImportController],
-  providers: [StoreService, StorefrontAccessService, CustomDomainsService, VercelDomainsService, DomainDnsGuideService],
+  controllers: [StoreController, CustomDomainsController, StoreTaxRegionsImportController, DeveloperStoresController],
+  providers: [StoreService, StorefrontAccessService, CustomDomainsService, VercelDomainsService, DomainDnsGuideService, DevelopmentStoresService],
   exports: [StoreService, StorefrontAccessService, CustomDomainsService],
 })
 export class StoreModule {}

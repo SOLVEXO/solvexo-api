@@ -1,0 +1,53 @@
+{
+  "authorize": {
+    "url": "https://www.solvexo.store/oauth/authorize",
+    "qs": {
+      "client_id": "{{common.clientId}}",
+      "redirect_uri": "{{oauth.redirectUri}}",
+      "scope": "read_orders write_orders read_products write_products read_customers read_inventory write_inventory",
+      "state": "{{md5(now)}}"
+    },
+    "response": {
+      "temp": {
+        "code": "{{query.code}}"
+      }
+    }
+  },
+  "token": {
+    "url": "https://api.solvexo.store/api/app-platform/oauth/token",
+    "method": "POST",
+    "type": "urlencoded",
+    "body": {
+      "grant_type": "authorization_code",
+      "code": "{{temp.code}}",
+      "client_id": "{{common.clientId}}",
+      "client_secret": "{{common.clientSecret}}",
+      "redirect_uri": "{{oauth.redirectUri}}"
+    },
+    "response": {
+      "data": {
+        "accessToken": "{{body.access_token}}",
+        "storeId": "{{body.store_id}}"
+      }
+    },
+    "log": {
+      "sanitize": ["request.body.client_secret", "request.body.code", "response.body.access_token", "response.body.webhook_secret"]
+    }
+  },
+  "info": {
+    "url": "https://api.solvexo.store/api/merchant/v1/store",
+    "headers": {
+      "Authorization": "Bearer {{connection.accessToken}}"
+    },
+    "response": {
+      "uid": "{{body.id}}",
+      "metadata": {
+        "type": "text",
+        "value": "{{body.name}}"
+      }
+    },
+    "log": {
+      "sanitize": ["request.headers.authorization"]
+    }
+  }
+}

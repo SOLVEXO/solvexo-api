@@ -18,6 +18,7 @@ import { AccountingSyncService } from './accounting-sync.service';
 import { AccountingBooksService } from './accounting-books.service';
 import { AccountingStatementsService } from './accounting-statements.service';
 import { AccountingSettlementsService } from './accounting-settlements.service';
+import { AccountingIntegrationsService } from './accounting-integrations.service';
 
 /** The store's books (Accounting Plan, Phase 1). Permissions: accounting.view (read) / accounting.manage (setup, entries, sync). */
 @ApiTags('Accounting (seller)')
@@ -28,7 +29,7 @@ import { AccountingSettlementsService } from './accounting-settlements.service';
 @Controller('api/accounting/:storeId')
 export class AccountingController {
   constructor(private readonly svc: AccountingService, private readonly sync: AccountingSyncService, private readonly books: AccountingBooksService, private readonly statements: AccountingStatementsService,
-    private readonly settlements: AccountingSettlementsService, private readonly db: DatabaseService) {}
+    private readonly settlements: AccountingSettlementsService, private readonly integrations: AccountingIntegrationsService, private readonly db: DatabaseService) {}
 
   private async own(req: any, storeId: string) {
     const store: any = await verifyStoreOwnershipOrForbidden(this.db.repositories.storeModel as any, storeId, actingSellerId(req.user));
@@ -174,4 +175,39 @@ export class AccountingController {
 
   @Post('settlements/:id/discard') @RequirePermission('accounting.manage')
   async settlementDiscard(@Req() req: any, @Param('storeId') s: string, @Param('id') id: string) { await this.own(req, s); return this.settlements.discard(s, id); }
+  // ── Phase 4: accounting app integrations ────────────────────────────────────────────────────────────────────────────
+
+  /** Tally import file (XML) for a period; one voucher a day by default, `mode=detail` for one per entry. */
+  @Get('integrations/tally') @RequirePermission('accounting.view')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  async tally(@Req() req: any, @Param('storeId') s: string, @Query() q: any) {
+    await this.own(req, s);
+    const { xml, fileName } = await this.integrations.tallyExport(s, q);
+    return new StreamableFile(Buffer.from(xml, 'utf8'), { type: 'application/xml; charset=utf-8', disposition: `attachment; filename="${fileName}"` });
+  }
+
+  @Get('integrations') @RequirePermission('accounting.view')
+  async integrationsList(@Req() req: any, @Param('storeId') s: string) { await this.own(req, s); return this.integrations.listConnections(s); }
+
+  @Put('integrations/:app') @RequirePermission('accounting.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async connect(@Req() req: any, @Param('storeId') s: string, @Param('app') app: string, @Body() b: any) { const { actor } = await this.own(req, s); return this.integrations.saveConnection(s, app, b, actor); }
+
+  @Post('integrations/:app/test') @RequirePermission('accounting.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async testConnection(@Req() req: any, @Param('storeId') s: string, @Param('app') app: string) { await this.own(req, s); return this.integrations.test(s, app); }
+
+  @Post('integrations/:app/sync') @RequirePermission('accounting.manage')
+  @Throttle({ default: { limit: 6, ttl: 60_000 } })
+  async syncApp(@Req() req: any, @Param('storeId') s: string, @Param('app') app: string) { await this.own(req, s); return this.integrations.sync(s, app); }
+
+  @Post('integrations/:app/disconnect') @RequirePermission('accounting.manage')
+  async disconnect(@Req() req: any, @Param('storeId') s: string, @Param('app') app: string) { await this.own(req, s); return this.integrations.removeConnection(s, app); }
+
+  @Get('integrations/:app/log') @RequirePermission('accounting.view')
+  async syncLog(@Req() req: any, @Param('storeId') s: string, @Param('app') app: string, @Query() q: any) { await this.own(req, s); return this.integrations.log(s, app, q); }
+
+  @Post('integrations/:app/log/:itemKey/retry') @RequirePermission('accounting.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async retryItem(@Req() req: any, @Param('storeId') s: string, @Param('app') app: string, @Param('itemKey') key: string) { await this.own(req, s); return this.integrations.retry(s, app, key); }
 }

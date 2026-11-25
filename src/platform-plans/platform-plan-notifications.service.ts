@@ -1,45 +1,12 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
 import { EmailService } from '../otp/services/email.service';
+import { notificationEmailShell } from '../notifications/templates/notification-email.template';
 
-const APP_NAME = process.env.APP_NAME || 'Solvexo';
 
-// Identical shell to SubscriptionNotificationsService's — kept as its own
-// copy (not a shared import) so the two billing systems' notification
-// services stay fully independent modules, matching the rest of this
-// feature's "separate but parallel" design (see EntitlementsService docs).
+/** Solvexo's shared branded layout (wordmark, card, footer) — the same one every platform email uses. */
 function shell(title: string, bodyHtml: string): string {
-  return `
-<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${title}</title>
-<style>
-  body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-  .container { background: #ffffff; border-radius: 10px; padding: 40px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-  .header { text-align: center; margin-bottom: 24px; }
-  .header h1 { color: #2c3e50; margin: 0; font-size: 24px; }
-  .box { background: #f8f9fa; border-radius: 8px; padding: 20px; margin: 20px 0; }
-  .row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
-  .label { color: #666; }
-  .value { font-weight: 600; color: #222; }
-  .amount { font-size: 28px; font-weight: bold; text-align: center; margin: 10px 0; }
-  .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; border-radius: 4px; }
-  .success { background: #e8f8ee; border-left: 4px solid #22c55e; padding: 15px; margin: 20px 0; border-radius: 4px; }
-  .danger { background: #fdecea; border-left: 4px solid #e53935; padding: 15px; margin: 20px 0; border-radius: 4px; }
-  .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; color: #888; font-size: 13px; }
-</style>
-</head>
-<body>
-  <div class="container">
-    <div class="header"><h1>${title}</h1></div>
-    ${bodyHtml}
-    <div class="footer">
-      <p>© ${new Date().getFullYear()} ${APP_NAME}. All rights reserved.</p>
-      <p>This is an automated email regarding your Solvexo platform plan. Please do not reply.</p>
-    </div>
-  </div>
-</body>
-</html>`;
+  return notificationEmailShell(title, bodyHtml);
 }
 
 const money = (n: number) => `$ ${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

@@ -4,18 +4,21 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Param,
   Patch,
   Post,
   Put,
   Query,
   Req,
+  Res,
   UseGuards,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
@@ -28,9 +31,12 @@ import { SalesPartnersService } from './sales-partners.service';
 import { SalesAgentService } from './sales-agent.service';
 import { SalesWhatsAppService } from './sales-whatsapp.service';
 import { SalesVisitsService } from './sales-visits.service';
+import { type AuditCtx, SalesBrevoService } from './sales-brevo.service';
 import { salesActor } from './sales-ops.util';
 import {
   ActivityDto,
+  BrevoConnectDto,
+  ConsentRequestsDto,
   WaConnectDto,
   WaListDto,
   WaSendDto,
@@ -64,6 +70,14 @@ import {
   VisitPatchDto,
 } from './sales-ops.dto';
 
+/** Who did it, for the admin audit log (never the request body). */
+const auditCtx = (req: any): AuditCtx => ({
+  adminId: req?.user?.userId ?? null,
+  adminEmail: req?.user?.email ?? null,
+  ip: req?.ip ?? null,
+  userAgent: req?.headers?.['user-agent'] ?? null,
+});
+
 /** Super Admin → Sales Ops. `sales.access` = a rep (own leads only); `sales.manage` = every lead and the settings. */
 @ApiTags('Admin Sales Ops')
 @ApiBearerAuth()
@@ -81,7 +95,70 @@ export class SalesOpsController {
     private readonly agent: SalesAgentService,
     private readonly whatsapp: SalesWhatsAppService,
     private readonly visits: SalesVisitsService,
+    private readonly brevo: SalesBrevoService,
   ) {}
+
+  // ── Brevo (marketing email) ─────────────────────────────────────────────────
+
+  /** Connection + sync counts. Reps may look; only managers change anything. */
+  @Get('brevo')
+  brevoStatus() {
+    return this.brevo.status();
+  }
+
+  @RequirePermission('sales.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Put('brevo')
+  brevoConnect(@Req() req: any, @Body() dto: BrevoConnectDto) {
+    return this.brevo.connect(dto.apiKey, auditCtx(req));
+  }
+
+  @RequirePermission('sales.manage')
+  @Delete('brevo')
+  brevoDisconnect(@Req() req: any) {
+    return this.brevo.disconnect(auditCtx(req));
+  }
+
+  @RequirePermission('sales.manage')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('brevo/sync')
+  brevoSync(@Req() req: any) {
+    return this.brevo.syncNow(auditCtx(req));
+  }
+
+  /** Brevo import file: the leads the list shows with these filters, only those who agreed to marketing email. */
+  @RequirePermission('sales.manage')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Get('leads/export/brevo')
+  async brevoExport(
+    @Req() req: any,
+    @Query() q: LeadListDto,
+    @Res() res: Response,
+  ) {
+    const { filename, csv } = await this.brevo.exportCsv(
+      salesActor(req.user),
+      q,
+      auditCtx(req),
+    );
+    res.set({
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Cache-Control': 'no-store',
+    });
+    res.send(csv);
+  }
+
+  /** One "Can we keep you posted?" email per lead that was never asked. */
+  @RequirePermission('sales.manage')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('leads/consent-requests')
+  consentRequests(@Req() req: any, @Body() dto: ConsentRequestsDto) {
+    return this.brevo.requestConsent(
+      salesActor(req.user),
+      { leadIds: dto.leadIds, filters: { stage: dto.stage, owner: dto.owner, source: dto.source, q: dto.q, due: dto.due, consent: dto.consent } },
+      auditCtx(req),
+    );
+  }
 
   // ── WhatsApp (Solvexo's own number) ────────────────────────────────────────
 
@@ -545,7 +622,30 @@ export class SalesPublicController {
   constructor(
     private readonly capture: SalesCaptureService,
     private readonly agent: SalesAgentService,
+    private readonly brevo: SalesBrevoService,
   ) {}
+
+  /** "Yes, keep me posted" in the permission email: a signed 60-day link. Always redirects to the website. */
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Get('consent/:token')
+  async confirmConsent(
+    @Param('token') token: string,
+    @Req() req: any,
+    @Res() res: Response,
+  ) {
+    return res.redirect(
+      302,
+      await this.brevo.confirmConsent(token, req?.ip ?? null),
+    );
+  }
+
+  /** Brevo's marketing webhook (unsubscribed / spam / hard bounce). The secret in the URL is the credential. */
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
+  @Post('brevo/webhook/:secret')
+  @HttpCode(200)
+  brevoWebhook(@Param('secret') secret: string, @Body() body: unknown) {
+    return this.brevo.webhook(secret, body);
+  }
 
   /** Is the website chat on? (The widget stays hidden when it isn't.) */
   @Get('chat/config')
@@ -567,7 +667,7 @@ export class SalesPublicController {
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @Post('demo-request')
-  demoRequest(@Body() dto: DemoRequestDto) {
+  demoRequest(@Body() dto: DemoRequestDto, @Req() req: any) {
     // Honeypot filled in: answer like a success so the bot moves on, save nothing.
     if (dto.website?.trim())
       return {
@@ -575,7 +675,7 @@ export class SalesPublicController {
         message:
           'Thank you! We’ll call or WhatsApp you within one working day.',
       };
-    return this.capture.demoRequest(dto);
+    return this.capture.demoRequest(dto, req?.ip ?? null);
   }
 }
 

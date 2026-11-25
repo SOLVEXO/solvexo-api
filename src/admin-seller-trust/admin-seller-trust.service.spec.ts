@@ -43,6 +43,7 @@ describe('AdminSellerTrustService', () => {
       storeModel.updateOne.mockImplementation(async (filter: any) => ({ modifiedCount: filter._id === ID_A ? 1 : 0 }));
 
       const res = await service.remind({ storeIds: [ID_A, ID_B, ID_V, 'not-an-id'] }, meta, now);
+      await service.reminderRun; // the notifications go out after the answer
 
       expect(res.data).toEqual({ sent: 1, skipped: 2 });
       expect(storeModel.updateOne).toHaveBeenCalledTimes(2); // verified store skipped before any write
@@ -52,6 +53,22 @@ describe('AdminSellerTrustService', () => {
       expect(storeModel.updateOne.mock.calls[0][1].$push['verification.history']).toMatchObject({ action: 'reminder_sent' });
       expect(notifications.notify).toHaveBeenCalledTimes(1);
       expect(notifications.notify).toHaveBeenCalledWith(expect.objectContaining({ recipientId: 's-a', type: NOTIFICATION_TYPES.VERIFICATION_REMINDER }));
+    });
+
+    it('answers before the emails go out (no browser timeout), and one failed send does not stop the rest', async () => {
+      const stores = [ID_A, ID_B].map((id, i) => ({ _id: id, name: `S${i}`, sellerId: `s-${i}`, verificationStatus: 'pending', verificationDueAt: null }));
+      const { service, storeModel, notifications } = build({ stores });
+      storeModel.updateOne.mockResolvedValue({ modifiedCount: 1 });
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      notifications.notify.mockReset();
+      notifications.notify.mockImplementationOnce(async () => { await gate; throw new Error('SMTP down'); }).mockResolvedValue(undefined);
+      const res = await service.remind({ storeIds: [ID_A, ID_B] }, meta);
+      expect(res.data).toEqual({ sent: 2, skipped: 0 });
+      expect(notifications.notify).toHaveBeenCalledTimes(1); // still sending the first one
+      release();
+      await service.reminderRun;
+      expect(notifications.notify).toHaveBeenCalledTimes(2);
     });
 
     it('needs storeIds or a filter', async () => {

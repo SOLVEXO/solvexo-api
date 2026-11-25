@@ -19,6 +19,7 @@ import {
 } from 'class-validator';
 import { LEAD_SOURCES, LEAD_STAGES, LOST_REASONS } from './sales-ops.constants';
 import { type VisitOptionGroup, optionKeys } from './field-visit.constants';
+import { CONSENT_STATUSES } from './sales-brevo.util';
 
 export class LeadDto {
   @IsOptional() @IsString() @MaxLength(120) name?: string;
@@ -72,6 +73,13 @@ export class LeadDto {
   @ArrayMaxSize(20)
   @IsString({ each: true })
   tags?: string[];
+  /** Set by hand: true needs `marketingConsentNote` (where/when they agreed); false withdraws a granted consent. */
+  @IsOptional() @IsBoolean() marketingConsent?: boolean;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsString()
+  @MaxLength(300)
+  marketingConsentNote?: string | null;
 }
 
 export class LeadListDto {
@@ -80,8 +88,34 @@ export class LeadListDto {
   @IsOptional() @IsIn(LEAD_SOURCES as unknown as string[]) source?: string;
   @IsOptional() @IsString() @MaxLength(100) q?: string;
   @IsOptional() @IsIn(['overdue', 'today']) due?: 'overdue' | 'today';
+  @IsOptional() @IsIn(CONSENT_STATUSES as unknown as string[]) consent?:
+    | 'none'
+    | 'asked'
+    | 'granted'
+    | 'withdrawn';
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) page?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) limit?: number;
+}
+
+// ── Brevo (marketing email) ─────────────────────────────────────────────────
+
+export class BrevoConnectDto {
+  @IsString() @MaxLength(500) apiKey: string;
+}
+
+/** Either the ticked leads (`leadIds`) or, without them, every lead the list's filters match (same fields as the list). */
+export class ConsentRequestsDto {
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500)
+  @IsString({ each: true })
+  leadIds?: string[];
+  @IsOptional() @IsIn(LEAD_STAGES as unknown as string[]) stage?: string;
+  @IsOptional() @IsString() owner?: string;
+  @IsOptional() @IsIn(LEAD_SOURCES as unknown as string[]) source?: string;
+  @IsOptional() @IsString() @MaxLength(100) q?: string;
+  @IsOptional() @IsIn(['overdue', 'today']) due?: 'overdue' | 'today';
+  @IsOptional() @IsIn(CONSENT_STATUSES as unknown as string[]) consent?: 'none' | 'asked' | 'granted' | 'withdrawn';
 }
 
 export class StageDto {
@@ -156,6 +190,8 @@ export class DemoRequestDto {
   @OptStr(200) page?: string | null;
   @OptStr(200) website?: string | null;
   @OptStr(40) partnerCode?: string | null;
+  /** "Send me tips and offers by email" (unticked = no change). */
+  @IsOptional() @IsBoolean() marketingOptIn?: boolean;
 }
 
 export class ImportRowDto {

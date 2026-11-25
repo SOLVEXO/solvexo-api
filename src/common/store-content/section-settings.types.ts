@@ -231,6 +231,14 @@ export interface CollectionListSectionSettings extends BaseSectionSettings {
   cardStyle?: 'none' | 'bordered' | 'filled';
   /** Look of each tile's button (only tiles that have button text show one). */
   buttonStyle?: 'solid' | 'outline' | 'link';
+  /** link = a tile opens its collection page (default). show_products = a tile shows that collection's products under the grid, with an "Add all to cart" button. */
+  clickAction?: 'link' | 'show_products';
+  /** show_products only: print the total price of the shown products. Default on. */
+  showSubtotal?: boolean;
+  /** show_products only: own text for the add-all button (empty = "Add all N to cart"). */
+  addAllLabel?: string;
+  /** show_products only: product columns (1-8). */
+  productColumns?: number;
 }
 export interface StoreLocationsSectionSettings extends BaseSectionSettings {}
 export interface RelatedProductsSectionSettings extends BaseSectionSettings {
@@ -297,6 +305,12 @@ export interface PromoCardsSectionSettings extends BaseSectionSettings {
   headingSize?: number;
   bodySize?: number;
 }
+/** "Collection columns": side-by-side columns, each listing one source's products as compact rows (photo, name, price). Every size/colour is the seller's. */
+export type CollectionColumnsSectionSettings = BaseSectionSettings & { [key: string]: unknown };
+export type CollectionColumnBlockSettings = { [key: string]: unknown };
+/** "Image mosaic": a free grid of images; each image has its own link and can span several columns/rows. */
+export type ImageMosaicSectionSettings = BaseSectionSettings & { [key: string]: unknown };
+export type MosaicImageBlockSettings = { [key: string]: unknown };
 export interface PromoCardBlockSettings {
   imageUrl?: string;
   imageLinkOn?: boolean;
@@ -421,6 +435,8 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   gallery_grid: GalleryGridSectionSettings;
   multicolumn: MulticolumnSectionSettings;
   promo_cards: PromoCardsSectionSettings;
+  collection_columns: CollectionColumnsSectionSettings;
+  image_mosaic: ImageMosaicSectionSettings;
   logo_list: LogoListSectionSettings;
   marquee: MarqueeSectionSettings;
   custom_html: CustomHtmlSectionSettings;
@@ -691,6 +707,8 @@ export const BLOCK_TYPES = [
   'collage_item',
   'multicolumn_column',
   'promo_card',
+  'collection_column',
+  'mosaic_image',
   'logo_item',
   'marquee_item',
   'collection_item',
@@ -749,6 +767,8 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   collage_item: { imageUrl: string; heading?: string; link?: LinkTarget };
   multicolumn_column: MulticolumnColumnBlockSettings;
   promo_card: PromoCardBlockSettings;
+  collection_column: CollectionColumnBlockSettings;
+  mosaic_image: MosaicImageBlockSettings;
   logo_item: LogoItemBlockSettings;
   marquee_item: MarqueeItemBlockSettings;
   collection_item: CollectionItemBlockSettings;

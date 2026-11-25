@@ -23,7 +23,8 @@ function setup(opts: {
   const bill = { _id: 'bill-1' };
   const billModel = {
     findOne: jest.fn().mockResolvedValue(opts.existingBill ?? null),
-    findOneAndUpdate: jest.fn().mockResolvedValue(bill),
+    // Like Mongo with { upsert: true, new: true }: the saved bill comes back with its filter and $set fields.
+    findOneAndUpdate: jest.fn().mockImplementation(async (filter: any, update: any) => ({ ...bill, ...filter, ...(update?.$set ?? {}) })),
     updateOne: jest.fn().mockResolvedValue({}),
     find: jest.fn().mockReturnValue({ limit: () => ({ lean: () => Promise.resolve([]) }), sort: () => ({ limit: () => ({ lean: () => Promise.resolve([]) }) }) }),
   };

@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit, Optional } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit, Optional } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
 import { promises as dns } from 'dns';
@@ -12,7 +12,7 @@ import { DatabaseService } from '../database/databaseservice';
 import { RedisService } from '../redis/redis.service';
 import { isPrivateIp } from '../messaging-channels/sms.util';
 import { WebhookDelivery, WebhookDeliveryDocument, WebhookSubscription, WebhookSubscriptionDocument } from './merchant-api.schema';
-import { AUTO_DISABLE_AFTER, WEBHOOK_EVENTS, nextDelayMs, newSecret, signPayload, validEvents, validateWebhookUrl, type WebhookEvent } from './merchant-api.util';
+import { AUTO_DISABLE_AFTER, EVENT_SCOPE, MAX_TOKEN_WEBHOOKS, WEBHOOK_EVENTS, nextDelayMs, newSecret, scopeAllows, signPayload, validEvents, validateWebhookUrl, type ApiScope, type WebhookEvent } from './merchant-api.util';
 
 const MAX_SUBSCRIPTIONS = 10;
 const hint = (s: string) => `…${s.slice(-4)}`;
@@ -80,12 +80,45 @@ export class MerchantWebhooksService implements OnModuleInit {
   async create(storeId: string, actor: { id: string; role: string }, body: any) {
     const err = validateWebhookUrl(body?.url); if (err) throw new BadRequestException(err);
     const events = validEvents(body?.events); if (!events) throw new BadRequestException('Choose at least one valid event');
-    if ((await this.subs.countDocuments({ storeId, appInstallId: null })) >= MAX_SUBSCRIPTIONS) throw new BadRequestException(`At most ${MAX_SUBSCRIPTIONS} webhooks per store`);
+    if ((await this.subs.countDocuments({ storeId, appInstallId: null, apiTokenId: null })) >= MAX_SUBSCRIPTIONS) throw new BadRequestException(`At most ${MAX_SUBSCRIPTIONS} webhooks per store`);
     const secret = newSecret();
     const doc = await this.subs.create({ storeId, url: String(body.url).trim(), events, secretEnc: encryptCredential(secret, 'INTEGRATIONS'), secretHint: hint(secret), description: typeof body?.description === 'string' ? body.description.slice(0, 120) : '' });
     void this.audit(storeId, actor, 'webhook_created', `Webhook created for ${events.join(', ')}`, String(doc._id));
     return { id: String(doc._id), secret };
   }
+
+  // ── Webhooks an API token makes for itself (Zapier/Make "instant" triggers: subscribe on Zap on, unsubscribe on Zap off) ──
+
+  private tokenView(s: any) { return { id: String(s._id), url: s.url, events: s.events, enabled: s.enabled, created_at: s.createdAt ? new Date(s.createdAt).toISOString() : null }; }
+
+  async listForToken(token: { id: string; storeId: string }) {
+    const rows: any[] = await this.subs.find({ storeId: token.storeId, apiTokenId: token.id }).sort({ createdAt: -1 }).lean();
+    return { items: rows.map((s) => this.tokenView(s)) };
+  }
+
+  /** Each event needs the matching read permission. The webhook belongs to the token (and to its app install, if any). */
+  async createForToken(token: { id: string; storeId: string; scopes: string[]; appInstallId?: string | null }, body: any) {
+    const err = validateWebhookUrl(body?.url); if (err) throw new BadRequestException(err);
+    const events = validEvents(body?.events); if (!events) throw new BadRequestException(`events must list one or more of: ${WEBHOOK_EVENTS.join(', ')}`);
+    const missing = events.filter((e) => !scopeAllows(token.scopes, EVENT_SCOPE[e] as ApiScope));
+    if (missing.length) throw new ForbiddenException(`This token can't subscribe to ${missing.join(', ')}: it needs ${[...new Set(missing.map((e) => EVENT_SCOPE[e]))].join(', ')}`);
+    if ((await this.subs.countDocuments({ storeId: token.storeId, apiTokenId: token.id })) >= MAX_TOKEN_WEBHOOKS) throw new BadRequestException(`At most ${MAX_TOKEN_WEBHOOKS} webhooks per token`);
+    const secret = newSecret();
+    const description = typeof body?.description === 'string' && body.description.trim() ? body.description.trim().slice(0, 120) : 'Made through the API';
+    const doc: any = await this.subs.create({ storeId: token.storeId, url: String(body.url).trim(), events, secretEnc: encryptCredential(secret, 'INTEGRATIONS'), secretHint: hint(secret), description, apiTokenId: token.id, appInstallId: token.appInstallId ?? null });
+    void this.audit(token.storeId, { id: token.id, role: 'api_token' }, 'webhook_created', `Webhook created through the API for ${events.join(', ')}`, String(doc._id));
+    return { ...this.tokenView(doc.toObject ? doc.toObject() : doc), secret };
+  }
+
+  async removeForToken(token: { id: string; storeId: string }, id: string) {
+    const r = await this.subs.deleteOne({ _id: this.oid(id), storeId: token.storeId, apiTokenId: token.id });
+    if (!r.deletedCount) throw new NotFoundException('Webhook not found');
+    void this.audit(token.storeId, { id: token.id, role: 'api_token' }, 'webhook_deleted', 'Webhook deleted through the API', id);
+    return { success: true };
+  }
+
+  /** A revoked token's webhooks stop too. */
+  async removeAllForToken(tokenId: string) { await this.subs.deleteMany({ apiTokenId: tokenId }); }
 
   async update(storeId: string, actor: { id: string; role: string }, id: string, body: any) {
     const set: any = {};

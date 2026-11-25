@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { solvexoEmail } from '../notifications/templates/notification-email.template';
 import { InjectModel } from '@nestjs/mongoose';
 import { Cron } from '@nestjs/schedule';
 import { Model } from 'mongoose';
@@ -274,7 +275,7 @@ export class PartnerDealsService {
   private async tellPartner(partnerId: string, html: string) {
     const p: any = await this.partners.findById(partnerId).select('email name').lean();
     if (!p?.email) return;
-    await this.email.sendMail(p.email, 'Your Solvexo deal registration', `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#1c1d1b"><p>Hi ${esc(p.name)},</p><p>${html}</p><p style="color:#888;font-size:12px">Solvexo Channel Partner Programme</p></div>`).catch(() => false);
+    await this.email.sendMail(p.email, 'Your Solvexo deal registration', solvexoEmail('Your deal registration', `<p>Hi ${esc(p.name)},</p><p>${html}</p>`, { note: 'You are receiving this as a member of the Solvexo Channel Partner Programme.' })).catch(() => false);
   }
 
   private async myPartner(actor: SalesActor): Promise<any> {

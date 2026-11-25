@@ -11,6 +11,7 @@ import {
 import * as bcrypt from 'bcrypt';
 import { randomBytes, createHash } from 'crypto';
 import { escapeHtml } from '../newsletter/marketing-email.util';
+import { solvexoEmail } from '../notifications/templates/notification-email.template';
 import { buildStaffProfile } from '../common/staff-profile.util';
 import { JwtService } from '@nestjs/jwt';
 import { DatabaseService } from '../database/databaseservice';
@@ -239,16 +240,16 @@ export class StaffService {
     const rawStoreName = storeName;
     storeName = escapeHtml(storeName);
     staffName = escapeHtml(staffName);
-    const html = `
-      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;">
-        <h2>You've been invited to ${storeName}</h2>
-        <p>Hi ${staffName},</p>
+    const html = solvexoEmail(
+      `You've been invited to ${rawStoreName}`,
+      `<p>Hi ${staffName},</p>
         <p>You've been added as a staff member on <strong>${storeName}</strong>'s Solvexo dashboard. Set your own password to activate your account.</p>
-        <p><a href="${inviteUrl}" style="display:inline-block;background:#D97757;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Accept Invite &amp; Set Password</a></p>
-        <p style="color:#888;font-size:12px;">If the button doesn't work, copy this link: ${inviteUrl}</p>
-        <p style="color:#888;font-size:12px;">This link expires in ${INVITE_EXPIRY_DAYS} days. If you weren't expecting this, you can ignore this email.</p>
-      </div>`;
-    return this.emailService.sendMail(email, `You've been invited to ${rawStoreName}`, html, storeContactEmail, undefined, undefined, storeName, storeId);
+        <p class="muted">If the button doesn't work, copy this link: ${inviteUrl}</p>
+        <p class="muted">This link expires in ${INVITE_EXPIRY_DAYS} days. If you weren't expecting this, you can ignore this email.</p>`,
+      { cta: { label: 'Accept invite & set password', url: inviteUrl }, note: `You are receiving this because ${rawStoreName} invited you to its Solvexo dashboard.` },
+    );
+    // The sender name is the plain store name (the mail header escapes nothing).
+    return this.emailService.sendMail(email, `You've been invited to ${rawStoreName}`, html, storeContactEmail, undefined, undefined, rawStoreName, storeId);
   }
 
   /** Public (no JWT — the staff member has no account yet) — resolves an
@@ -468,13 +469,12 @@ export class StaffService {
 
     const store = await this.repos.storeModel.findById(storeId).select('name contactEmail').lean() as any;
     const url = `${sellerAppUrl()}/staff-reset-password/${token}`;
-    const html = `
-      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;">
-        <h2>Reset your password</h2>
-        <p>Hi ${escapeHtml(staff.name)}, we got a request to reset your password for <strong>${escapeHtml(store?.name ?? 'your store')}</strong>.</p>
-        <p><a href="${url}" style="display:inline-block;background:#D97757;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Choose a new password</a></p>
-        <p style="color:#888;font-size:12px;">This link expires in ${RESET_EXPIRY_MINUTES} minutes. If you didn't ask for this, you can ignore this email — your password stays the same.</p>
-      </div>`;
+    const html = solvexoEmail(
+      'Reset your password',
+      `<p>Hi ${escapeHtml(staff.name)}, we got a request to reset your password for <strong>${escapeHtml(store?.name ?? 'your store')}</strong>.</p>
+        <p class="muted">This link expires in ${RESET_EXPIRY_MINUTES} minutes. If you didn't ask for this, you can ignore this email — your password stays the same.</p>`,
+      { cta: { label: 'Choose a new password', url }, note: null },
+    );
     this.emailService.sendMail(staff.email, 'Reset your password', html, store?.contactEmail ?? null, undefined, undefined, store?.name ?? null, storeId).catch(() => {});
     return generic;
   }

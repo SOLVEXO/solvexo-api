@@ -68,6 +68,66 @@ function assertWholeNumberInRange(value: unknown, min: number, max: number, fiel
 
 const PROMO_LAYOUTS = ['image-left', 'image-right', 'image-top', 'image-bottom', 'overlay'] as const;
 
+/** Collection Columns: every size is a free whole number inside a wide range, every colour a #RRGGBB, every switch a boolean. */
+const COLUMNS_NUMBERS: Record<string, [number, number]> = {
+  columns: [1, 8], gap: [0, 200], rowGap: [0, 120], headingSize: [10, 120], headingGap: [0, 80], lineWidth: [0, 8], titleSize: [9, 48], priceSize: [9, 48],
+  imageSize: [24, 320], imageRadius: [0, 200], titleLines: [1, 6], rowPadding: [0, 80], rowRadius: [0, 200], columnPadding: [0, 120], columnRadius: [0, 200], imageGap: [0, 60],
+};
+const COLUMNS_COLORS = ['headingColor', 'titleColor', 'priceColor', 'oldPriceColor', 'lineColor', 'dividerColor', 'rowBg', 'columnBg', 'badgeBg', 'badgeText', 'viewAllColor'];
+const COLUMNS_FLAGS = ['showImage', 'showOldPrice', 'showBadge', 'showHeadingLine', 'rowDivider', 'columnBorder', 'showViewAll'];
+const PRODUCT_SOURCES = ['collection', 'category', 'bestsellers', 'newArrivals', 'trending', 'onSale', 'manual'] as const;
+
+function assertCollectionColumns(settings: Record<string, any>): void {
+  for (const [k, [lo, hi]] of Object.entries(COLUMNS_NUMBERS)) assertWholeNumberInRange(settings[k], lo, hi, `settings.${k}`);
+  for (const k of COLUMNS_COLORS) assertOptionalHex(settings[k], `settings.${k}`);
+  for (const k of COLUMNS_FLAGS) {
+    if (settings[k] !== undefined && typeof settings[k] !== 'boolean') throw new BadRequestException(`settings.${k} must be true or false`);
+  }
+  oneOf(settings.imagePosition, ['left', 'right', 'top'] as const, 'settings.imagePosition');
+  oneOf(settings.align, ['left', 'center', 'right'] as const, 'settings.align');
+  maxLen(settings.viewAllText, 40, 'settings.viewAllText');
+}
+
+function assertImageMosaic(settings: Record<string, any>): void {
+  assertWholeNumberInRange(settings.columns, 1, 12, 'settings.columns');
+  assertWholeNumberInRange(settings.mobileColumns, 1, 6, 'settings.mobileColumns');
+  assertWholeNumberInRange(settings.gap, 0, 100, 'settings.gap');
+  assertWholeNumberInRange(settings.rowHeight, 40, 1200, 'settings.rowHeight');
+  assertWholeNumberInRange(settings.radius, 0, 200, 'settings.radius');
+  oneOf(settings.fit, ['cover', 'contain'] as const, 'settings.fit');
+  oneOf(settings.hover, ['none', 'zoom', 'dim'] as const, 'settings.hover');
+  if (settings.fullWidth !== undefined && typeof settings.fullWidth !== 'boolean') throw new BadRequestException('settings.fullWidth must be true or false');
+}
+
+function assertMosaicImage(settings: Record<string, any>): void {
+  if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'imageUrl');
+  assertLinkTarget(settings.link, 'link');
+  assertWholeNumberInRange(settings.colSpan, 1, 12, 'colSpan');
+  assertWholeNumberInRange(settings.rowSpan, 1, 12, 'rowSpan');
+  maxLen(settings.alt, 150, 'alt');
+  maxLen(settings.caption, 100, 'caption');
+  oneOf(settings.focalPoint, FOCAL_POINTS, 'focalPoint');
+}
+
+function assertCollectionColumn(settings: Record<string, any>): void {
+  oneOf(settings.source, PRODUCT_SOURCES, 'source');
+  for (const k of ['collectionId', 'categoryId'] as const) {
+    if (settings[k] !== undefined && settings[k] !== null && typeof settings[k] !== 'string') throw new BadRequestException(`${k} must be text`);
+  }
+  if (settings.productIds !== undefined) {
+    if (!Array.isArray(settings.productIds) || settings.productIds.length > 24 || settings.productIds.some((x: unknown) => typeof x !== 'string')) {
+      throw new BadRequestException('productIds must be a list of up to 24 product ids');
+    }
+  }
+  assertWholeNumberInRange(settings.limit, 1, 24, 'limit');
+  maxLen(settings.heading, 80, 'heading');
+  maxLen(settings.viewAllText, 40, 'viewAllText');
+  assertOptionalHex(settings.bgColor, 'bgColor');
+  assertOptionalHex(settings.headingColor, 'headingColor');
+  if (settings.hideSoldOut !== undefined && typeof settings.hideSoldOut !== 'boolean') throw new BadRequestException('hideSoldOut must be true or false');
+  if (settings.headingLinkOn !== undefined && typeof settings.headingLinkOn !== 'boolean') throw new BadRequestException('headingLinkOn must be true or false');
+}
+
 /** An optional #RRGGBB colour; empty means "use the theme's colour". */
 function assertOptionalHex(value: unknown, field: string): void {
   if (value === undefined || value === null || value === '') return;
@@ -625,6 +685,12 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       if (settings.showDescription !== undefined && typeof settings.showDescription !== 'boolean') {
         throw new BadRequestException('settings.showDescription must be true or false');
       }
+      oneOf(settings.clickAction, ['link', 'show_products'] as const, 'settings.clickAction');
+      if (settings.showSubtotal !== undefined && typeof settings.showSubtotal !== 'boolean') {
+        throw new BadRequestException('settings.showSubtotal must be true or false');
+      }
+      maxLen(settings.addAllLabel, 60, 'settings.addAllLabel');
+      assertWholeNumberInRange(settings.productColumns, 1, 8, 'settings.productColumns');
       break;
     }
     case 'multicolumn': {
@@ -647,6 +713,12 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       assertWholeNumberInRange(settings.bodySize, 9, 48, 'settings.bodySize');
       break;
     }
+    case 'collection_columns':
+      assertCollectionColumns(settings);
+      break;
+    case 'image_mosaic':
+      assertImageMosaic(settings);
+      break;
     case 'logo_list': {
       const h = settings.logoHeight;
       if (h !== undefined && (typeof h !== 'number' || !Number.isFinite(h) || h < 24 || h > 120)) {
@@ -1065,6 +1137,16 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       oneOf(settings.focalPoint, FOCAL_POINTS, 'focalPoint');
       break;
 
+    // image_mosaic section blocks
+    case 'mosaic_image':
+      assertMosaicImage(settings);
+      break;
+
+    // collection_columns section blocks (one column = one product source)
+    case 'collection_column':
+      assertCollectionColumn(settings);
+      break;
+
     // collection_list section blocks (hand-picked tiles)
     case 'collection_item':
       if (settings.collectionId !== undefined && settings.collectionId !== null && typeof settings.collectionId !== 'string') {
@@ -1375,6 +1457,8 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   gallery_grid: ['gallery_image'],
   multicolumn: ['multicolumn_column'],
   promo_cards: ['promo_card'],
+  collection_columns: ['collection_column'],
+  image_mosaic: ['mosaic_image'],
   logo_list: ['logo_item'],
   marquee: ['marquee_item'],
   custom_html: [],

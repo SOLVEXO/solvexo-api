@@ -54,6 +54,23 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showSearch?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showAccount?: boolean;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showWishlist?: boolean;
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showCart?: boolean;
+  @ApiProperty({ required: false, nullable: true, description: "Id of one of the active theme's own icon sets (a short slug); unknown ids read as the theme default." })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @Matches(/^[a-z][a-z0-9_-]{0,31}$/, { message: 'iconSet must be a short lowercase slug' }) iconSet?: string | null;
+  @ApiProperty({ required: false, enum: ['sm', 'md', 'lg'] }) @IsOptional() @IsIn(['sm', 'md', 'lg']) iconSize?: 'sm' | 'md' | 'lg';
+  @ApiProperty({ required: false, enum: ['thin', 'regular', 'bold'] }) @IsOptional() @IsIn(['thin', 'regular', 'bold']) iconStroke?: 'thin' | 'regular' | 'bold';
+  @ApiProperty({ required: false }) @IsOptional() @IsBoolean() iconTooltips?: boolean;
+  @ApiProperty({ required: false, enum: ['none', 'below'] }) @IsOptional() @IsIn(['none', 'below']) iconLabels?: 'none' | 'below';
+  @ApiProperty({ required: false, enum: ['theme', 'dark', 'light', 'brand'] }) @IsOptional() @IsIn(['theme', 'dark', 'light', 'brand']) iconTipStyle?: 'theme' | 'dark' | 'light' | 'brand';
+  @ApiProperty({ required: false, enum: ['below', 'above'] }) @IsOptional() @IsIn(['below', 'above']) iconTipPosition?: 'below' | 'above';
+  @ApiProperty({ required: false, nullable: true, maxLength: 30 }) @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(30) iconTipSearch?: string | null;
+  @ApiProperty({ required: false, nullable: true, maxLength: 30 }) @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(30) iconTipAccount?: string | null;
+  @ApiProperty({ required: false, nullable: true, maxLength: 30 }) @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(30) iconTipWishlist?: string | null;
+  @ApiProperty({ required: false, nullable: true, maxLength: 30 }) @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(30) iconTipCart?: string | null;
+  @ApiProperty({ required: false, enum: ['theme', 'light', 'dark', 'brand'] }) @IsOptional() @IsIn(['theme', 'light', 'dark', 'brand']) dropdownBg?: 'theme' | 'light' | 'dark' | 'brand';
+  @ApiProperty({ required: false, enum: ['theme', 'square', 'soft', 'round'] }) @IsOptional() @IsIn(['theme', 'square', 'soft', 'round']) dropdownRadius?: 'theme' | 'square' | 'soft' | 'round';
+  @ApiProperty({ required: false, enum: ['theme', 'none', 'soft', 'strong'] }) @IsOptional() @IsIn(['theme', 'none', 'soft', 'strong']) dropdownShadow?: 'theme' | 'none' | 'soft' | 'strong';
+  @ApiProperty({ required: false, enum: ['theme', 'tint', 'underline', 'none'] }) @IsOptional() @IsIn(['theme', 'tint', 'underline', 'none']) dropdownHover?: 'theme' | 'tint' | 'underline' | 'none';
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() showShopMenu?: boolean;
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(24) shopMenuLabel?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsBoolean() includePagesInNav?: boolean;
@@ -83,6 +100,9 @@ export class UpdateHeaderDto {
   @ApiProperty({ required: false, description: 'Seller-built top-strip items (text / link / popup); validated in the service' })
   @IsOptional() @IsArray() topBarItems?: Record<string, unknown>[];
   @ApiProperty({ required: false, enum: ['sm', 'md', 'lg'] }) @IsOptional() @IsIn(['sm', 'md', 'lg']) topBarSize?: 'sm' | 'md' | 'lg';
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsInt() @Min(8) @Max(48) topBarFontSize?: number | null;
+  @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsInt() @Min(0) @Max(80) topBarPadY?: number | null;
+  @ApiProperty({ required: false, enum: ['scroll', 'wrap'] }) @IsOptional() @IsIn(['scroll', 'wrap']) menuOverflow?: 'scroll' | 'wrap';
   @ApiProperty({ required: false, nullable: true }) @IsOptional() @IsString() @MaxLength(40) preset?: string | null;
 
   @ApiProperty({ required: false, type: [SectionInputDto], description: 'Extra sections shown with the header/footer (validated per type in the service)' })

@@ -234,6 +234,22 @@ export class StorefrontHeader {
   @Prop({ type: Boolean, default: true }) showSearch: boolean;
   @Prop({ type: Boolean, default: true }) showAccount: boolean;
   @Prop({ type: Boolean, default: true }) showWishlist: boolean;
+  @Prop({ type: Boolean, default: true }) showCart: boolean;
+  @Prop({ type: String, default: null }) iconSet: string | null; // an id from the ACTIVE theme's own icon sets; null = the theme default
+  @Prop({ type: String, enum: ['sm', 'md', 'lg'], default: 'md' }) iconSize: 'sm' | 'md' | 'lg';
+  @Prop({ type: String, enum: ['thin', 'regular', 'bold'], default: 'regular' }) iconStroke: 'thin' | 'regular' | 'bold';
+  @Prop({ type: Boolean, default: true }) iconTooltips: boolean;
+  @Prop({ type: String, enum: ['none', 'below'], default: 'none' }) iconLabels: 'none' | 'below';
+  @Prop({ type: String, enum: ['theme', 'dark', 'light', 'brand'], default: 'theme' }) iconTipStyle: 'theme' | 'dark' | 'light' | 'brand';
+  @Prop({ type: String, enum: ['below', 'above'], default: 'below' }) iconTipPosition: 'below' | 'above';
+  @Prop({ type: String, default: null }) iconTipSearch: string | null;
+  @Prop({ type: String, default: null }) iconTipAccount: string | null;
+  @Prop({ type: String, default: null }) iconTipWishlist: string | null;
+  @Prop({ type: String, default: null }) iconTipCart: string | null;
+  @Prop({ type: String, enum: ['theme', 'light', 'dark', 'brand'], default: 'theme' }) dropdownBg: 'theme' | 'light' | 'dark' | 'brand';
+  @Prop({ type: String, enum: ['theme', 'square', 'soft', 'round'], default: 'theme' }) dropdownRadius: 'theme' | 'square' | 'soft' | 'round';
+  @Prop({ type: String, enum: ['theme', 'none', 'soft', 'strong'], default: 'theme' }) dropdownShadow: 'theme' | 'none' | 'soft' | 'strong';
+  @Prop({ type: String, enum: ['theme', 'tint', 'underline', 'none'], default: 'theme' }) dropdownHover: 'theme' | 'tint' | 'underline' | 'none';
   @Prop({ type: Boolean, default: true }) showShopMenu: boolean;          // the auto "Shop" dropdown (categories + collections)
   @Prop({ type: String, default: null }) shopMenuLabel: string | null;    // null = "Shop"
   @Prop({ type: Boolean, default: true }) includePagesInNav: boolean;     // pages flagged "show in navigation"
@@ -263,6 +279,10 @@ export class StorefrontHeader {
   // Seller-built strip items (text / links / icons / popups with a designed QR) — validated by sanitizeChromeItems.
   @Prop({ type: [Object], default: [] }) topBarItems: Record<string, unknown>[];
   @Prop({ type: String, enum: ['sm', 'md', 'lg'], default: 'md' }) topBarSize: 'sm' | 'md' | 'lg';
+  @Prop({ type: Number, default: null }) topBarFontSize: number | null; // px, null = by topBarSize
+  @Prop({ type: Number, default: null }) topBarPadY: number | null; // px, null = by topBarSize
+  // Menu with more items than fit: one scrolling line with arrows ('scroll', default) or the old wrapping rows ('wrap').
+  @Prop({ type: String, enum: ['scroll', 'wrap'], default: 'scroll' }) menuOverflow: 'scroll' | 'wrap';
   @Prop({ type: String, default: null }) preset: string | null;
 }
 export const StorefrontHeaderSchema = SchemaFactory.createForClass(StorefrontHeader);

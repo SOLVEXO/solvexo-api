@@ -105,8 +105,10 @@
   "products/products.controller.ts#productController.getEducationFacets",
   "products/products.controller.ts#productController.getVariantById",
   "sales-ops/partner-programme.controller.ts#PartnerApplyController.apply",
+  "sales-ops/sales-ops.controller.ts#SalesPublicController.brevoWebhook",
   "sales-ops/sales-ops.controller.ts#SalesPublicController.chatConfig",
   "sales-ops/sales-ops.controller.ts#SalesPublicController.chatMessage",
+  "sales-ops/sales-ops.controller.ts#SalesPublicController.confirmConsent",
   "sales-ops/sales-ops.controller.ts#SalesPublicController.demoRequest",
   "sales-ops/sales-ops.controller.ts#SalesPublicController.startChat",
   "search-discovery/search-discovery.controller.ts#PublicSearchConfigController.filters",
@@ -171,6 +173,7 @@
   "storefront/public-store-pages.controller.ts#PublicStorePagesController.getPage",
   "storefront/public-store-pages.controller.ts#PublicStorePagesController.list",
   "storefront/public-store-section-defs.controller.ts#PublicStoreSectionDefsController.list",
+  "courses/courses.controller.ts#CourseStreamController.stream",
   "storefront/public-store-theme.controller.ts#PublicStoreThemeController.get",
   "storefront/public-store-theme.controller.ts#PublicStoreThemeController.getPreview",
   "subscriptions/webhooks/stripe-webhook.controller.ts#StripeWebhookController.handleStripeWebhook",
@@ -187,6 +190,8 @@
  ],
  "_notes": {
   "sales-ops/partner-programme.controller.ts#PartnerApplyController.apply": "Become-a-partner application form on solvexo.store: public by design, throttled (5/min), honeypot, validated; creates a paused applicant only.",
+  "sales-ops/sales-ops.controller.ts#SalesPublicController.confirmConsent": "Sales Ops marketing permission email: \"Yes, keep me posted\" link. A signed (HMAC-SHA256, JWT_SECRET), 60-day, single-purpose token is the capability; it only marks that one lead as agreeing to marketing email and redirects to the website. Throttled 20/min.",
+  "sales-ops/sales-ops.controller.ts#SalesPublicController.brevoWebhook": "Brevo marketing webhook (unsubscribed / spam / hard bounce): Brevo cannot send our bearer token, so a random 32-hex secret in the URL (constant-time compared, 404 when wrong or Brevo not connected) is the credential; it can only withdraw marketing consent. Throttled 120/min.",
   "security/csp-report.controller.ts#CspReportController.report": "Browsers send Content-Security-Policy violation reports without credentials; the endpoint only logs a size-capped report.",
   "product-questions/product-questions.controller.ts#PublicProductQuestionsController.list": "Storefront: approved product Q&A for a product page (read, throttled 120/min).",
   "product-questions/product-questions.controller.ts#PublicProductQuestionsController.ask": "Storefront: a shopper asks a product question (throttled 5/min, held for the seller to answer).",
@@ -197,6 +202,7 @@
   "store-contact/store-contact.controller.ts#PublicStoreContactController.upload": "Storefront: contact form file attachment (throttled 8/min, type/size checked).",
   "store-contact/store-contact.controller.ts#PublicStoreContactController.event": "Storefront: contact form analytics event (throttled 40/min).",
   "storefront/public-saved-sections.controller.ts#PublicSavedSectionsController.list": "Storefront: the store's published saved sections (read).",
-  "storefront/public-store-section-defs.controller.ts#PublicStoreSectionDefsController.list": "Storefront: the store's custom section definitions used to render its pages (read)."
+  "storefront/public-store-section-defs.controller.ts#PublicStoreSectionDefsController.list": "Storefront: the store's custom section definitions used to render its pages (read).",
+  "courses/courses.controller.ts#CourseStreamController.stream": "Course video proxy (COURSE_VIDEO_PROXY=true): a <video> tag cannot send a bearer token, so a signed, expiring token in the URL is the capability; the course access gate is re-checked on every request; throttled per IP."
  }
 }

@@ -196,7 +196,9 @@ describe('section-settings.validator', () => {
       const good = { imageLinkOn: true, imageLink: { linkType: 'collection', collectionId: 'c1' } };
       expect(() => validateSectionSettings('image_banner', good)).not.toThrow();
       for (const type of ['multirow_row', 'multicolumn_column', 'image_text_pair'] as const) {
-        expect(() => validateBlockSettings(type, good)).not.toThrow();
+        // An image_text_pair always has its image (imageUrl is required for that block); the others may not.
+        const withImage = type === 'image_text_pair' ? { ...good, imageUrl: 'https://cdn.example.com/a.jpg' } : good;
+        expect(() => validateBlockSettings(type, withImage)).not.toThrow();
         expect(() => validateBlockSettings(type, { imageLinkOn: 'yes' })).toThrow(BadRequestException);
         expect(() => validateBlockSettings(type, { imageLinkOn: true, imageLink: { linkType: 'external', url: 'javascript:alert(1)' } })).toThrow(BadRequestException);
         expect(() => validateBlockSettings(type, { imageLinkOn: true, imageLink: { linkType: 'collection' } })).toThrow(BadRequestException);

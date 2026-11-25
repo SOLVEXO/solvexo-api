@@ -15,7 +15,7 @@ import { filterSectionsToTheme } from '../common/store-content/theme-section-cap
 export const HEADER_CONTENT_KEYS = [
   'logoSource', 'customLogoUrl', 'logoLink', 'blocks', 'sections', 'menuId',
   'shopMenuLabel', 'blogLinkLabel', 'includePagesInNav', 'showDefaultBlogLink', 'showShopMenu',
-  'showSearch', 'showAccount', 'showWishlist',
+  'showSearch', 'showAccount', 'showWishlist', 'showCart',
   'ctaLabel', 'ctaLink', 'topBarEnabled', 'topBarText', 'topBarPhone', 'topBarEmail', 'topBarItems',
 ] as const;
 

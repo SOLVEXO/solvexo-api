@@ -94,7 +94,10 @@ describe('DiscountsService.updateDiscount — field whitelist', () => {
   let automaticDiscountModel: any;
 
   beforeEach(() => {
-    automaticDiscountModel = { findOneAndUpdate: jest.fn().mockResolvedValue({ _id: 'd1', name: 'Sale' }) };
+    automaticDiscountModel = {
+      findOne: jest.fn(() => ({ lean: jest.fn().mockResolvedValue({ _id: 'd1', name: 'Sale' }) })), // the "before" read for the change log
+      findOneAndUpdate: jest.fn().mockResolvedValue({ _id: 'd1', name: 'Sale' }),
+    };
     const storeModel = { findOne: jest.fn().mockResolvedValue({ _id: 'store-1' }) };
     service = new DiscountsService(
       { repositories: { automaticDiscountModel, storeModel } } as unknown as DatabaseService,

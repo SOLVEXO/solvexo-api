@@ -6,6 +6,7 @@ import request from 'supertest';
 import { makePaymentsFixture, setKybKeys } from '../payments-core/testing/payments-harness';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { DatabaseService } from '../database/databaseservice';
+import { ActivityLogService } from '../activity-log/activity-log.service';
 import { KybAdminController } from './kyb-admin.controller';
 import { KybController } from './kyb.controller';
 import { KybAdminService } from './kyb-admin.service';
@@ -41,6 +42,7 @@ describe('KYB HTTP: admin endpoints are admin-only; owner endpoints are seller-o
       providers: [
         { provide: KybAdminService, useValue: x.kybAdmin }, { provide: KybMaintenanceService, useValue: x.maintenance }, { provide: KybService, useValue: x.kyb },
         { provide: DatabaseService, useValue: {} },
+        { provide: ActivityLogService, useValue: { log: jest.fn() } }, // the owner KYB routes are audited (@AuditStoreWrites)
       ],
     }).overrideGuard(JwtAuthGuard).useClass(FakeJwtGuard).compile();
     app = mod.createNestApplication(); app.useGlobalPipes(new ValidationPipe({ transform: false })); await app.init();
