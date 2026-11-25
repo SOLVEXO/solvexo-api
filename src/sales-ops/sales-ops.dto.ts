@@ -474,6 +474,37 @@ export class WaSendDto {
 export class WaListDto {
   @IsOptional() @IsString() leadId?: string;
   @IsOptional() @IsIn(['true', 'false']) unread?: string;
+  @IsOptional() @IsIn(['all', 'needs_reply', 'unread', 'closing', 'expired', 'done']) view?: string;
+  @IsOptional() @IsString() @MaxLength(100) q?: string;
+  @IsOptional() @IsString() @MaxLength(30) ownerId?: string;
+}
+
+export class WaStatusDto {
+  @IsOptional() @IsBoolean() done?: boolean;
+  /** ISO time; null ends the snooze. */
+  @IsOptional() @IsString() @MaxLength(40) snoozeUntil?: string | null;
+}
+
+export class WaAssignDto {
+  @IsOptional() @IsString() @MaxLength(30) adminId?: string | null;
+}
+
+export class WaStartDto {
+  @IsOptional() @IsString() @MaxLength(30) leadId?: string;
+  @IsOptional() @IsString() @MaxLength(30) phone?: string;
+  @IsOptional() @IsString() @MaxLength(120) name?: string;
+  @IsString() @MaxLength(600) templateKey: string;
+}
+
+export class WaQuickReplyDto {
+  @IsOptional() @IsString() @MaxLength(40) id?: string;
+  @IsString() @MaxLength(60) title: string;
+  @IsString() @MaxLength(1000) text: string;
+}
+
+export class WaQuickRepliesDto {
+  @IsArray() @ArrayMaxSize(50) @ValidateNested({ each: true }) @Type(() => WaQuickReplyDto)
+  replies: WaQuickReplyDto[];
 }
 
 // ── Field visits ───────────────────────────────────────────────────────────

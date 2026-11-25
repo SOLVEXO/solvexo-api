@@ -40,6 +40,10 @@ import {
   ConsentRequestsDto,
   WaConnectDto,
   WaTemplatesDto,
+  WaStatusDto,
+  WaAssignDto,
+  WaStartDto,
+  WaQuickRepliesDto,
   RepAccessDto,
   WaSendTemplateDto,
   WaListDto,
@@ -199,7 +203,41 @@ export class SalesOpsController {
     return this.whatsapp.listConversations(salesActor(req.user), {
       leadId: q.leadId,
       unread: q.unread === 'true',
+      view: q.view,
+      q: q.q,
+      ownerId: q.ownerId,
     });
+  }
+
+  /** Mark a chat done / not done, or snooze it until a time. */
+  @Post('whatsapp/conversations/:id/status')
+  waStatus(@Req() req: any, @Param('id') id: string, @Body() dto: WaStatusDto) {
+    return this.whatsapp.setStatus(salesActor(req.user), id, dto);
+  }
+
+  /** Managers: hand the chat (its lead) to another rep. */
+  @RequirePermission('sales.manage')
+  @Post('whatsapp/conversations/:id/assign')
+  waAssign(@Req() req: any, @Param('id') id: string, @Body() dto: WaAssignDto) {
+    return this.whatsapp.assign(salesActor(req.user), id, dto.adminId ?? null);
+  }
+
+  /** Start a chat with a lead or a new number by sending an approved template. */
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('whatsapp/start')
+  waStart(@Req() req: any, @Body() dto: WaStartDto) {
+    return this.whatsapp.start(salesActor(req.user), dto);
+  }
+
+  @Get('whatsapp/quick-replies')
+  waQuickReplies() {
+    return this.whatsapp.quickReplies();
+  }
+
+  @RequirePermission('sales.manage')
+  @Put('whatsapp/quick-replies')
+  waSaveQuickReplies(@Body() dto: WaQuickRepliesDto) {
+    return this.whatsapp.saveQuickReplies(dto.replies);
   }
 
   @Get('whatsapp/conversations/:id')
