@@ -182,7 +182,13 @@ export class PosCatalogAdminService {
     const kind = body?.kind === 'categories' ? 'categories' : 'products';
     const out: any = kind === 'categories'
       ? await this.categories.importCsv(req.user.userId, storeId, text)
-      : await this.products.importProductsCsv(req.user.userId, storeId, text, (s, p, v, dto) => this.variants.updateVariant(s, p, v, dto));
+      : await this.products.importProductsCsv(
+          req.user.userId,
+          storeId,
+          text,
+          (s, p, v, dto) => this.variants.updateVariant(s, p, v, dto),
+          (s, p, dto) => this.variants.addVariant(s, p, dto),
+        );
     await this.audit(storeId, a.employeeId, `${kind}_imported`, null, { summary: out?.data?.summary ?? out?.summary ?? null });
     return { success: true, data: out?.data ?? out };
   }
