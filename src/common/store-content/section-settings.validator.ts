@@ -759,9 +759,13 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       maxLen(settings.subheading, 200, 'settings.subheading');
       maxLen(settings.ctaText, 40, 'settings.ctaText');
       assertLinkTarget(settings.ctaLink, 'settings.ctaLink');
-      oneOf(settings.heightPreset, ['small', 'medium', 'large', 'adapt'] as const, 'settings.heightPreset');
+      oneOf(settings.heightPreset, ['small', 'medium', 'large', 'adapt', 'custom'] as const, 'settings.heightPreset');
+      if (settings.customHeight !== undefined) assertWholeNumberInRange(settings.customHeight, 150, 1400, 'settings.customHeight');
+      oneOf(settings.mobileHeightPreset, ['same', 'small', 'medium', 'large', 'custom'] as const, 'settings.mobileHeightPreset');
+      if (settings.mobileCustomHeight !== undefined) assertWholeNumberInRange(settings.mobileCustomHeight, 150, 1400, 'settings.mobileCustomHeight');
       oneOf(settings.contentAlign, ['left', 'center', 'right'] as const, 'settings.contentAlign');
       oneOf(settings.contentPosition, ['top', 'middle', 'bottom'] as const, 'settings.contentPosition');
+      oneOf(settings.contentWidth, ['narrow', 'normal', 'wide'] as const, 'settings.contentWidth');
       const o = settings.overlayOpacity;
       if (o !== undefined && (typeof o !== 'number' || !Number.isFinite(o) || o < 0 || o > 80)) {
         throw new BadRequestException('settings.overlayOpacity must be a number between 0 and 80');
@@ -934,6 +938,8 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       assertLinkTarget(settings.slideLink, 'slideLink');
       oneOf(settings.focalPoint, FOCAL_POINTS, 'focalPoint');
       oneOf(settings.contentAlign, ['left', 'center', 'right'] as const, 'contentAlign');
+      oneOf(settings.contentPosition, ['top', 'middle', 'bottom'] as const, 'contentPosition');
+      oneOf(settings.contentWidth, ['narrow', 'normal', 'wide'] as const, 'contentWidth');
       if (settings.overlayOpacity !== undefined && settings.overlayOpacity !== null
         && (typeof settings.overlayOpacity !== 'number' || !Number.isFinite(settings.overlayOpacity) || settings.overlayOpacity < 0 || settings.overlayOpacity > 80)) {
         throw new BadRequestException('overlayOpacity must be a number between 0 and 80');
