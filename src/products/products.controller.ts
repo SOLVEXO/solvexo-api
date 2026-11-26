@@ -277,6 +277,7 @@ export class productController {
       storeId,
       readUploadedCsv(file),
       (s, productId, variantId, dto) => this.productVariantsService.updateVariant(s, productId, variantId, dto),
+      (s, productId, dto) => this.productVariantsService.addVariant(s, productId, dto),
     );
   }
 

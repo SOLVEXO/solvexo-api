@@ -40,6 +40,17 @@ export function toCsv(headers: string[], rows: (string | number)[][]): string {
   return header + body;
 }
 
+export function detectDelimiter(text: string): string {
+  const firstLine = text.replace(/^﻿/, '').split(/\r?\n/, 1)[0] ?? '';
+  const counts: [string, number][] = [
+    [',', (firstLine.match(/,/g) ?? []).length],
+    [';', (firstLine.match(/;/g) ?? []).length],
+    ['\t', (firstLine.match(/\t/g) ?? []).length],
+  ];
+  counts.sort((a, b) => b[1] - a[1]);
+  return counts[0][1] > 0 ? counts[0][0] : ',';
+}
+
 /**
  * Minimal RFC-4180-ish CSV parser (no library exists in this codebase —
  * matches `toCsv`'s own hand-rolled style) — handles quoted fields
