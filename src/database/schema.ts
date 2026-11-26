@@ -165,6 +165,7 @@ export { ManualPaymentProof, ManualPaymentProofDocument, ManualPaymentProofSchem
 export { Announcement, AnnouncementDocument, AnnouncementSchema } from '../admin-announcements/schemas/announcement.schema';
 export { Campaign, CampaignDocument, CampaignSchema } from '../marketing/schemas/campaign.schema';
 export { MediaAsset, MediaAssetDocument, MediaAssetSchema } from '../media-library/schemas/media-asset.schema';
+export { DocumentFile, DocumentFileDocument, DocumentFileSchema } from '../documents/schemas/store-document.schema';
 export { AppInstallation, AppInstallationDocument, AppInstallationSchema } from '../apps/schemas/app-installation.schema';
 export { StoreBanner, StoreBannerDocument, StoreBannerSchema } from '../store-banner/schemas/store-banner.schema';
 export { StoreTheme, StoreThemeDocument, StoreThemeSchema } from '../store-theme/schemas/store-theme.schema';

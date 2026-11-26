@@ -96,6 +96,7 @@ import { AdminMarketingModule } from './admin-marketing/admin-marketing.module';
 import { ShippingZonesModule } from './shipping-zones/shipping-zones.module';
 import { ShippingCarriersModule } from './shipping-carriers/shipping-carriers.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
+import { DocumentsModule } from './documents/documents.module';
 import { StoreBannerModule } from './store-banner/store-banner.module';
 import { StoreThemeModule } from './store-theme/store-theme.module';
 import { StorePagesModule } from './store-pages/store-pages.module';
@@ -255,6 +256,7 @@ import { AppI18nModule } from './i18n/i18n.module';
     ShippingZonesModule,
     ShippingCarriersModule,
     MediaLibraryModule,
+    DocumentsModule,
     StoreBannerModule,
     StoreThemeModule,
     StorePagesModule,

@@ -171,6 +171,14 @@ export interface TestimonialsSectionSettings extends BaseSectionSettings {
 }
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface FaqSectionSettings extends BaseSectionSettings {}
+/** The store's Documents library as cards (Online Store -> Documents). */
+export interface DocumentsGridSectionSettings extends BaseSectionSettings {
+  /** Empty = every category. */
+  category?: string;
+  columns?: number;
+  showDescription?: boolean;
+}
+
 export interface VideoSectionSettings extends BaseSectionSettings {
   /** Must be a youtube.com/youtu.be/vimeo.com https:// link. */
   videoUrl?: string;
@@ -438,6 +446,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   testimonials: TestimonialsSectionSettings;
   faq: FaqSectionSettings;
   video: VideoSectionSettings;
+  documents_grid: DocumentsGridSectionSettings;
   featured_category_grid: FeaturedCategoryGridSectionSettings;
   trust_badges: TrustBadgesSectionSettings;
   newsletter: NewsletterSectionSettings;

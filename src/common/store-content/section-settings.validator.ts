@@ -4,6 +4,7 @@ import { validateContactFormSettings } from '../../store-contact/contact-form-fi
 import type { SectionType } from '../schemas/section.schema';
 import { isAppBlockType } from './app-block.util';
 import { assertContentItems } from './content-items.util';
+import { STORE_DOCUMENT_CATEGORIES } from '../../documents/schemas/store-document.schema';
 import type {
   AllowedBlockTypesMap,
   FeaturedProductsSectionSettings,
@@ -186,7 +187,7 @@ function assertHttpsUrl(value: unknown, field: string): void {
 // category/collection actually belongs to this store before saving — this
 // validator has no DB access and never invents ownership guarantees it can't
 // actually check.
-export const LINK_TYPES = ['home', 'page', 'blog', 'search', 'external', 'category', 'collection', 'product', 'cart', 'account', 'faqs', 'email', 'phone'] as const;
+export const LINK_TYPES = ['home', 'page', 'blog', 'search', 'external', 'category', 'collection', 'product', 'cart', 'account', 'faqs', 'email', 'phone', 'document'] as const;
 /** Menu items only: a label that opens its dropdown on hover and goes nowhere on click. */
 export const NAV_LINK_TYPES = [...LINK_TYPES, 'none'] as const;
 
@@ -253,6 +254,7 @@ export function assertLinkTarget(link: unknown, field: string): void {
   if (l.linkType === 'category') required(l.categoryId, `${field}.categoryId`);
   if (l.linkType === 'collection') required(l.collectionId, `${field}.collectionId`);
   if (l.linkType === 'product') required(l.productId, `${field}.productId`);
+  if (l.linkType === 'document') required(l.documentId, `${field}.documentId`);
 }
 
 // ── Section-level settings ──────────────────────────────────────────────────
@@ -615,6 +617,14 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       // Questions from the section's blocks, or the store's own FAQ list.
       oneOf(settings.source, ['blocks', 'store'] as const, 'settings.source');
       break;
+    case 'documents_grid': {
+      // The store's Documents library. `category` empty = every category.
+      if (settings.category !== undefined && settings.category !== '') {
+        oneOf(settings.category, STORE_DOCUMENT_CATEGORIES as unknown as string[], 'settings.category');
+      }
+      assertColumns(settings.columns);
+      break;
+    }
     case 'feature_list':
     case 'team_grid':
     case 'stats_counter':
@@ -863,6 +873,7 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       if (settings.linkType === 'category') required(settings.categoryId, 'categoryId');
       if (settings.linkType === 'collection') required(settings.collectionId, 'collectionId');
       if (settings.linkType === 'product') required(settings.productId, 'productId');
+      if (settings.linkType === 'document') required(settings.documentId, 'documentId');
       assertLinkContact(settings, '');
       if (settings.highlight !== undefined && typeof settings.highlight !== 'boolean') {
         throw new BadRequestException('highlight must be a boolean');
@@ -1462,6 +1473,7 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   testimonials: ['testimonial'],
   faq: ['faq_item'],
   video: [],
+  documents_grid: [],
   featured_category_grid: [],
   trust_badges: ['trust_badge_item'],
   newsletter: [],

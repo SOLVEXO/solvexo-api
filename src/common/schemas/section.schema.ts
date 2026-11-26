@@ -11,6 +11,8 @@ export const SECTION_TYPES = [
   'testimonials',
   'faq',
   'video',
+  // The store's Documents library as cards (cover, name, View, Download).
+  'documents_grid',
   // Presentational/merchandising only — see the Store Builder implementation
   // plan's "Architectural Boundary" note: no section type ever represents
   // cart/checkout/account/orders/messaging/payments, which stay on their own
