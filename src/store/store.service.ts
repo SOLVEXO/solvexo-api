@@ -1007,8 +1007,13 @@ export class StoreService {
       }
     }
 
-    store.privacyMode = privacyMode;
-    await store.save();
+    // ONE narrow write (never `store.save()`): a full document save re-validates EVERY embedded subdocument, so a single
+    // legacy row anywhere in the store (e.g. a POS register written before `defaultFloatCashMinor` existed, or any other
+    // field a later release added) makes this 500 for reasons that have nothing to do with the visibility change.
+    await this.databaseService.repositories.storeModel.updateOne(
+      { _id: storeId, sellerId },
+      { $set: { privacyMode } },
+    );
     this.storefrontAccess.invalidate(storeId);
 
     this.activityLogService.log({
@@ -1048,10 +1053,11 @@ export class StoreService {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
       throw new BadRequestException('A valid email is required');
     }
-    const store = await this.databaseService.repositories.storeModel.findOne({ _id: storeId, isDelete: false });
-    if (!store) throw new NotFoundException('Store not found');
-    store.privacyRequests.push({ email: trimmed, status: 'pending', createdAt: new Date() } as any);
-    await store.save();
+    // Narrow `$push` (same reason as updateStorePrivacy: a full `save()` fails on unrelated legacy subdocuments).
+    await this.databaseService.repositories.storeModel.updateOne(
+      { _id: storeId, isDelete: false },
+      { $push: { privacyRequests: { email: trimmed, status: 'pending', createdAt: new Date() } as any } },
+    );
     return { success: true, message: 'Your request has been submitted.' };
   }
 
@@ -1062,8 +1068,11 @@ export class StoreService {
     if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
     const request = (store.privacyRequests as any[]).find(r => r._id?.toString() === requestId);
     if (!request) throw new NotFoundException('Request not found');
-    request.status = 'completed';
-    await store.save();
+    // Narrow positional `$set` (same reason as updateStorePrivacy: a full `save()` fails on unrelated legacy subdocuments).
+    await this.databaseService.repositories.storeModel.updateOne(
+      { _id: storeId, sellerId, 'privacyRequests._id': (request as any)._id },
+      { $set: { 'privacyRequests.$.status': 'completed' } },
+    );
     return { success: true, message: 'Marked complete', data: store.privacyRequests };
   }
 
@@ -1078,9 +1087,11 @@ export class StoreService {
     const trimmed = robotsTxtOverride?.trim() || null;
     if (trimmed && trimmed.length > 5000) throw new BadRequestException('robots.txt must be 5000 characters or fewer');
 
-    const seo = (store as any).seo?.toObject?.() ?? (store as any).seo ?? {};
-    (store as any).seo = { ...seo, robotsTxtOverride: trimmed };
-    await store.save();
+    // Narrow `$set` (same reason as updateStorePrivacy: a full `save()` fails on unrelated legacy subdocuments).
+    await this.databaseService.repositories.storeModel.updateOne(
+      { _id: storeId, sellerId },
+      { $set: { 'seo.robotsTxtOverride': trimmed } },
+    );
 
     this.activityLogService.log({
       storeId, category: 'seo', action: 'store_robots_txt_updated',
@@ -1145,8 +1156,11 @@ export class StoreService {
     if (store.sellerId !== sellerId) throw new UnauthorizedException('Unauthorized');
 
     const limit = await this.adminConfigService.getPlacementLimit('storeFeaturedProducts');
-    store.pinnedProductIds = productIds.slice(0, limit);
-    await store.save();
+    // Narrow `$set` (same reason as updateStorePrivacy: a full `save()` fails on unrelated legacy subdocuments).
+    await this.databaseService.repositories.storeModel.updateOne(
+      { _id: storeId, sellerId },
+      { $set: { pinnedProductIds: productIds.slice(0, limit) } },
+    );
 
     this.activityLogService.log({
       storeId, category: 'marketing', action: 'pinned_products_updated',
@@ -1222,7 +1236,7 @@ export class StoreService {
     const align = body.align ?? 'left';
     if (align !== 'left' && align !== 'center') throw new BadRequestException('align must be left or center');
 
-    store.announcementBar = {
+    const bar = {
       message,
       type,
       ctaLabel,
@@ -1241,7 +1255,11 @@ export class StoreService {
       align,
       ...design,
     };
-    await store.save();
+    // Narrow `$set` (same reason as updateStorePrivacy: a full `save()` fails on unrelated legacy subdocuments).
+    await this.databaseService.repositories.storeModel.updateOne(
+      { _id: storeId, sellerId },
+      { $set: { announcementBar: bar } },
+    );
 
     this.activityLogService.log({
       storeId, category: 'marketing', action: 'announcement_bar_updated',
