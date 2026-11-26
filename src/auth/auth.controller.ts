@@ -129,7 +129,9 @@ export class AuthController {
   async socialLogin(@Req() req: any, @Res({ passthrough: true }) res: any, @Body() socialLoginDto: SocialLoginDto) {
     const cookie = isCookieMode(req);
     if (cookie) assertCsrf(req);
-    const result = await this.authService.socialLogin(socialLoginDto);
+    // The POS app identifies itself with `X-Solvexo-Client: pos` and is login-only: it never creates an account.
+    const loginOnly = String(req.headers?.['x-solvexo-client'] ?? '').trim().toLowerCase() === 'pos';
+    const result = await this.authService.socialLogin(socialLoginDto, { loginOnly });
     if ((socialLoginDto.role ?? 'user') === 'user') await this.guestSessions.mergeFromAuthResult(result, socialLoginDto.storeId);
     return cookie ? this.finishCookieSession(req, res, result) : result;
   }

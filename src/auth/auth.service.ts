@@ -32,6 +32,12 @@ import { randomUUID } from 'crypto';
 import { AppleTokenService } from './apple-token.service';
 import { hashJti } from './portal-cookie.util';
 
+/** An HttpException that already carries a machine-readable `code` (e.g. ACCOUNT_NOT_FOUND) must reach the client unchanged. */
+function hasErrorCode(error: any): boolean {
+  const r = typeof error?.getResponse === 'function' ? error.getResponse() : null;
+  return !!r && typeof r === 'object' && typeof (r as any).code === 'string';
+}
+
 @Injectable()
 export class AuthService {
   private googleClient = new OAuth2Client(); // verifies Google ID tokens; audiences come from GOOGLE_CLIENT_ID
@@ -646,11 +652,11 @@ export class AuthService {
   }
 
   /** Social login resolves against the buyer (User) or seller (Seller) collection based on dto.role (default 'user') — same role-picks-the-model pattern as login()/signup(). */
-  async socialLogin(dto: SocialLoginDto) {
+  async socialLogin(dto: SocialLoginDto, opts: { loginOnly?: boolean } = {}) {
     try {
       const meta: { aud?: string } = {};
       const verifiedEmail = await this.verifySocialToken(dto.authProvider, dto.socialId, dto.token, meta);
-      const result: any = await this.finishSocialLogin(dto, verifiedEmail);
+      const result: any = await this.finishSocialLogin(dto, verifiedEmail, opts);
       // A seller with two-factor on must still pass the code step: hand back the challenge, not the session that was just created.
       const sellerId = result?.data?.user?.id;
       if (dto.role === 'seller' && sellerId && this.memberTwoFactor && (await this.memberTwoFactor.isEnabled('seller', String(sellerId)))) {
@@ -663,6 +669,7 @@ export class AuthService {
       }
       return result;
     } catch (error) {
+      if (hasErrorCode(error)) throw error;
       throw new UnauthorizedException(error.message || 'Social login failed');
     }
   }
@@ -673,7 +680,7 @@ export class AuthService {
    * customer-social-login/ for a store's own Google/Facebook app). `verifiedEmail` must come from the
    * provider, never from the client.
    */
-  async finishSocialLogin(dto: SocialLoginDto, verifiedEmail: string | null) {
+  async finishSocialLogin(dto: SocialLoginDto, verifiedEmail: string | null, opts: { loginOnly?: boolean } = {}) {
     try {
       const {
         authProvider,
@@ -724,6 +731,16 @@ export class AuthService {
       let account = await accountModel.findOne({ $or: matchers });
       // Lets the web app count a Google sign-up as a new account in Solvexo's own website analytics.
       const isNewUser = !account;
+
+      // Login-only clients (the POS app, see AuthController.socialLogin) never create accounts: an unknown identity stops
+      // here, before anything is written. Every other client keeps the sign-up-on-first-login behaviour below.
+      if (!account && opts.loginOnly) {
+        throw new UnauthorizedException({
+          statusCode: 401,
+          code: 'ACCOUNT_NOT_FOUND',
+          message: 'No Solvexo account found for this sign-in. Create your account and store on Solvexo first, then sign in here.',
+        });
+      }
 
       let emailIsPlaceholder = false;
       if (!account) {
@@ -830,6 +847,7 @@ export class AuthService {
         },
       };
     } catch (error) {
+      if (hasErrorCode(error)) throw error;
       throw new UnauthorizedException(error.message || 'Social login failed');
     }
   }
