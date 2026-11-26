@@ -8,6 +8,7 @@ import { validateSectionSettings, validateBlocksOfType, assertSectionCount, SECT
 import { sectionAcceptsAppBlocks } from '../common/store-content/app-block.util';
 import { SectionType } from '../common/schemas/section.schema';
 import { ContentVersioningService } from '../common/content-versioning/content-versioning.service';
+import { StorefrontCachePurgeService } from '../storefront/storefront-cache-purge.service';
 import { AppsService } from '../apps/apps.service';
 import { MetafieldsService } from '../metafields/metafields.service';
 import { CreatePageDto } from './dto/create-page.dto';
@@ -360,6 +361,10 @@ export class StorePagesService {
     if (dto.slug !== undefined && dto.slug !== page.slug && page.type !== 'home') {
       await this.keepLinksWorkingAfterSlugChange(storeId, page.slug, dto.slug);
     }
+    // Title / SEO / nav-footer visibility / slug all shape what a visitor (and
+    // crawlers) see, so the storefront CDN must drop any cached copy of this
+    // page and the published-pages list.
+    StorefrontCachePurgeService.purge(storeId);
     return { success: true, message: 'Page updated', data: updated };
   }
 
@@ -500,6 +505,11 @@ export class StorePagesService {
       { new: true, updatePipeline: true },
     );
     if (!updated) throw new NotFoundException('Page template could not be published because it no longer exists. Reload the page and try again.');
+    // Going live (themed path hand-rolls the atomic copy instead of going through
+    // ContentVersioningService, so it must purge the storefront CDN cache
+    // itself — otherwise the Vercel edge keeps serving the old rendered page
+    // (with the previous sections inlined in the HTML) for up to 150s.
+    StorefrontCachePurgeService.purge(storeId);
     const refreshed = await this.storePageModel.findOne({ _id: pageId, storeId, isDelete: false });
     return { success: true, message: 'Theme page template published', data: await this.presentPageForTheme(refreshed, installedThemeId) };
   }
@@ -545,6 +555,9 @@ export class StorePagesService {
   async unpublish(storeId: string, sellerId: string, pageId: string) {
     await this.findOwnedPage(storeId, sellerId, pageId);
     const updated = await this.storePageModel.findOneAndUpdate({ _id: pageId, storeId }, { $set: { status: 'draft' } }, { new: true });
+    // The page just went offline: the storefront CDN must drop any cached copy
+    // (home page or a custom page) so visitors don't keep seeing it.
+    StorefrontCachePurgeService.purge(storeId);
     return { success: true, message: 'Page unpublished', data: updated };
   }
 
@@ -578,6 +591,9 @@ export class StorePagesService {
     const page = await this.findOwnedPage(storeId, sellerId, pageId);
     if (page.type === 'home') throw new ForbiddenException('The home page cannot be deleted');
     await this.storePageModel.findOneAndUpdate({ _id: pageId, storeId }, { $set: { isDelete: true } });
+    // Drop any cached storefront page (and the published-pages list) so the
+    // deleted page stops appearing in navigation / direct visits at once.
+    StorefrontCachePurgeService.purge(storeId);
     return { success: true, message: 'Page deleted' };
   }
 
