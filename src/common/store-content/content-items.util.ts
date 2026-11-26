@@ -48,6 +48,9 @@ export interface ContentItem {
   align?: ContentItemAlign;
   color?: string;
   size?: ContentItemSize;
+  /** Free desktop-only nudge (px) on top of `anchor`. */
+  offsetX?: number;
+  offsetY?: number;
 }
 
 /** Max characters per kind — mirrors the editor's `maxLength`. */
@@ -112,6 +115,15 @@ export function assertContentItems(value: unknown, deps: ContentItemDeps, field 
     }
     if (raw.size !== undefined && raw.size !== null && !(CONTENT_ITEM_SIZES as readonly unknown[]).includes(raw.size)) {
       throw new BadRequestException(`${at}.size must be one of ${CONTENT_ITEM_SIZES.join(', ')}`);
+    }
+    // Free nudge on top of the 9 anchors (desktop only — the storefront
+    // drops the offset on phones so a column can never be pushed off screen).
+    for (const axis of ['offsetX', 'offsetY'] as const) {
+      const value = raw[axis];
+      if (value === undefined || value === null || value === '') continue;
+      if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 2000) {
+        throw new BadRequestException(`${at}.${axis} must be a number of pixels between -2000 and 2000`);
+      }
     }
     const color = raw.color;
     if (color !== undefined && color !== null && color !== '' && (typeof color !== 'string' || !/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color))) {
