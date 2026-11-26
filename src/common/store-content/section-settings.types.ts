@@ -149,8 +149,26 @@ export interface ProductCatalogSectionSettings extends BaseSectionSettings {
 }
 // eslint-disable-next-line @typescript-eslint/no-empty-object-pattern, @typescript-eslint/no-empty-interface
 export interface ImageWithTextSectionSettings extends BaseSectionSettings {}
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface TestimonialsSectionSettings extends BaseSectionSettings {}
+export interface TestimonialsSectionSettings extends BaseSectionSettings {
+  /** How testimonials are laid out. `grid` = static cards; `carousel` = auto-rotating slides. */
+  layout?: 'grid' | 'carousel';
+  /** Grid columns (desktop). Carousel ignores this. */
+  columns?: number;
+  /** Text alignment inside each card. */
+  textAlign?: 'left' | 'center' | 'right';
+  /** Where the avatar/photo sits relative to the quote text. */
+  imagePosition?: 'top' | 'left' | 'right' | 'bottom' | 'none';
+  /** Carousel-only: auto-rotate slides. */
+  autoplay?: boolean;
+  /** Seconds between carousel slides. */
+  autoplaySeconds?: number;
+  /** Carousel-only: show prev/next arrows. */
+  showArrows?: boolean;
+  /** Carousel-only: pagination style. */
+  pagination?: 'dots' | 'none';
+  /** Carousel-only: transition style. */
+  transition?: 'slide' | 'fade';
+}
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface FaqSectionSettings extends BaseSectionSettings {}
 export interface VideoSectionSettings extends BaseSectionSettings {
@@ -567,6 +585,12 @@ export interface TestimonialBlockSettings {
   avatarUrl?: string;
   /** 1-5. */
   rating?: number;
+  /** Optional short subtitle shown under the author (e.g. a tagline). */
+  subtitle?: string;
+  /** Optional longer description shown below the quote. */
+  description?: string;
+  /** Optional title/headline shown above the quote. */
+  title?: string;
 }
 export interface FaqItemBlockSettings {
   question: string;

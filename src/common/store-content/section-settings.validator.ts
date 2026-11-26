@@ -598,7 +598,19 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       break;
     }
     case 'image_with_text':
-    case 'testimonials':
+      break;
+    case 'testimonials': {
+      oneOf(settings.layout, ['grid', 'carousel'] as const, 'settings.layout');
+      if (settings.columns !== undefined) assertColumns(settings.columns);
+      oneOf(settings.textAlign, ['left', 'center', 'right'] as const, 'settings.textAlign');
+      oneOf(settings.imagePosition, ['top', 'left', 'right', 'bottom', 'none'] as const, 'settings.imagePosition');
+      oneOf(settings.pagination, ['dots', 'none'] as const, 'settings.pagination');
+      oneOf(settings.transition, ['slide', 'fade'] as const, 'settings.transition');
+      if (settings.autoplaySeconds !== undefined && (!Number.isInteger(settings.autoplaySeconds) || settings.autoplaySeconds < 3 || settings.autoplaySeconds > 10)) {
+        throw new BadRequestException('settings.autoplaySeconds must be a whole number from 3 to 10');
+      }
+      break;
+    }
     case 'faq':
       // Questions from the section's blocks, or the store's own FAQ list.
       oneOf(settings.source, ['blocks', 'store'] as const, 'settings.source');
@@ -1012,6 +1024,9 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       required(settings.authorName, 'authorName');
       maxLen(settings.authorName, 100, 'authorName');
       maxLen(settings.authorRole, 100, 'authorRole');
+      maxLen(settings.title, 120, 'title');
+      maxLen(settings.subtitle, 120, 'subtitle');
+      maxLen(settings.description, 1000, 'description');
       if (settings.avatarUrl !== undefined) assertHttpsUrl(settings.avatarUrl, 'avatarUrl');
       if (settings.rating !== undefined && (typeof settings.rating !== 'number' || settings.rating < 1 || settings.rating > 5)) {
         throw new BadRequestException('rating must be between 1 and 5');
