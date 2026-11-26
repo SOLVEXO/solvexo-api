@@ -150,6 +150,8 @@ export interface WaTemplate {
   usesName: boolean;
   /** The approved body text, for the picker's preview. */
   body: string | null;
+  /** Why it is sent (MESSAGE_REASONS). */
+  reason: string;
 }
 
 export const MAX_WA_TEMPLATES = 20;
@@ -159,10 +161,10 @@ export const waTemplateKey = (name: string, lang: string) => `${name}:${lang}`;
 
 /** The saved list, or the one template saved before lists existed. */
 export function templatesOf(s: any): WaTemplate[] {
-  if (Array.isArray(s?.waTemplates) && s.waTemplates.length) return s.waTemplates;
+  if (Array.isArray(s?.waTemplates) && s.waTemplates.length) return s.waTemplates.map((t: WaTemplate) => ({ ...t, reason: t.reason || 'follow_up' }));
   if (!s?.waTemplateName) return [];
   const lang = s.waTemplateLang || 'en';
-  return [{ key: waTemplateKey(s.waTemplateName, lang), label: s.waTemplateName, name: s.waTemplateName, lang, usesName: !!s.waTemplateUsesName, body: null }];
+  return [{ key: waTemplateKey(s.waTemplateName, lang), label: s.waTemplateName, name: s.waTemplateName, lang, usesName: !!s.waTemplateUsesName, body: null, reason: 'follow_up' }];
 }
 
 /**

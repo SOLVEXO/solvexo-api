@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { FULL_ACCESS, type MessagingRules, SalesAccessService } from './sales-access.service';
 import {
   BadRequestException,
   ConflictException,
@@ -6,6 +7,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Cron } from '@nestjs/schedule';
@@ -24,7 +26,7 @@ import {
   SalesEmailTemplate,
   SalesEmailTemplateDocument,
 } from './schemas/sales-email-template.schema';
-import { LEAD_STAGES } from './sales-ops.constants';
+import { LEAD_STAGES, asReason } from './sales-ops.constants';
 import {
   type MerchantState,
   type SalesActor,
@@ -114,7 +116,13 @@ export class SalesOpsService {
     private readonly tasks: Model<SalesTaskDocument>,
     @InjectModel(SalesEmailTemplate.name)
     private readonly templates: Model<SalesEmailTemplateDocument>,
+    @Optional() private readonly access?: SalesAccessService,
   ) {}
+
+  /** What this actor may send to clients (managers: everything). */
+  rules(actor: SalesActor): Promise<MessagingRules> {
+    return this.access ? this.access.rulesFor(actor) : Promise.resolve(FULL_ACCESS);
+  }
 
   // ── Leads ────────────────────────────────────────────────────────────────
 
@@ -419,10 +427,23 @@ export class SalesOpsService {
     id: string,
     subject: string,
     body: string,
+    templateId?: string | null,
   ) {
     const lead: any = await this.mustFind(actor, id);
     if (!lead.email)
       throw new BadRequestException('This lead has no email address.');
+    const rules = await this.rules(actor);
+    SalesAccessService.require(rules, 'email', templateId ? 'template' : 'text');
+    let reason: string | null = null;
+    if (templateId) {
+      if (!SalesAccessService.allows(rules.emailTemplateIds, templateId))
+        throw new ForbiddenException('You are not allowed to send this email template.');
+      const t: any = /^[a-f0-9]{24}$/i.test(templateId) ? await this.templates.findOne({ _id: templateId, isDelete: false }).lean() : null;
+      if (!t) throw new BadRequestException('That email template no longer exists. Pick another one.');
+      reason = asReason(t.reason);
+      // A rep allowed templates only sends the template exactly as saved.
+      if (rules.email !== 'full') { subject = t.subject; body = t.body; }
+    }
     if (!subject?.trim() || !body?.trim())
       throw new BadRequestException('Add a subject and a message.');
     const sender: any = await this.db.repositories.adminModel
@@ -454,7 +475,7 @@ export class SalesOpsService {
       subject: subj,
       body: text,
       adminId: actor.adminId,
-      meta: { to: lead.email },
+      meta: { to: lead.email, ...(templateId ? { templateId, reason } : {}) },
     });
     await this.touch(lead, 'email', actor.adminId);
     return this.get(actor, id);
@@ -564,27 +585,32 @@ export class SalesOpsService {
 
   // ── Templates & owners ───────────────────────────────────────────────────
 
-  async listTemplates() {
+  /** Email templates; a rep sees only the ones they may send (none when email is off for them). */
+  async listTemplates(actor?: SalesActor) {
     if ((await this.templates.countDocuments({})) === 0)
       await this.templates.insertMany(DEFAULT_TEMPLATES);
     const rows = await this.templates
       .find({ isDelete: false })
       .sort({ createdAt: 1 })
       .lean();
+    const rules = actor ? await this.rules(actor) : FULL_ACCESS;
     return {
       success: true,
-      data: rows.map((t: any) => ({
-        _id: String(t._id),
-        name: t.name,
-        subject: t.subject,
-        body: t.body,
-      })),
+      data: rows
+        .filter((t: any) => rules.email !== 'off' && SalesAccessService.allows(rules.emailTemplateIds, String(t._id)))
+        .map((t: any) => ({
+          _id: String(t._id),
+          name: t.name,
+          subject: t.subject,
+          body: t.body,
+          reason: asReason(t.reason),
+        })),
     };
   }
 
   async saveTemplate(
     id: string | null,
-    input: { name: string; subject: string; body: string },
+    input: { name: string; subject: string; body: string; reason?: string },
   ) {
     if (!input.name?.trim() || !input.subject?.trim() || !input.body?.trim())
       throw new BadRequestException('Name, subject and message are required.');
@@ -592,6 +618,7 @@ export class SalesOpsService {
       name: input.name.trim(),
       subject: input.subject.trim(),
       body: input.body.trim(),
+      reason: asReason(input.reason),
     };
     if (id) {
       const r = await this.templates.updateOne(

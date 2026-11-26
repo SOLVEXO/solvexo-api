@@ -53,10 +53,13 @@ export class SalesSettings {
    * template above (saved before lists existed) is used.
    */
   @Prop({
-    type: [{ _id: false, key: String, label: String, name: String, lang: String, usesName: Boolean, body: { type: String, default: null } }],
+    type: [{ _id: false, key: String, label: String, name: String, lang: String, usesName: Boolean, body: { type: String, default: null }, reason: { type: String, default: 'follow_up' } }],
     default: [],
   })
-  waTemplates: { key: string; label: string; name: string; lang: string; usesName: boolean; body: string | null }[];
+  waTemplates: { key: string; label: string; name: string; lang: string; usesName: boolean; body: string | null; reason: string }[];
+  /** Short saved answers reps insert in a WhatsApp reply (max 50). */
+  @Prop({ type: [{ _id: false, id: String, title: String, text: String }], default: [] })
+  waQuickReplies: { id: string; title: string; text: string }[];
   @Prop({ type: Date, default: null }) waConnectedAt: Date | null;
   @Prop({ type: Date, default: null }) waLastEventAt: Date | null;
 

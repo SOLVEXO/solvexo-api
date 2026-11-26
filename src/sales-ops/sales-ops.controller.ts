@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { SalesAccessService } from './sales-access.service';
 import {
   Body,
   Controller,
@@ -39,6 +40,11 @@ import {
   ConsentRequestsDto,
   WaConnectDto,
   WaTemplatesDto,
+  WaStatusDto,
+  WaAssignDto,
+  WaStartDto,
+  WaQuickRepliesDto,
+  RepAccessDto,
   WaSendTemplateDto,
   WaListDto,
   WaSendDto,
@@ -96,6 +102,7 @@ export class SalesOpsController {
     private readonly partners: SalesPartnersService,
     private readonly agent: SalesAgentService,
     private readonly whatsapp: SalesWhatsAppService,
+    private readonly access: SalesAccessService,
     private readonly visits: SalesVisitsService,
     private readonly brevo: SalesBrevoService,
   ) {}
@@ -196,7 +203,47 @@ export class SalesOpsController {
     return this.whatsapp.listConversations(salesActor(req.user), {
       leadId: q.leadId,
       unread: q.unread === 'true',
+      view: q.view,
+      q: q.q,
+      ownerId: q.ownerId,
     });
+  }
+
+  /** Mark a chat done / not done, or snooze it until a time. */
+  @Post('whatsapp/conversations/:id/status')
+  waStatus(@Req() req: any, @Param('id') id: string, @Body() dto: WaStatusDto) {
+    return this.whatsapp.setStatus(salesActor(req.user), id, dto);
+  }
+
+  /** Managers: hand the chat (its lead) to another rep. */
+  @RequirePermission('sales.manage')
+  @Post('whatsapp/conversations/:id/assign')
+  waAssign(@Req() req: any, @Param('id') id: string, @Body() dto: WaAssignDto) {
+    return this.whatsapp.assign(salesActor(req.user), id, dto.adminId ?? null);
+  }
+
+  /** Start a chat with a lead or a new number by sending an approved template. */
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('whatsapp/start')
+  waStart(@Req() req: any, @Body() dto: WaStartDto) {
+    return this.whatsapp.start(salesActor(req.user), dto);
+  }
+
+  /** The approved templates the signed-in person may send. */
+  @Get('whatsapp/my-templates')
+  waMyTemplates(@Req() req: any) {
+    return this.whatsapp.myTemplates(salesActor(req.user));
+  }
+
+  @Get('whatsapp/quick-replies')
+  waQuickReplies() {
+    return this.whatsapp.quickReplies();
+  }
+
+  @RequirePermission('sales.manage')
+  @Put('whatsapp/quick-replies')
+  waSaveQuickReplies(@Body() dto: WaQuickRepliesDto) {
+    return this.whatsapp.saveQuickReplies(dto.replies);
   }
 
   @Get('whatsapp/conversations/:id')
@@ -570,6 +617,7 @@ export class SalesOpsController {
       id,
       dto.subject,
       dto.body,
+      dto.templateId ?? null,
     );
   }
 
@@ -603,8 +651,26 @@ export class SalesOpsController {
   @Get('owners') owners() {
     return this.sales.owners();
   }
-  @Get('templates') templates() {
-    return this.sales.listTemplates();
+  @Get('templates') templates(@Req() req: any) {
+    return this.sales.listTemplates(salesActor(req.user));
+  }
+
+  /** What the signed-in person may send to clients (managers: everything). */
+  @Get('messaging/me') async myMessaging(@Req() req: any) {
+    return { success: true, data: await this.sales.rules(salesActor(req.user)) };
+  }
+
+  /** Sales Ops → Team: what each rep may send (reps without saved rules use the defaults). */
+  @RequirePermission('sales.manage')
+  @Get('team/messaging')
+  async teamMessaging() {
+    return { success: true, data: await this.access.list() };
+  }
+
+  @RequirePermission('sales.manage')
+  @Put('team/messaging/:adminId')
+  saveTeamMessaging(@Param('adminId') adminId: string, @Body() dto: RepAccessDto) {
+    return this.access.save(adminId, dto);
   }
 
   @RequirePermission('sales.manage')

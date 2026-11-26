@@ -5,6 +5,7 @@ process.env.INTEGRATIONS_CREDENTIALS_ENCRYPTION_KEY =
 import { SalesOpsService } from './sales-ops.service';
 import { SalesCaptureService } from './sales-capture.service';
 import { SalesWhatsAppService } from './sales-whatsapp.service';
+import { SalesAccessService } from './sales-access.service';
 import { salesActor } from './sales-ops.util';
 import { model } from './sales-ops.fakes.testspec';
 
@@ -58,6 +59,7 @@ function setup() {
       async () => 'Ji, COD available hai! Demo ke liye kab call karein?',
     ),
   };
+  const access = new SalesAccessService(model() as any);
   const sales = new SalesOpsService(
     db,
     redis as any,
@@ -66,6 +68,7 @@ function setup() {
     activities as any,
     tasks as any,
     templates as any,
+    access,
   );
   const capture = new SalesCaptureService(
     db,
@@ -136,6 +139,9 @@ function setup() {
     agent,
     notifications,
     calls,
+    access,
+    email,
+    templates,
     setReply: (f: typeof reply) => {
       reply = f;
     },
@@ -421,8 +427,8 @@ describe('SalesWhatsAppService', () => {
       { label: '', name: 'sales_follow_up', lang: 'ur' },
     ]);
     expect(r.data.templates).toEqual([
-      { key: 'sales_follow_up:en', label: 'Follow-up (English)', name: 'sales_follow_up', lang: 'en', usesName: true, body: 'Hi {{1}}, following up from Solvexo.' },
-      { key: 'sales_follow_up:ur', label: 'sales_follow_up (ur)', name: 'sales_follow_up', lang: 'ur', usesName: true, body: 'السلام علیکم {{1}}' },
+      { key: 'sales_follow_up:en', label: 'Follow-up (English)', name: 'sales_follow_up', lang: 'en', usesName: true, body: 'Hi {{1}}, following up from Solvexo.', reason: 'other' },
+      { key: 'sales_follow_up:ur', label: 'sales_follow_up (ur)', name: 'sales_follow_up', lang: 'ur', usesName: true, body: 'السلام علیکم {{1}}', reason: 'other' },
     ]);
     // One lookup per template name, however many languages are picked.
     expect(calls.slice(before).filter((c) => c.url.includes('/70002/message_templates?name=sales_follow_up'))).toHaveLength(1);
@@ -440,6 +446,127 @@ describe('SalesWhatsAppService', () => {
 
     expect((await wa.saveTemplates([])).data.templates).toEqual([]);
     await expect(wa.sendTemplate(SUPER, id)).rejects.toThrow('Add an approved template');
+  });
+
+  it("holds a rep to the messaging level and templates a manager set; managers are never limited", async () => {
+    const { wa, sales, access, conversations, leads, settings, calls, email, templates } = setup();
+    await wa.connect({ phoneNumberId: NUMBER, accessToken: 'tok-1234567890' });
+    await wa.onWebhook(inbound('wamid.1', 'Hi'));
+    await flush();
+    const id = String(conversations.rows[0]._id);
+    leads.rows[0].ownerAdminId = REP.adminId;
+    leads.rows[0].email = 'sara@example.com';
+    settings.rows[0].waTemplates = [
+      { key: 'follow:en', label: 'Follow-up', name: 'follow', lang: 'en', usesName: false, body: 'Hello', reason: 'follow_up' },
+      { key: 'pay:en', label: 'Payment', name: 'pay', lang: 'en', usesName: false, body: 'Pay', reason: 'payment_reminder' },
+    ];
+
+    // No saved rules: as before, own text and every template.
+    expect((await wa.getConversation(REP, id)).data).toMatchObject({ canWriteText: true, templates: [{ key: 'follow:en' }, { key: 'pay:en' }] });
+
+    await access.save(REP.adminId, { whatsapp: 'templates', waTemplateKeys: ['follow:en'], email: 'templates', emailTemplateIds: [] });
+    const conv = (await wa.getConversation(REP, id)).data;
+    expect(conv.canWriteText).toBe(false);
+    expect(conv.templates.map((t: any) => [t.key, t.reason])).toEqual([['follow:en', 'follow_up']]);
+    await expect(wa.send(REP, id, 'my own text')).rejects.toThrow('only send approved WhatsApp templates');
+    await expect(wa.sendTemplate(REP, id, 'pay:en')).rejects.toThrow('not allowed to send this template');
+    await wa.sendTemplate(REP, id, 'follow:en');
+    expect(calls.at(-1)!.body).toMatchObject({ template: { name: 'follow' } });
+    // Without a key, the first template the rep may use.
+    await wa.sendTemplate(REP, id);
+    expect(calls.at(-1)!.body).toMatchObject({ template: { name: 'follow' } });
+    // A manager is never limited.
+    await wa.send(SUPER, id, 'manager reply');
+
+    // Email: templates only, and only the allowed ones; the template is sent as saved.
+    const list = (await sales.listTemplates({ adminId: REP.adminId, canSeeAll: false })).data;
+    expect(list).toEqual([]);
+    const all = (await sales.listTemplates()).data;
+    await access.save(REP.adminId, { emailTemplateIds: [all[0]._id] });
+    expect((await sales.listTemplates({ adminId: REP.adminId, canSeeAll: false })).data.map((t: any) => t._id)).toEqual([all[0]._id]);
+    const leadId = String(leads.rows[0]._id);
+    await expect(sales.sendEmail(REP, leadId, 'Hi', 'my words')).rejects.toThrow('only send approved email templates');
+    await expect(sales.sendEmail(REP, leadId, 'x', 'y', all[1]._id)).rejects.toThrow('not allowed to send this email template');
+    await sales.sendEmail(REP, leadId, 'edited subject', 'edited body', all[0]._id);
+    const sent = (email.sendMail as jest.Mock).mock.calls.at(-1) as any[];
+    expect(sent[1]).not.toBe('edited subject');
+    expect(sent[1]).toContain(String(templates.rows.find((t: any) => String(t._id) === all[0]._id).subject).slice(0, 5));
+
+    // Off: nothing at all on that channel.
+    await access.save(REP.adminId, { whatsapp: 'off', email: 'off' });
+    expect((await wa.getConversation(REP, id)).data.templates).toEqual([]);
+    await expect(wa.sendTemplate(REP, id, 'follow:en')).rejects.toThrow('not allowed to send WhatsApp');
+    await expect(wa.openForLead(REP, leadId)).rejects.toThrow('not allowed to send WhatsApp');
+    await expect(sales.sendEmail(REP, leadId, 'x', 'y', all[0]._id)).rejects.toThrow('not allowed to send email');
+    await expect(access.save(REP.adminId, { whatsapp: 'sometimes' as any })).rejects.toThrow('Choose off, templates or full');
+  });
+
+  it('the inbox: views, counts and search; done and snooze; a new message reopens the chat', async () => {
+    const { wa, conversations } = setup();
+    await wa.connect({ phoneNumberId: NUMBER, accessToken: 'tok-1234567890' });
+    await wa.onWebhook(inbound('wamid.1', 'Hi, price?', undefined, '923001112223'));
+    await wa.onWebhook(inbound('wamid.2', 'Salam', Math.floor(Date.now() / 1000) - 23 * 3600, '923004445556'));
+    await wa.onWebhook(inbound('wamid.3', 'Old chat', Math.floor(Date.now() / 1000) - 30 * 3600, '923007778889'));
+    await flush();
+    let r: any = await wa.listConversations(SUPER);
+    expect(r.counts).toMatchObject({ all: 3, needsReply: 3, unread: 3, unreadMessages: 3, closing: 1, expired: 1, done: 0 });
+    expect(r.data[0]).toMatchObject({ lastDirection: 'in', windowOpen: true, done: false, snoozedUntil: null });
+    expect((await wa.listConversations(SUPER, { view: 'closing' })).data.map((c: any) => c.waId)).toEqual(['923004445556']);
+    expect((await wa.listConversations(SUPER, { view: 'expired' })).data.map((c: any) => c.waId)).toEqual(['923007778889']);
+    // Search by number digits or name.
+    expect((await wa.listConversations(SUPER, { q: '0300 444' })).data.map((c: any) => c.waId)).toEqual(['923004445556']);
+    expect((await wa.listConversations(SUPER, { q: 'sara' })).data.length).toBe(3);
+
+    const first = conversations.rows.find((c: any) => c.waId === '923001112223');
+    const id = String(first._id);
+    await wa.setStatus(SUPER, id, { done: true });
+    r = await wa.listConversations(SUPER);
+    expect(r.counts).toMatchObject({ needsReply: 2, done: 1 });
+    expect((await wa.listConversations(SUPER, { view: 'done' })).data.map((c: any) => c._id)).toEqual([id]);
+    const later = new Date(Date.now() + 2 * 3600_000).toISOString();
+    await wa.setStatus(SUPER, id, { done: false, snoozeUntil: later });
+    expect((await wa.listConversations(SUPER, { view: 'needs_reply' })).data.map((c: any) => c._id)).not.toContain(id);
+    await expect(wa.setStatus(SUPER, id, { snoozeUntil: '2020-01-01T00:00:00Z' })).rejects.toThrow('in the future');
+    await wa.setStatus(SUPER, id, { done: true });
+    // They write again: back in Needs reply.
+    await wa.onWebhook(inbound('wamid.4', 'Hello?', undefined, '923001112223'));
+    await flush();
+    const again = (await wa.listConversations(SUPER, { view: 'needs_reply' })).data.find((c: any) => c._id === id);
+    expect(again).toMatchObject({ done: false, snoozedUntil: null });
+  });
+
+  it('managers hand a chat to a rep; a new chat starts with a template; quick replies are saved', async () => {
+    const { wa, conversations, leads, settings, calls } = setup();
+    await wa.connect({ phoneNumberId: NUMBER, accessToken: 'tok-1234567890' });
+    await wa.onWebhook(inbound('wamid.1', 'Hi'));
+    await flush();
+    const id = String(conversations.rows[0]._id);
+    await expect(wa.assign(REP, id, REP.adminId)).rejects.toThrow('Only a manager');
+    await wa.assign(SUPER, id, REP.adminId);
+    expect(leads.rows[0].ownerAdminId).toBe(REP.adminId);
+    // The rep now sees it, with its owner.
+    expect((await wa.listConversations(REP)).data.map((c: any) => c._id)).toEqual([id]);
+    expect((await wa.getConversation(SUPER, id)).data).toMatchObject({ ownerId: REP.adminId, done: false, snoozedUntil: null });
+    expect((await wa.listConversations(SUPER, { ownerId: REP.adminId })).data.length).toBe(1);
+
+    settings.rows[0].waTemplates = [{ key: 'hello:en', label: 'Hello', name: 'hello', lang: 'en', usesName: false, body: 'Hello from Solvexo', reason: 'follow_up' }];
+    // What a rep may start a chat with.
+    expect((await wa.myTemplates(REP)).data.map((t: any) => t.key)).toEqual(['hello:en']);
+    await expect(wa.start(SUPER, { phone: 'abc', templateKey: 'hello:en' })).rejects.toThrow('enter a WhatsApp number');
+    await expect(wa.start(SUPER, { phone: '0333 1234567', templateKey: 'hello:en' })).rejects.toThrow('Enter the person');
+    const started = await wa.start(SUPER, { phone: '0333 1234567', name: 'Bilal Traders', templateKey: 'hello:en' });
+    const conv = conversations.rows.find((c: any) => String(c._id) === started.data.conversationId);
+    expect(conv.waId).toBe('923331234567');
+    expect(leads.rows.find((l: any) => String(l._id) === conv.leadId)).toMatchObject({ name: 'Bilal Traders', source: 'whatsapp' });
+    expect(calls.at(-1)!.body).toMatchObject({ to: '923331234567', template: { name: 'hello' } });
+    // The same number again reuses the lead and chat.
+    const again = await wa.start(SUPER, { phone: '+92 333 1234567', templateKey: 'hello:en' });
+    expect(again.data.conversationId).toBe(started.data.conversationId);
+
+    await expect(wa.saveQuickReplies([{ title: 'Price', text: '' }])).rejects.toThrow('needs a title and a text');
+    const qr = await wa.saveQuickReplies([{ title: 'Price', text: 'Plans start at Rs 2,999 a month.' }, { id: 'cod', title: 'COD', text: 'Yes, COD is available.' }]);
+    expect(qr.data).toEqual([expect.objectContaining({ title: 'Price' }), { id: 'cod', title: 'COD', text: 'Yes, COD is available.' }]);
+    expect((await wa.quickReplies()).data).toHaveLength(2);
   });
 
   it('shows a rep only conversations with their own leads, and reports a refused send', async () => {

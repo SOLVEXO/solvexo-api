@@ -17,7 +17,8 @@ import {
   ValidateIf,
   ValidateNested,
 } from 'class-validator';
-import { LEAD_SOURCES, LEAD_STAGES, LOST_REASONS } from './sales-ops.constants';
+import { LEAD_SOURCES, LEAD_STAGES, LOST_REASONS, MESSAGE_REASONS } from './sales-ops.constants';
+import { MESSAGING_LEVELS } from './schemas/sales-rep-access.schema';
 import { type VisitOptionGroup, optionKeys } from './field-visit.constants';
 import { CONSENT_STATUSES } from './sales-brevo.util';
 
@@ -133,6 +134,8 @@ export class ActivityDto {
 export class EmailDto {
   @IsString() @MaxLength(200) subject: string;
   @IsString() @MaxLength(10000) body: string;
+  /** The email template used; required for a rep allowed templates only (its text is then used as saved). */
+  @IsOptional() @IsString() @MaxLength(30) templateId?: string;
 }
 
 export class TaskDto {
@@ -156,6 +159,16 @@ export class TemplateDto {
   @IsString() @MaxLength(80) name: string;
   @IsString() @MaxLength(200) subject: string;
   @IsString() @MaxLength(10000) body: string;
+  @IsOptional() @IsIn([...MESSAGE_REASONS]) reason?: string;
+}
+
+/** Sales Ops → Team: what one rep may send to their clients. */
+export class RepAccessDto {
+  @IsOptional() @IsIn([...MESSAGING_LEVELS]) whatsapp?: 'off' | 'templates' | 'full';
+  @IsOptional() @IsIn([...MESSAGING_LEVELS]) email?: 'off' | 'templates' | 'full';
+  /** null = all templates. */
+  @IsOptional() @IsArray() @ArrayMaxSize(100) @IsString({ each: true }) waTemplateKeys?: string[] | null;
+  @IsOptional() @IsArray() @ArrayMaxSize(100) @IsString({ each: true }) emailTemplateIds?: string[] | null;
 }
 
 // ── Lead capture (phase 2) ─────────────────────────────────────────────────
@@ -439,6 +452,7 @@ export class WaConnectDto {
 
 export class WaTemplateItemDto {
   @OptStr(60) label?: string;
+  @IsOptional() @IsIn([...MESSAGE_REASONS]) reason?: string;
   @IsString() @MaxLength(512) name: string;
   @IsString() @MaxLength(10) lang: string;
 }
@@ -460,6 +474,37 @@ export class WaSendDto {
 export class WaListDto {
   @IsOptional() @IsString() leadId?: string;
   @IsOptional() @IsIn(['true', 'false']) unread?: string;
+  @IsOptional() @IsIn(['all', 'needs_reply', 'unread', 'closing', 'expired', 'done']) view?: string;
+  @IsOptional() @IsString() @MaxLength(100) q?: string;
+  @IsOptional() @IsString() @MaxLength(30) ownerId?: string;
+}
+
+export class WaStatusDto {
+  @IsOptional() @IsBoolean() done?: boolean;
+  /** ISO time; null ends the snooze. */
+  @IsOptional() @IsString() @MaxLength(40) snoozeUntil?: string | null;
+}
+
+export class WaAssignDto {
+  @IsOptional() @IsString() @MaxLength(30) adminId?: string | null;
+}
+
+export class WaStartDto {
+  @IsOptional() @IsString() @MaxLength(30) leadId?: string;
+  @IsOptional() @IsString() @MaxLength(30) phone?: string;
+  @IsOptional() @IsString() @MaxLength(120) name?: string;
+  @IsString() @MaxLength(600) templateKey: string;
+}
+
+export class WaQuickReplyDto {
+  @IsOptional() @IsString() @MaxLength(40) id?: string;
+  @IsString() @MaxLength(60) title: string;
+  @IsString() @MaxLength(1000) text: string;
+}
+
+export class WaQuickRepliesDto {
+  @IsArray() @ArrayMaxSize(50) @ValidateNested({ each: true }) @Type(() => WaQuickReplyDto)
+  replies: WaQuickReplyDto[];
 }
 
 // ── Field visits ───────────────────────────────────────────────────────────

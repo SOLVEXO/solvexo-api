@@ -1,5 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Module } from '@nestjs/common';
+import { SalesRepAccess, SalesRepAccessSchema } from './schemas/sales-rep-access.schema';
+import { SalesAccessService } from './sales-access.service';
 import { SalesWhatsAppService } from './sales-whatsapp.service';
 import { SalesBrevoService } from './sales-brevo.service';
 import {
@@ -114,6 +116,7 @@ import {
       { name: SalesWaConversation.name, schema: SalesWaConversationSchema },
       { name: SalesWaMessage.name, schema: SalesWaMessageSchema },
       { name: SalesVisit.name, schema: SalesVisitSchema },
+      { name: SalesRepAccess.name, schema: SalesRepAccessSchema },
     ]),
   ],
   controllers: [
@@ -127,6 +130,7 @@ import {
     PartnerPortalScorecardController,
   ],
   providers: [
+    SalesAccessService,
     SalesOpsService,
     SalesCaptureService,
     SalesGrowthService,
