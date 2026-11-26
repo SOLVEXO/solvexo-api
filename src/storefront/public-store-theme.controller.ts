@@ -15,7 +15,7 @@ export class PublicStoreThemeController {
   constructor(private readonly storeThemeService: StoreThemeService) {}
 
   @UseInterceptors(PublicCacheInterceptor)
-  @PublicCache(15)
+  @PublicCache(15, undefined, { cdn: false })
   @Get(':storeId')
   get(@Param('storeId') storeId: string) {
     return this.storeThemeService.getPublic(storeId);

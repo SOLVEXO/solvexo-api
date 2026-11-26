@@ -11,18 +11,27 @@ const PUBLIC_CACHE_META = 'solvexo:public-cache';
  * edit is never stuck in a visitor's browser.
  */
 function cdnCacheControl(ttlSeconds: number) {
-  return `public, max-age=0, s-maxage=${Math.max(ttlSeconds * 2, 30)}, stale-while-revalidate=300, stale-if-error=86400`;
+  // Keep the stale windows short: a seller's publish must show within seconds, not after the CDN's
+  // stale-while-revalidate window (was 300 s / 24 h, which made a publish look "stuck" for minutes).
+  return `public, max-age=0, s-maxage=${Math.max(ttlSeconds * 2, 30)}, stale-while-revalidate=60, stale-if-error=300`;
 }
 
 interface PublicCacheOptions {
   ttlSeconds: number;
   /** Extra cache-key part for the one thing, if any, that makes the response differ between anonymous visitors. */
   vary?: (req: any) => string;
+  /**
+   * Set `false` for data that changes the moment a seller publishes (page sections, theme, collections). The API's own
+   * CDN (Railway) must NOT keep a stale copy of those, or a publish takes up to its stale-while-revalidate window to
+   * appear on the live storefront even after the Vercel edge is purged — the edge re-fetches this endpoint and gets the
+   * old body back. The short Redis cache below still applies, so the origin is not hit on every request.
+   */
+  cdn?: boolean;
 }
 
 /** Marks an anonymous, read-only GET as safe to serve from a short Redis cache. Pair with `@UseInterceptors(PublicCacheInterceptor)`. */
-export const PublicCache = (ttlSeconds = 15, vary?: (req: any) => string) =>
-  SetMetadata(PUBLIC_CACHE_META, { ttlSeconds, vary } satisfies PublicCacheOptions);
+export const PublicCache = (ttlSeconds = 15, vary?: (req: any) => string, opts?: { cdn?: boolean }) =>
+  SetMetadata(PUBLIC_CACHE_META, { ttlSeconds, vary, ...opts } satisfies PublicCacheOptions);
 
 /**
  * Short-TTL response cache for public storefront reads (store, theme, pages, collections, products, markets).
@@ -47,7 +56,9 @@ export class PublicCacheInterceptor implements NestInterceptor {
     // public may be shared. Responses that differ per visitor (opts.vary) and routes whose store was not identified stay private.
     const res = context.switchToHttp().getResponse?.();
     if (res?.setHeader && !opts.vary && req.storefrontGateMode === 'public') {
-      res.setHeader('Cache-Control', cdnCacheControl(opts.ttlSeconds));
+      // Volatile data (page sections, theme, collections): tell the CDN not to keep a copy at all, so a publish shows
+      // as soon as the Vercel edge is purged. Everything else keeps a short shared cache.
+      res.setHeader('Cache-Control', opts.cdn === false ? 'private, no-store' : cdnCacheControl(opts.ttlSeconds));
       // A shared cache keys on method + host + path + query, NOT on Origin (Railway's CDN ignores `Vary: Origin`), so the CORS header
       // the cors middleware reflected for the FIRST visitor would be replayed to every other origin and block their browsers.
       // These responses are anonymous public data (no cookies/credentials), so a wildcard origin is correct and cacheable.

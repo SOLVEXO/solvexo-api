@@ -15,21 +15,21 @@ export class PublicStorePagesController {
   constructor(private readonly storePagesService: StorePagesService) {}
 
   @UseInterceptors(PublicCacheInterceptor)
-  @PublicCache(15)
+  @PublicCache(15, undefined, { cdn: false })
   @Get(':storeId/home')
   getHome(@Param('storeId') storeId: string) {
     return this.storePagesService.getPublicHome(storeId);
   }
 
   @UseInterceptors(PublicCacheInterceptor)
-  @PublicCache(15)
+  @PublicCache(15, undefined, { cdn: false })
   @Get(':storeId/list')
   list(@Param('storeId') storeId: string) {
     return this.storePagesService.listPublicPages(storeId);
   }
 
   @UseInterceptors(PublicCacheInterceptor)
-  @PublicCache(15)
+  @PublicCache(15, undefined, { cdn: false })
   @Get(':storeId/page/:slug')
   getPage(@Param('storeId') storeId: string, @Param('slug') slug: string, @Query('locale') locale?: string) {
     return this.storePagesService.getPublicPage(storeId, slug, locale);

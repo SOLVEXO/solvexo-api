@@ -13,14 +13,14 @@ export class PublicCollectionsController {
   constructor(private readonly collectionsService: CollectionsService) {}
 
   @UseInterceptors(PublicCacheInterceptor)
-  @PublicCache(15)
+  @PublicCache(15, undefined, { cdn: false })
   @Get(':storeId')
   list(@Param('storeId') storeId: string) {
     return this.collectionsService.listPublic(storeId);
   }
 
   @UseInterceptors(PublicCacheInterceptor)
-  @PublicCache(15)
+  @PublicCache(15, undefined, { cdn: false })
   @Get(':storeId/:slugOrId')
   getBySlug(@Param('storeId') storeId: string, @Param('slugOrId') slugOrId: string, @Query('locale') locale?: string) {
     return this.collectionsService.getPublicBySlug(storeId, slugOrId, locale);
