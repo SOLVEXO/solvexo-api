@@ -3,7 +3,9 @@
  * DEV ONLY. Creates a brand-new throwaway owner (unique email) with a store, one register, POS tax settings and an
  * active POS plan, and prints its ids as JSON on the last stdout line. Used by the POS app's real-backend e2e (account
  * deletion must run on an owner nobody else uses). Never touches the seeded owners. Same dev-database guard as seed.ts.
- *   npx ts-node --transpile-only dev/e2e-owner.ts [--force]
+ *   npx ts-node --transpile-only dev/e2e-owner.ts [--force] [--no-store | --count]
+ *   --no-store  only the seller account (an owner who has not created a store yet: the POS app must refuse to continue)
+ *   --count     creates nothing; prints {"sellers":N,"users":M} (the e2e proves a refused sign-in created no account)
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -22,12 +24,23 @@ async function main() {
   const M = (cls: any, sch: any) => conn.model(cls.name, sch);
   const Seller = M(schema.Seller, schema.SellerSchema), Store = M(schema.Store, schema.StoreSchema);
   const PosSettings = M(schema.PosSettings, schema.PosSettingsSchema), PosPlan = M(schema.PosPlan, schema.PosPlanSchema), PosPurchase = M(schema.PosPurchase, schema.PosPurchaseSchema);
+  if (process.argv.includes('--count')) {
+    const User = M(schema.User, schema.UserSchema);
+    console.log(JSON.stringify({ sellers: await Seller.countDocuments({}), users: await User.countDocuments({}) }));
+    await conn.close();
+    return;
+  }
   const plan: any = await PosPlan.findOne({ name: 'Dev POS Monthly' });
   if (!plan) throw new Error('Seed first (plan "Dev POS Monthly" missing)');
   const tag = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const email = `pos-e2e-${tag}@solvexo.dev`, password = 'DevPass#12345';
   const owner: any = await new Seller({ name: `POS E2E ${tag}`, email, role: 'seller', isVerified: true, password: await bcrypt.hash(password, 10), status: 'active' }).save();
   const sellerId = String(owner._id);
+  if (process.argv.includes('--no-store')) {
+    console.log(JSON.stringify({ email, password, sellerId }));
+    await conn.close();
+    return;
+  }
   const store: any = await new Store({ sellerId, name: `POS E2E Shop ${tag}`, slug: `pos-e2e-${tag}`, baseCurrency: 'USD', status: 'active', registers: [{ name: 'Register 1', defaultFloatCash: 100, status: 'active' }] }).save();
   const storeId = String(store._id);
   await PosSettings.updateOne({ storeId }, { $set: { taxRate: 0.1 }, $setOnInsert: { saleCounter: 0 } }, { upsert: true });
