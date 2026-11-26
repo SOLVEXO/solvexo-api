@@ -4,11 +4,14 @@ import { sanitizeChromeItems, type ChromeItem } from '../common/chrome-items.uti
 /** Floating contact bar shown on every storefront theme (call / WhatsApp / social icons). */
 export interface FloatingContactConfig {
   enabled: boolean;
-  position: 'right' | 'left';
+  /** Screen side. `center` is its own column (top-centre / centre / bottom-centre with `vertical`). */
+  position: 'right' | 'left' | 'center';
   vertical: 'top' | 'middle' | 'bottom';
   size: 'sm' | 'md' | 'lg';
   style: 'brand' | 'theme';
   showLabels: boolean;
+  /** When the icon name is visible: hover (default), always, or never (icons only). */
+  labelMode: 'hover' | 'always' | 'none';
   device: 'all' | 'desktop' | 'mobile';
   phone: string;
   phoneLabel: string;
@@ -36,6 +39,8 @@ export interface FloatingContactConfig {
   sizePx: number;
   /** Distance from the screen edge in px. */
   edgeOffset: number;
+  /** Extra lift from the bottom in px (keeps a round button clear of a sticky buy bar). */
+  bottomOffset: number;
   /** Space between buttons in px (-1 = automatic). */
   gapPx: number;
 }
@@ -43,10 +48,10 @@ export interface FloatingContactConfig {
 const URL_KEYS = ['facebook', 'instagram', 'tiktok', 'youtube', 'x', 'snapchat', 'linkedin'] as const;
 
 export const DEFAULT_FLOATING_CONTACT: FloatingContactConfig = {
-  enabled: false, position: 'right', vertical: 'middle', size: 'md', style: 'brand', showLabels: true, device: 'all',
+  enabled: false, position: 'right', vertical: 'middle', size: 'md', style: 'brand', showLabels: true, labelMode: 'hover', device: 'all',
   phone: '', phoneLabel: '', whatsapp: '', whatsappMessage: '', whatsappLabel: '', email: '', emailLabel: '',
   facebook: '', instagram: '', tiktok: '', youtube: '', x: '', snapchat: '', linkedin: '',
-  items: [], shape: 'flush', bubbleText: '', customBg: '', customFg: '', sizePx: 0, edgeOffset: 0, gapPx: -1,
+  items: [], shape: 'flush', bubbleText: '', customBg: '', customFg: '', sizePx: 0, edgeOffset: 0, bottomOffset: 0, gapPx: -1,
 };
 
 function whole(v: unknown, field: string, min: number, max: number, fallback: number): number {
@@ -97,15 +102,19 @@ export function normalizeFloatingContact(input: unknown): FloatingContactConfig 
   const b = input as Record<string, unknown>;
   if (b.enabled !== undefined && typeof b.enabled !== 'boolean') throw new BadRequestException('floatingContact.enabled must be true or false');
   if (b.showLabels !== undefined && typeof b.showLabels !== 'boolean') throw new BadRequestException('floatingContact.showLabels must be true or false');
+  if (b.labelMode !== undefined && !['hover', 'always', 'none'].includes(String(b.labelMode))) throw new BadRequestException('floatingContact.labelMode must be hover, always or none');
+  // `labelMode` wins; older saved rows only have `showLabels`.
+  const labelMode = oneOf(b.labelMode, ['hover', 'always', 'none'] as const, 'labelMode', b.showLabels === false ? 'none' : 'hover');
   const email = text(b.email, 'email', 200);
   if (email && !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email)) throw new BadRequestException('floatingContact.email is not a valid email');
   const out: FloatingContactConfig = {
     enabled: b.enabled === true,
-    position: oneOf(b.position, ['right', 'left'], 'position', 'right'),
+    position: oneOf(b.position, ['right', 'left', 'center'], 'position', 'right'),
     vertical: oneOf(b.vertical, ['top', 'middle', 'bottom'], 'vertical', 'middle'),
     size: oneOf(b.size, ['sm', 'md', 'lg'], 'size', 'md'),
     style: oneOf(b.style, ['brand', 'theme'], 'style', 'brand'),
-    showLabels: b.showLabels !== false,
+    showLabels: labelMode !== 'none',
+    labelMode,
     device: oneOf(b.device, ['all', 'desktop', 'mobile'], 'device', 'all'),
     phone: phoneOf(b.phone, 'phone'),
     phoneLabel: text(b.phoneLabel, 'phoneLabel', 40),
@@ -122,6 +131,7 @@ export function normalizeFloatingContact(input: unknown): FloatingContactConfig 
     customFg: hex(b.customFg, 'customFg'),
     sizePx: whole(b.sizePx, 'sizePx', 0, 140, 0),
     edgeOffset: whole(b.edgeOffset, 'edgeOffset', 0, 200, 0),
+    bottomOffset: whole(b.bottomOffset, 'bottomOffset', 0, 200, 0),
     gapPx: whole(b.gapPx, 'gapPx', -1, 80, -1),
   };
   for (const k of URL_KEYS) out[k] = httpsUrl(b[k], k);
