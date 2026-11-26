@@ -3,6 +3,7 @@ import { BadRequestException } from '@nestjs/common';
 import { validateContactFormSettings } from '../../store-contact/contact-form-fields.util';
 import type { SectionType } from '../schemas/section.schema';
 import { isAppBlockType } from './app-block.util';
+import { assertContentItems } from './content-items.util';
 import type {
   AllowedBlockTypesMap,
   FeaturedProductsSectionSettings,
@@ -441,7 +442,7 @@ function isThemeFieldValue(v: unknown, depth: number): boolean {
 function validateThemeFields(settings: Record<string, any>, idKey: 'sectionKey' | 'blockKey', path: string): void {
   const id = settings[idKey];
   if (typeof id !== 'string' || !THEME_ITEM_KEY.test(id)) throw new BadRequestException(`${path}.${idKey} must be a short lowercase key`);
-  const entries = Object.entries(settings).filter(([k]) => k !== idKey);
+  const entries = Object.entries(settings).filter(([k]) => k !== idKey && k !== 'contentItems');
   if (entries.length > 60) throw new BadRequestException(`${path}: too many fields`);
   for (const [k, v] of entries) {
     if (!THEME_FIELD_KEY.test(k) && !k.startsWith('copy')) throw new BadRequestException(`${path}.${k}: invalid field name`);
@@ -461,6 +462,8 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
     }
   }
   validateCommonSectionDesign(settings);
+  // Free content layer: any number of positioned items, on EVERY section type.
+  assertContentItems(settings.contentItems, { assertLink: assertLinkTarget });
 
   switch (type) {
     case 'hero': {

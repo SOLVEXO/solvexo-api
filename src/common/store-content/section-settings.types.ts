@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import type { SectionType } from '../schemas/section.schema';
+import type { ContentItem } from './content-items.util';
 
 /**
  * The typed contract for every `Section.settings`/`Block.settings` shape
@@ -25,6 +26,9 @@ import type { SectionType } from '../schemas/section.schema';
 
 export interface BaseSectionSettings {
   heading?: string;
+  /** Free content layer (every section): any number of positioned
+   *  headings / paragraphs / buttons / images, each with its own anchor. */
+  contentItems?: ContentItem[];
   /** Optional section-level spacing, in CSS pixels. Omitted values preserve
    *  each theme's existing layout; accepted range is 0–160. */
   spacingTop?: number;
