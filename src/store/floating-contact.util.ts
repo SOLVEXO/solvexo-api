@@ -41,6 +41,11 @@ export interface FloatingContactConfig {
   edgeOffset: number;
   /** Extra lift from the bottom in px (keeps a round button clear of a sticky buy bar). */
   bottomOffset: number;
+  /** `anchor` = one of the nine fixed spots, `free` = the seller's own spot anywhere on the screen. */
+  posMode: 'anchor' | 'free';
+  /** Free spot, as a percentage of the screen (0-100 from the left / top). */
+  freeX: number;
+  freeY: number;
   /** Space between buttons in px (-1 = automatic). */
   gapPx: number;
 }
@@ -51,7 +56,7 @@ export const DEFAULT_FLOATING_CONTACT: FloatingContactConfig = {
   enabled: false, position: 'right', vertical: 'middle', size: 'md', style: 'brand', showLabels: true, labelMode: 'hover', device: 'all',
   phone: '', phoneLabel: '', whatsapp: '', whatsappMessage: '', whatsappLabel: '', email: '', emailLabel: '',
   facebook: '', instagram: '', tiktok: '', youtube: '', x: '', snapchat: '', linkedin: '',
-  items: [], shape: 'flush', bubbleText: '', customBg: '', customFg: '', sizePx: 0, edgeOffset: 0, bottomOffset: 0, gapPx: -1,
+  items: [], shape: 'flush', bubbleText: '', customBg: '', customFg: '', sizePx: 0, edgeOffset: 0, bottomOffset: 0, posMode: 'anchor', freeX: 90, freeY: 50, gapPx: -1,
 };
 
 function whole(v: unknown, field: string, min: number, max: number, fallback: number): number {
@@ -132,6 +137,9 @@ export function normalizeFloatingContact(input: unknown): FloatingContactConfig 
     sizePx: whole(b.sizePx, 'sizePx', 0, 140, 0),
     edgeOffset: whole(b.edgeOffset, 'edgeOffset', 0, 200, 0),
     bottomOffset: whole(b.bottomOffset, 'bottomOffset', 0, 200, 0),
+    posMode: oneOf(b.posMode, ['anchor', 'free'] as const, 'posMode', 'anchor'),
+    freeX: whole(b.freeX, 'freeX', 0, 100, 90),
+    freeY: whole(b.freeY, 'freeY', 0, 100, 50),
     gapPx: whole(b.gapPx, 'gapPx', -1, 80, -1),
   };
   for (const k of URL_KEYS) out[k] = httpsUrl(b[k], k);
