@@ -8,6 +8,7 @@ import { DatabaseService } from '@/database/databaseservice';
 import { AddReviewDto } from './dto/add-review.dto';
 import { EditReviewDto } from './dto/edit-review.dto';
 import { SellerReplyDto } from './dto/seller-reply.dto';
+import { assertReviewMedia } from './review-media.util';
 import { LoyaltyService } from '@/loyalty/loyalty.service';
 
 const DELIVERED_ITEM_STATUSES = ['delivered', 'completed'];
@@ -146,6 +147,8 @@ export class RatingService {
 
     const { productModel, ratingModel } = this.r;
 
+    assertReviewMedia(media);
+
     const product = await productModel.findOne({
       _id: productId,
       isDelete: false,
@@ -252,6 +255,8 @@ export class RatingService {
     if (review.storeId && review.storeId !== storeId) {
       throw new ForbiddenException('You can only edit your own review');
     }
+
+    assertReviewMedia(dto.media);
 
     const update: any = {};
     if (dto.rating !== undefined) update.rating = dto.rating;
