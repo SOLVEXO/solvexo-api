@@ -1933,13 +1933,14 @@ export class ProductsService {
 
   /** POST api/products/store-products/:storeId/import — shared bulk-import
    *  engine (see `product-bulk-import.ts`). Rows go through the real
-   *  `addPhysicalProduct` / `editProduct` paths; `updateVariant` is passed in
+   *  `addPhysicalProduct` / `editProduct` paths; `updateVariant` and `addVariant` are passed in
    *  by the controller (ProductVariantsService) to avoid a constructor change. */
   async importProductsCsv(
     sellerId: string,
     storeId: string,
     csvText: string,
     updateVariant: (sellerId: string, productId: string, variantId: string, dto: any) => Promise<any>,
+    addVariant: (sellerId: string, productId: string, dto: any) => Promise<any>,
   ) {
     const { storeModel, categoryModel, productModel, productVariantModel, metafieldDefinitionModel, metafieldValueModel } = this.databaseService.repositories;
     return importProductsCsvRows(
@@ -1948,6 +1949,7 @@ export class ProductsService {
         addPhysicalProduct: (s, body) => this.addPhysicalProduct(s, body),
         editProduct: (s, body) => this.editProduct(s, body),
         updateVariant,
+        addVariant,
       },
       sellerId,
       storeId,
