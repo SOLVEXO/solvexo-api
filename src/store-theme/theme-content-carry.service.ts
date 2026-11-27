@@ -27,9 +27,6 @@ export const FOOTER_CONTENT_KEYS = [
   'showPolicyLinks', 'blockLayout',
 ] as const;
 
-/** Namespace a theme uses for its own `theme_section` keys (`maison.lookbook`, `tech.bento_grid`). */
-const THEME_NAMESPACE: Record<string, string> = { 'theme-03-fashion': 'maison', 'theme-04-tech': 'tech', 'theme-05-ledup': 'ledup' };
-
 export interface CarryResult {
   header: boolean;
   footer: boolean;
@@ -44,13 +41,8 @@ type AnySection = { type: string; settings?: Record<string, any>; blocks?: any[]
 /** Sections the target theme can show: platform sections it accepts, plus only its OWN theme-defined ones. */
 export function carrySections(sections: AnySection[] | undefined | null, targetThemeId: string): { kept: AnySection[]; skipped: number } {
   const list = Array.isArray(sections) ? sections : [];
-  const accepted = filterSectionsToTheme(list, targetThemeId);
-  const ns = THEME_NAMESPACE[targetThemeId];
-  const kept = accepted.filter(s => {
-    if (s.type !== 'theme_section') return true;
-    const key = String(s.settings?.sectionKey ?? '');
-    return !!ns && key.startsWith(`${ns}.`);
-  });
+  // Another theme's own sections travel too: the storefront draws them through the target theme's matching section.
+  const kept = filterSectionsToTheme(list, targetThemeId);
   return { kept, skipped: list.length - kept.length };
 }
 
