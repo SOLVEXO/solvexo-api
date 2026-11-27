@@ -39,6 +39,8 @@ export class MenuItemChild {
   /** Small tag next to the label ("New", "Sale"), and its colour (empty = the theme's accent). */
   @Prop({ type: String, default: '' }) badge: string;
   @Prop({ type: String, default: '' }) badgeColor: string;
+  /** No-code Style of this link (colour, size, spacing...). */
+  @Prop({ type: Object, default: null }) style: Record<string, any> | null;
   /** Show-when rules (see `assertShowWhenRules`): who sees this item, and when. */
   @Prop({ type: String, default: 'all' }) showTo: string;
   @Prop({ type: String, default: '' }) showFrom: string;
@@ -74,6 +76,8 @@ export class MenuItem {
   /** Small tag next to the label ("New", "Sale"), and its colour (empty = the theme's accent). */
   @Prop({ type: String, default: '' }) badge: string;
   @Prop({ type: String, default: '' }) badgeColor: string;
+  /** No-code Style of this link (colour, size, spacing...). */
+  @Prop({ type: Object, default: null }) style: Record<string, any> | null;
   /** Show-when rules (see `assertShowWhenRules`): who sees this item, and when. */
   @Prop({ type: String, default: 'all' }) showTo: string;
   @Prop({ type: String, default: '' }) showFrom: string;

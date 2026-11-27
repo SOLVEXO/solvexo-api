@@ -635,6 +635,14 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
       oneOf(settings.imageRatio, IMAGE_RATIOS, 'settings.imageRatio');
       break;
     }
+    case 'layout_grid': {
+      assertColumns(settings.columns);
+      if (settings.template !== undefined && settings.template !== null) oneOf(settings.template, ['equal', '1-2', '2-1', '1-2-1', '1-3', '3-1', '2-1-1', '1-1-2'] as const, 'settings.template');
+      if (settings.gap !== undefined && (typeof settings.gap !== 'number' || settings.gap < 0 || settings.gap > 120)) throw new BadRequestException('settings.gap must be between 0 and 120');
+      if (settings.verticalAlign !== undefined && settings.verticalAlign !== null) oneOf(settings.verticalAlign, ['start', 'center', 'end', 'stretch'] as const, 'settings.verticalAlign');
+      if (settings.maxWidth !== undefined && settings.maxWidth !== null && (typeof settings.maxWidth !== 'number' || settings.maxWidth < 320 || settings.maxWidth > 2400)) throw new BadRequestException('settings.maxWidth must be between 320 and 2400');
+      break;
+    }
     case 'related_products': {
       oneOf(settings.source, ['related', 'complementary', 'category', 'collection', 'manual'] as const, 'settings.source');
       if (settings.productIds !== undefined) {
@@ -858,7 +866,27 @@ export function validateSectionSettings(type: SectionType, settings: Record<stri
 
 // ── Block-level settings (context = the block's `type` string) ─────────────
 
+const BLOCK_STYLE_NUMS: Record<string, [number, number]> = { marginTop: [-200, 300], marginBottom: [-200, 300], marginLeft: [-200, 300], marginRight: [-200, 300], paddingTop: [0, 300], paddingBottom: [0, 300], paddingLeft: [0, 300], paddingRight: [0, 300], borderWidth: [0, 12], borderRadius: [0, 200], opacity: [0, 100], maxWidth: [40, 2000], fontSize: [8, 120], fontSizeMobile: [8, 120], animationDelay: [0, 3000] };
+const BLOCK_STYLE_ENUMS: Record<string, string[]> = { fontWeight: ['normal', 'medium', 'semibold', 'bold', 'black'], textAlign: ['left', 'center', 'right'], shadow: ['soft', 'medium', 'strong'], align: ['center', 'right'], hover: ['lift', 'zoom', 'fade', 'shadow', 'tilt', 'glow'], animation: ['fade', 'slide-up', 'slide-left', 'slide-right', 'zoom', 'slide-down', 'zoom-out', 'blur', 'rotate', 'flip', 'bounce', 'wipe'], animationSpeed: ['fast', 'normal', 'slow', 'very-slow'], animationEase: ['smooth', 'ease-out', 'bouncy', 'linear'], loop: ['float', 'pulse', 'spin', 'shake'], visibility: ['desktop', 'mobile'] };
+const BLOCK_STYLE_COLORS = ['textColor', 'backgroundColor', 'borderColor'];
+/** No-code block Style (settings.style): numbers in range, enums from a list, colours as #rrggbb; anything else is refused. */
+function validateBlockStyle(style: unknown): void {
+  if (style === undefined || style === null) return;
+  if (typeof style !== 'object' || Array.isArray(style)) throw new BadRequestException('settings.style must be an object');
+  for (const [k, v] of Object.entries(style as Record<string, unknown>)) {
+    if (BLOCK_STYLE_NUMS[k]) {
+      const [lo, hi] = BLOCK_STYLE_NUMS[k];
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < lo || v > hi) throw new BadRequestException(`settings.style.${k} must be a number between ${lo} and ${hi}`);
+    } else if (BLOCK_STYLE_ENUMS[k]) {
+      if (typeof v !== 'string' || !BLOCK_STYLE_ENUMS[k].includes(v)) throw new BadRequestException(`settings.style.${k} is not a valid choice`);
+    } else if (BLOCK_STYLE_COLORS.includes(k)) {
+      if (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v)) throw new BadRequestException(`settings.style.${k} must be a colour like #112233`);
+    } else throw new BadRequestException(`settings.style.${k} is not a known style option`);
+  }
+}
+
 export function validateBlockSettings(blockType: string, settings: Record<string, any>): void {
+  validateBlockStyle(settings.style);
   validateCopyOverrides(settings, 'settings');
   if (FOOTER_COLUMN_BLOCKS.has(blockType) && settings.width !== null) oneOf(settings.width, FOOTER_COLUMN_WIDTHS, 'width');
   switch (blockType) {
@@ -1127,6 +1155,20 @@ export function validateBlockSettings(blockType: string, settings: Record<string
       maxLen(settings.alt, 150, 'alt');
       maxLen(settings.caption, 200, 'caption');
       if (settings.link) assertLinkTarget(settings.link, 'link');
+      break;
+
+    // layout_grid section blocks (free layout: an item sits in a column)
+    case 'layout_item':
+      oneOf(settings.kind, ['heading', 'text', 'button', 'image', 'spacer', 'divider'] as const, 'kind');
+      if (settings.column !== undefined && (!Number.isInteger(settings.column) || settings.column < 1 || settings.column > 8)) throw new BadRequestException('column must be 1 to 8');
+      maxLen(settings.text, 5000, 'text');
+      maxLen(settings.alt, 150, 'alt');
+      maxLen(settings.buttonLabel, 40, 'buttonLabel');
+      if (settings.imageUrl) assertHttpsUrl(settings.imageUrl, 'imageUrl');
+      if (settings.link) assertLinkTarget(settings.link, 'link');
+      if (settings.buttonStyle !== undefined && settings.buttonStyle !== null) oneOf(settings.buttonStyle, ['solid', 'outline', 'link'] as const, 'buttonStyle');
+      if (settings.headingTag !== undefined && settings.headingTag !== null) oneOf(settings.headingTag, ['h1', 'h2', 'h3', 'h4'] as const, 'headingTag');
+      if (settings.height !== undefined && (typeof settings.height !== 'number' || settings.height < 0 || settings.height > 600)) throw new BadRequestException('height must be 0 to 600');
       break;
 
     // store_locations section blocks
@@ -1491,6 +1533,7 @@ export const SECTION_ALLOWED_BLOCK_TYPES: AllowedBlockTypesMap = {
   team_grid: ['team_member'],
   stats_counter: ['stat_item'],
   gallery_grid: ['gallery_image'],
+  layout_grid: ['layout_item'],
   multicolumn: ['multicolumn_column'],
   promo_cards: ['promo_card'],
   collection_columns: ['collection_column'],
