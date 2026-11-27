@@ -8,16 +8,15 @@ describe('carrySections', () => {
     { type: 'rich_text' },
   ];
 
-  it('keeps platform sections and only the target theme\'s own theme-defined sections', () => {
+  it('keeps every section, including another theme\'s own (the storefront draws it in the target theme\'s style)', () => {
     const toTech = carrySections(sections, 'theme-04-tech');
-    expect(toTech.kept.map(s => s.type + (s.settings?.sectionKey ?? ''))).toEqual(['hero', 'theme_sectiontech.bento_grid', 'rich_text']);
-    expect(toTech.skipped).toBe(1);
-    const toMaison = carrySections(sections, 'theme-03-fashion');
-    expect(toMaison.kept.map(s => s.settings?.sectionKey ?? s.type)).toEqual(['hero', 'maison.lookbook', 'rich_text']);
+    expect(toTech.kept).toHaveLength(4);
+    expect(toTech.skipped).toBe(0);
+    expect(carrySections(sections, 'theme-03-fashion').kept.map(s => s.settings?.sectionKey ?? s.type)).toEqual(['hero', 'maison.lookbook', 'tech.bento_grid', 'rich_text']);
   });
 
-  it('drops every theme-defined section for a theme with no namespace', () => {
-    expect(carrySections(sections, 'theme-99-new').kept.map(s => s.type)).toEqual(['hero', 'rich_text']);
+  it('keeps them for a theme the backend has never heard of too', () => {
+    expect(carrySections(sections, 'theme-99-new').kept).toHaveLength(4);
   });
 
   it('handles missing input', () => {
@@ -74,7 +73,7 @@ describe('ThemeContentCarryService.carry', () => {
   it('copies content, not design, and keeps a version of what it replaces', async () => {
     const { svc, themeUpdates, pageUpdates, created } = make();
     const res = await svc.carry('st', 'seller', 't1');
-    expect(res.data).toEqual({ header: true, footer: true, pages: 2, templates: 1, skippedSections: 1 });
+    expect(res.data).toEqual({ header: true, footer: true, pages: 2, templates: 1, skippedSections: 0 });
     const $set = themeUpdates[0].$set;
     expect($set['header.blocks']).toHaveLength(1);
     expect($set['draft.header.blocks']).toHaveLength(2);
@@ -83,7 +82,7 @@ describe('ThemeContentCarryService.carry', () => {
     expect($set['footer.footerStyle'] === undefined).toBe(true);
     expect(themeUpdates[0].$push.versions.$each).toHaveLength(1);
     const home = pageUpdates[0];
-    expect(home.u.$set['themeTemplates.$.sections']).toEqual([{ type: 'hero' }]);
+    expect(home.u.$set['themeTemplates.$.sections']).toEqual([{ type: 'hero' }, { type: 'theme_section', settings: { sectionKey: 'maison.lookbook' } }]);
     expect(home.u.$push['themeTemplates.$.versions'].$each[0].sections).toEqual([{ type: 'old' }]);
     expect(pageUpdates[1].u.$push.themeTemplates.sections).toEqual([{ type: 'rich_text' }]);
     expect([created[0].installedThemeId, created[0].resourceType, created[0].templateKey]).toEqual(['t1', 'product', 'default']);
