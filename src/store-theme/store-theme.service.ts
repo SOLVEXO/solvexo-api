@@ -14,7 +14,7 @@ import { UpdateFooterDto } from './dto/update-footer.dto';
 import { UpdateIdentityBannerDto } from './dto/update-identity-banner.dto';
 import { InstallThemeDto } from './dto/install-theme.dto';
 import { CreateColorSchemeDto } from './dto/color-scheme.dto';
-import { UpdateBrandKitDto } from './dto/brand-kit.dto';
+import { BRAND_KIT_EXTRA_COLOR_KEYS, BRAND_KIT_EXTRA_STYLE_KEYS, UpdateBrandKitDto } from './dto/brand-kit.dto';
 import { validateSections } from '../store-pages/store-pages.service';
 import { MenusService } from '../menus/menus.service';
 import { ThemeCatalogService } from '../theme-catalog/theme-catalog.service';
@@ -119,11 +119,16 @@ export class StoreThemeService {
   // ── Brand Kit — store-level brand colors that outlive any one theme ─────
 
   /** The theme color fields a Brand Kit controls. Optional roles (bg/text/sale) are only included when the seller set them; otherwise the theme keeps its own. */
-  private brandKitPatch(kit: { primaryColor: string; accentColor: string; bgColor?: string | null; textColor?: string | null; saleColor?: string | null }) {
+  private brandKitPatch(kit: { primaryColor: string; accentColor: string; bgColor?: string | null; textColor?: string | null; saleColor?: string | null } & Record<string, any>) {
     const patch: Record<string, string> = { primaryColor: kit.primaryColor, accentColor: kit.accentColor };
     if (kit.bgColor) patch.bgColor = kit.bgColor;
     if (kit.textColor) patch.textColor = kit.textColor;
     if (kit.saleColor) patch.saleColor = kit.saleColor;
+    // fonts, shape, buttons and the optional colour roles: only the ones the seller set; a missing one leaves the theme's own value
+    for (const key of [...BRAND_KIT_EXTRA_COLOR_KEYS, ...BRAND_KIT_EXTRA_STYLE_KEYS]) {
+      const v = kit[key];
+      if (typeof v === 'string' && v) patch[key] = v;
+    }
     return patch;
   }
 
@@ -164,11 +169,18 @@ export class StoreThemeService {
       textColor: dto.textColor ?? null,
       saleColor: dto.saleColor ?? null,
       locked: dto.locked,
-    };
+    } as Record<string, any>;
+    // a caller that does not send a field (the older colours-only card) keeps what is already stored; sending null clears it
+    const prev = ((await this.storeModel.findById(storeId).select('brandKit').lean()) as any)?.brandKit ?? {};
+    for (const key of [...BRAND_KIT_EXTRA_COLOR_KEYS, ...BRAND_KIT_EXTRA_STYLE_KEYS, 'presetId'] as const) {
+      const v = (dto as Record<string, any>)[key];
+      if (v !== undefined) kit[key] = v ?? null;
+      else if (prev[key] !== undefined) kit[key] = prev[key];
+    }
     await this.storeModel.updateOne({ _id: storeId }, { $set: { brandKit: kit } });
     const instance = await this.resolveInstance(storeId, installedThemeId);
     const set: Record<string, string> = {};
-    for (const [k, v] of Object.entries(this.brandKitPatch(kit))) set[`draft.theme.${k}`] = v;
+    for (const [k, v] of Object.entries(this.brandKitPatch(kit as any))) set[`draft.theme.${k}`] = v;
     const updated = await this.storeThemeModel.findOneAndUpdate({ _id: instance._id }, { $set: set }, { new: true });
     return { success: true, message: 'Brand colors saved to your draft — publish to make them live.', data: { brandKit: kit, theme: updated } };
   }
