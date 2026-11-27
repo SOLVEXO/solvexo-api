@@ -773,6 +773,7 @@ export const STOREFRONT_EN: Record<string, any> = {
   "main": "Main",
   "menu": "Menu",
   "mobile": "Mobile",
+  "more": "More",
   "openMenu": "Open menu",
   "search": "Search",
   "searchProducts": "Search products…",
