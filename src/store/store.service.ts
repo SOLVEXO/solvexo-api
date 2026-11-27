@@ -2198,7 +2198,7 @@ export class StoreService {
     }
     if (query.collectionId && query.collectionId !== 'all') {
       const ids = await this.collectionsService.resolveProductIds(storeId, query.collectionId);
-      filter._id = { $in: ids.length ? ids : ['__none__'] };
+      filter._id = { $in: ids.length ? ids : ['000000000000000000000000'] };
       if ([undefined, null, '', 'newest', 'manual', 'default'].includes(query.sort)) collectionOrder = ids.map(String);
     }
     // Hand-picked list (a Featured products section with source "manual"):
@@ -2211,7 +2211,7 @@ export class StoreService {
         .slice(0, 50);
       const already: string[] | undefined = filter._id?.$in;
       const ids = already ? picked.filter((id: string) => already.includes(id)) : picked;
-      filter._id = { $in: ids.length ? ids : ['__none__'] };
+      filter._id = { $in: ids.length ? ids : ['000000000000000000000000'] };
       if (!collectionOrder && [undefined, null, '', 'newest', 'manual', 'default'].includes(query.sort)) collectionOrder = ids;
     }
     // Same real "on sale" definition the product card's own discount badge
@@ -2230,7 +2230,7 @@ export class StoreService {
         .lean();
       const onSaleIds = [...new Set(onSaleVariants.map((v: any) => v.productId))];
       const already: string[] | undefined = filter._id?.$in;
-      filter._id = { $in: already ? already.filter((id: string) => onSaleIds.includes(id)) : (onSaleIds.length ? onSaleIds : ['__none__']) };
+      filter._id = { $in: already ? already.filter((id: string) => onSaleIds.includes(id)) : (onSaleIds.length ? onSaleIds : ['000000000000000000000000']) };
     }
 
     const sortMap: Record<string, any> = {
