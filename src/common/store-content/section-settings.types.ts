@@ -464,6 +464,7 @@ export type SectionSettingsMap = RequireAllKeys<SectionType, {
   team_grid: TeamGridSectionSettings;
   stats_counter: StatsCounterSectionSettings;
   gallery_grid: GalleryGridSectionSettings;
+  layout_grid: BaseSectionSettings & { columns?: number; template?: string; gap?: number; verticalAlign?: string; stackOnMobile?: boolean; maxWidth?: number };
   multicolumn: MulticolumnSectionSettings;
   promo_cards: PromoCardsSectionSettings;
   collection_columns: CollectionColumnsSectionSettings;
@@ -740,6 +741,7 @@ export const BLOCK_TYPES = [
   'team_member',
   'stat_item',
   'gallery_image',
+  'layout_item',
   'multirow_row',
   'collage_item',
   'multicolumn_column',
@@ -800,6 +802,7 @@ export type BlockSettingsMap = RequireAllKeys<BlockType, {
   team_member: TeamMemberBlockSettings;
   stat_item: StatItemBlockSettings;
   gallery_image: GalleryImageBlockSettings;
+  layout_item: { kind: string; column?: number; text?: string; imageUrl?: string; alt?: string; link?: LinkTarget; buttonLabel?: string; buttonStyle?: string; headingTag?: string; height?: number };
   multirow_row: { imageUrl?: string; heading?: string; body?: string; ctaText?: string; ctaLink?: LinkTarget; focalPoint?: unknown };
   collage_item: { imageUrl: string; heading?: string; link?: LinkTarget };
   multicolumn_column: MulticolumnColumnBlockSettings;

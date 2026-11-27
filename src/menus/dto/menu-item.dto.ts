@@ -18,6 +18,7 @@ export class MenuItemChildDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(2048) imageUrl?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(12) badge?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(7) badgeColor?: string | null;
+  @ApiProperty({ required: false, description: 'No-code Style of this link (validated like a block style)' }) @IsOptional() @IsObject() style?: Record<string, any> | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(12) showTo?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(40) showFrom?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(40) showUntil?: string | null;
@@ -44,6 +45,7 @@ export class MenuItemDto {
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(2048) imageUrl?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(12) badge?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(7) badgeColor?: string | null;
+  @ApiProperty({ required: false, description: 'No-code Style of this link (validated like a block style)' }) @IsOptional() @IsObject() style?: Record<string, any> | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(12) showTo?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(40) showFrom?: string | null;
   @ApiProperty({ required: false }) @IsOptional() @IsString() @MaxLength(40) showUntil?: string | null;

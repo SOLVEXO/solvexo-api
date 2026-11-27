@@ -230,6 +230,37 @@ describe('StoreThemeService', () => {
       expect(Object.keys(call[1].$set).every(k => k.startsWith('draft.'))).toBe(true);
     });
 
+    it('saveBrandKit also stores fonts, shape and extra colours, and writes only the ones the seller set into the draft', async () => {
+      await service.saveBrandKit(STORE_ID, SELLER_ID, {
+        primaryColor: '#e20303', accentColor: '#112233', locked: true,
+        font: 'Inter', headingFont: 'Fraunces', headingCase: 'uppercase', buttonStyle: 'outline', buttonRadius: 'small', linkColor: '#0044aa', cardHover: null, presetId: 'editorial',
+      } as any);
+      const kit = storeModel.updateOne.mock.calls.find(([, u]: any[]) => u?.$set?.brandKit)[1].$set.brandKit;
+      expect(kit).toMatchObject({ font: 'Inter', headingFont: 'Fraunces', headingCase: 'uppercase', buttonStyle: 'outline', buttonRadius: 'small', linkColor: '#0044aa', cardHover: null, presetId: 'editorial' });
+      expect(kit).not.toHaveProperty('imageRadius'); // never sent = never stored
+      const call = updateCall(set => set['draft.theme.primaryColor'] !== undefined);
+      expect(call[1].$set).toEqual({
+        'draft.theme.primaryColor': '#e20303', 'draft.theme.accentColor': '#112233', 'draft.theme.font': 'Inter', 'draft.theme.headingFont': 'Fraunces',
+        'draft.theme.headingCase': 'uppercase', 'draft.theme.buttonStyle': 'outline', 'draft.theme.buttonRadius': 'small', 'draft.theme.linkColor': '#0044aa',
+      });
+    });
+
+    it('saveBrandKit from a caller that sends only colours keeps the fonts and shape already stored', async () => {
+      brandKit = { ...KIT, font: 'Poppins', buttonRadius: 'full', presetId: 'soft' };
+      await service.saveBrandKit(STORE_ID, SELLER_ID, { primaryColor: '#111111', accentColor: '#111111', locked: true } as any);
+      const kit = storeModel.updateOne.mock.calls.find(([, u]: any[]) => u?.$set?.brandKit)[1].$set.brandKit;
+      expect(kit).toMatchObject({ primaryColor: '#111111', font: 'Poppins', buttonRadius: 'full', presetId: 'soft' });
+    });
+
+    it('a LOCKED kit with fonts and shape carries them onto the next theme too', async () => {
+      brandKit = { ...KIT, font: 'Poppins', buttonRadius: 'full', headingCase: null };
+      themeCatalogService.getPublishedForApply = jest.fn().mockResolvedValue(themeDefinition({ theme: { primaryColor: '#1F1B2E', font: 'Inter', buttonRadius: 'small' } }));
+      await service.applyThemeDefinition(STORE_ID, SELLER_ID, THEME_DEF_ID);
+      expect(updateCall(set => set['draft.theme'] !== undefined)[1].$set['draft.theme']).toEqual({
+        primaryColor: '#e20303', accentColor: '#112233', font: 'Poppins', buttonRadius: 'full',
+      });
+    });
+
     it('saveBrandKit rejects a caller who does not own the store, and writes nothing', async () => {
       await expect(service.saveBrandKit(STORE_ID, OTHER_SELLER_ID, { primaryColor: '#e20303', accentColor: '#112233', locked: true } as any)).rejects.toThrow(ForbiddenException);
       expect(storeModel.updateOne).not.toHaveBeenCalled();

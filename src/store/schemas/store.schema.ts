@@ -726,6 +726,8 @@ export class Store {
     textColor: string | null;
     saleColor: string | null;
     locked: boolean;
+    /** Fonts, shape, buttons, extra colour roles and the starting preset: see `UpdateBrandKitDto`. Missing = the theme keeps its own. */
+    [extra: string]: string | boolean | null | undefined;
   } | null;
 
   // Platform-plan-gated features (see EntitlementsService) — dedicated fields
