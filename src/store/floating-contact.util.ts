@@ -12,6 +12,8 @@ export interface FloatingContactConfig {
   showLabels: boolean;
   /** When the icon name is visible: hover (default), always, or never (icons only). */
   labelMode: 'hover' | 'always' | 'none';
+  /** Where the hover text shows: beside the icon (slides out), above it, or below it. */
+  labelPlacement: 'side' | 'top' | 'bottom';
   device: 'all' | 'desktop' | 'mobile';
   phone: string;
   phoneLabel: string;
@@ -53,7 +55,7 @@ export interface FloatingContactConfig {
 const URL_KEYS = ['facebook', 'instagram', 'tiktok', 'youtube', 'x', 'snapchat', 'linkedin'] as const;
 
 export const DEFAULT_FLOATING_CONTACT: FloatingContactConfig = {
-  enabled: false, position: 'right', vertical: 'middle', size: 'md', style: 'brand', showLabels: true, labelMode: 'hover', device: 'all',
+  enabled: false, position: 'right', vertical: 'middle', size: 'md', style: 'brand', showLabels: true, labelMode: 'hover', labelPlacement: 'side', device: 'all',
   phone: '', phoneLabel: '', whatsapp: '', whatsappMessage: '', whatsappLabel: '', email: '', emailLabel: '',
   facebook: '', instagram: '', tiktok: '', youtube: '', x: '', snapchat: '', linkedin: '',
   items: [], shape: 'flush', bubbleText: '', customBg: '', customFg: '', sizePx: 0, edgeOffset: 0, bottomOffset: 0, posMode: 'anchor', freeX: 90, freeY: 50, gapPx: -1,
@@ -120,6 +122,7 @@ export function normalizeFloatingContact(input: unknown): FloatingContactConfig 
     style: oneOf(b.style, ['brand', 'theme'], 'style', 'brand'),
     showLabels: labelMode !== 'none',
     labelMode,
+    labelPlacement: oneOf(b.labelPlacement, ['side', 'top', 'bottom'] as const, 'labelPlacement', 'side'),
     device: oneOf(b.device, ['all', 'desktop', 'mobile'], 'device', 'all'),
     phone: phoneOf(b.phone, 'phone'),
     phoneLabel: text(b.phoneLabel, 'phoneLabel', 40),
